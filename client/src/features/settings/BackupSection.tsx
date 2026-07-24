@@ -1,18 +1,25 @@
 import { useEffect, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { message } from '@tauri-apps/plugin-dialog'
-import { Check, Download, FolderOpen, Loader2, Upload } from 'lucide-react'
+import { AlertTriangle, Check, Download, FolderOpen, Loader2, Upload } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Tooltip } from '@/components/ui/tooltip'
 import {
   exportConfigFile,
   exportFullFile,
-  importConfigFile,
-  importFullFile,
+  pickImportFile,
+  runImport,
+  restartApp,
   onBackupExportProgress,
   type BackupExportProgress,
 } from '@/services/backup'
+
+type ImportKind = 'config' | 'full'
+
+const IMPORT_OVERWRITES: Record<ImportKind, string> = {
+  config: '设置、供应商配置与密钥、热词、Prompt',
+  full: '全部数据（设置、历史记录与录音）',
+}
 
 type BusyAction = 'exportConfig' | 'exportFull' | 'importConfig' | 'importFull' | null
 
@@ -105,6 +112,12 @@ export default function BackupSection() {
   const [configPath, setConfigPath] = useState('')
   const [fullPath, setFullPath] = useState('')
   const [fullProgress, setFullProgress] = useState<BackupExportProgress | null>(null)
+  // 导入确认（应用内弹窗，替代原生系统对话框）
+  const [importConfirm, setImportConfirm] = useState<{ kind: ImportKind; path: string } | null>(null)
+  // 导入成功后展示提示并自动重启
+  const [importDone, setImportDone] = useState(false)
+  // 导出/导入的错误提示，改为应用内内联横幅
+  const [actionError, setActionError] = useState('')
 
   useEffect(() => {
     const unlisten = onBackupExportProgress((progress) => {
@@ -127,11 +140,12 @@ export default function BackupSection() {
 
   const handleExportConfig = async () => {
     setBusyAction('exportConfig')
+    setActionError('')
     try {
       const result = await exportConfigFile()
       if (result.filePath) setConfigPath(result.filePath)
     } catch (error) {
-      await message(`导出失败：${String(error)}`, { title: '导出失败', kind: 'error' })
+      setActionError(`导出失败：${String(error)}`)
     } finally {
       setBusyAction(null)
     }
@@ -139,25 +153,46 @@ export default function BackupSection() {
 
   const handleExportFull = async () => {
     setBusyAction('exportFull')
+    setActionError('')
     setFullProgress(null)
     try {
       const result = await exportFullFile()
       if (result.filePath) setFullPath(result.filePath)
     } catch (error) {
-      await message(`导出失败：${String(error)}`, { title: '导出失败', kind: 'error' })
+      setActionError(`导出失败：${String(error)}`)
     } finally {
       setBusyAction(null)
     }
   }
 
-  const handleImport = async (kind: 'config' | 'full') => {
+  // 第一步：选文件（系统原生对话框），选好后弹出应用内确认弹窗
+  const handleImport = async (kind: ImportKind) => {
     setBusyAction(kind === 'config' ? 'importConfig' : 'importFull')
+    setActionError('')
     try {
-      if (kind === 'config') await importConfigFile()
-      else await importFullFile()
+      const path = await pickImportFile(kind)
+      if (path) setImportConfirm({ kind, path })
     } catch (error) {
-      await message(`导入失败：${String(error)}`, { title: '导入失败', kind: 'error' })
+      setActionError(`导入失败：${String(error)}`)
     } finally {
+      setBusyAction(null)
+    }
+  }
+
+  // 第二步：确认覆盖后执行导入，成功则展示提示并自动重启
+  const confirmImport = async () => {
+    if (!importConfirm) return
+    const { kind, path } = importConfirm
+    setImportConfirm(null)
+    setBusyAction(kind === 'config' ? 'importConfig' : 'importFull')
+    setActionError('')
+    try {
+      await runImport(kind, path)
+      setImportDone(true)
+      // 略作停留让用户看到提示，再自动重启使更改生效
+      setTimeout(() => { void restartApp() }, 1500)
+    } catch (error) {
+      setActionError(`导入失败：${String(error)}`)
       setBusyAction(null)
     }
   }
@@ -220,7 +255,51 @@ export default function BackupSection() {
             </div>
           )}
         </div>
+
+        {actionError && (
+          <div className="mt-4 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            {actionError}
+          </div>
+        )}
       </CardContent>
+
+      {/* 导入确认（应用内弹窗，样式与其余确认框一致） */}
+      {importConfirm && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+          onClick={() => setImportConfirm(null)}
+        >
+          <div className="w-96 rounded-xl border bg-card p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500" />
+              <h3 className="text-base font-semibold">确认导入</h3>
+            </div>
+            <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+              导入将用备份覆盖当前的{IMPORT_OVERWRITES[importConfirm.kind]}，此操作无法撤销。导入完成后应用会自动重启。确定继续吗？
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <Button size="sm" variant="outline" onClick={() => setImportConfirm(null)}>取消</Button>
+              <Button size="sm" variant="destructive" onClick={() => void confirmImport()}>覆盖导入</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 导入成功提示，稍后自动重启 */}
+      {importDone && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="w-80 rounded-xl border bg-card p-6 shadow-xl">
+            <div className="flex items-center gap-2">
+              <Check className="h-4 w-4 shrink-0 text-success" />
+              <h3 className="text-base font-semibold">导入成功</h3>
+            </div>
+            <p className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              应用即将重启以使更改生效…
+            </p>
+          </div>
+        </div>
+      )}
     </Card>
   )
 }
