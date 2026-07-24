@@ -6,11 +6,11 @@ import { Card, CardContent } from '@/components/ui/card'
 import { getSetting } from '@/services/store'
 import { getRuntimeEvents, type RuntimeEvent } from '@/services/debugLog'
 import { getWorkMode } from '@/services/transcription'
-import { FolderOpen, RefreshCw, CheckCircle2, XCircle, MinusCircle, HelpCircle, ChevronDown } from 'lucide-react'
+import { FolderOpen, RefreshCw, CheckCircle2, XCircle, MinusCircle, CircleSlash, Info, HelpCircle, ChevronDown } from 'lucide-react'
 import { Tooltip } from '@/components/ui/tooltip'
 import DiagnosticsReportPanel from './DiagnosticsReportPanel'
 
-type HealthStatus = 'ok' | 'error' | 'unknown'
+type HealthStatus = 'ok' | 'error' | 'unknown' | 'disabled'
 
 interface HealthItem {
   label: string
@@ -54,6 +54,8 @@ const FAQ_ITEMS: { q: string; answer: React.ReactNode }[] = [
 function StatusIcon({ status }: { status: HealthStatus }) {
   if (status === 'ok') return <CheckCircle2 className="h-4 w-4 text-green-500" />
   if (status === 'error') return <XCircle className="h-4 w-4 text-red-500" />
+  // 未开启：灰色「关闭」图标，明确区别于「正常（绿勾）」和「失败（红叉）」
+  if (status === 'disabled') return <CircleSlash className="h-4 w-4 text-muted-foreground/50" />
   return <MinusCircle className="h-4 w-4 text-muted-foreground/50" />
 }
 
@@ -79,6 +81,9 @@ export default function DiagnosticsPage() {
   const [logContent, setLogContent] = useState('')
   const [showFileLog, setShowFileLog] = useState(true)
   const [openFaq, setOpenFaq] = useState<number | null>(0)
+
+  // AI 校对处于「未开启」状态时，给出温和提示（依赖 AI 的功能不会生效）
+  const aiProofreadDisabled = health.some((item) => item.label === 'AI 校对' && item.status === 'disabled')
 
   useEffect(() => {
     void doHealthCheck()
@@ -147,7 +152,7 @@ export default function DiagnosticsPage() {
     if (workMode !== 'server') {
       const aiEnabled = await getSetting('aiEnabled', false) as boolean
       if (!aiEnabled) {
-        items.push({ label: 'AI 校对', status: 'ok', detail: '已关闭（极速模式）' })
+        items.push({ label: 'AI 校对', status: 'disabled', detail: '未开启（极速模式）' })
       } else {
         const aiProvider = await getSetting('cloudAi.provider', '') as string
         const aiApiKey = await getSetting('cloudAi.apiKey', '') as string
@@ -243,6 +248,12 @@ export default function DiagnosticsPage() {
                 </div>
               ))}
             </div>
+            {aiProofreadDisabled && (
+              <div className="mt-3 flex items-start gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+                <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>AI 校对未开启，润色模式等依赖 AI 的功能不会生效。可在主页右上角，或主页侧边栏「AI 整理」页中开启。</span>
+              </div>
+            )}
           </CardContent>
         </Card>
 

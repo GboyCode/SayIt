@@ -116,17 +116,20 @@ fn get_local_ip() -> String {
 }
 
 fn get_system_locale() -> String {
+    // 用原生 Win32 API 取区域设置，避免拉起 PowerShell（冷启动 1-2 秒）。
+    // GetUserDefaultLocaleName 返回形如 "zh-CN" 的 BCP-47 名称，与原 (Get-Culture).Name 一致。
     #[cfg(target_os = "windows")]
     {
-        use std::process::Command;
-        Command::new("powershell")
-            .args(["-NoProfile", "-Command", "(Get-Culture).Name"])
-            .creation_flags(0x08000000)
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s: String| s.trim().to_string())
-            .unwrap_or_else(|| "unknown".to_string())
+        use windows::Win32::Globalization::GetUserDefaultLocaleName;
+        // LOCALE_NAME_MAX_LENGTH = 85
+        let mut buf = [0u16; 85];
+        let len = unsafe { GetUserDefaultLocaleName(&mut buf) };
+        if len > 1 {
+            // 返回值含结尾的 NUL，切掉它。
+            String::from_utf16_lossy(&buf[..(len as usize - 1)])
+        } else {
+            "unknown".to_string()
+        }
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -135,18 +138,20 @@ fn get_system_locale() -> String {
 }
 
 fn get_total_memory_mb() -> u64 {
+    // 用原生 GlobalMemoryStatusEx 取物理内存，避免拉起 PowerShell。
+    // ullTotalPhys 为字节，/ 1MB 与原 TotalPhysicalMemory / 1MB 语义一致。
     #[cfg(target_os = "windows")]
     {
-        use std::process::Command;
-        Command::new("powershell")
-            .args(["-NoProfile", "-Command", "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1MB"])
-            .creation_flags(0x08000000)
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .and_then(|s: String| s.trim().parse::<f64>().ok())
-            .map(|v| v as u64)
-            .unwrap_or(0)
+        use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+        let mut status = MEMORYSTATUSEX {
+            dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+            ..Default::default()
+        };
+        if unsafe { GlobalMemoryStatusEx(&mut status) }.is_ok() {
+            status.ullTotalPhys / (1024 * 1024)
+        } else {
+            0
+        }
     }
     #[cfg(not(target_os = "windows"))]
     {

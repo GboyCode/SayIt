@@ -121,6 +121,9 @@ export class RecorderOrchestrator {
   private cachedActivePresetId = 'intent'
   private cachedAiEnabled = true
   private cachedClientRuntimeInfo: ClientRuntimeInfo | null = null
+  /** 客户端运行时信息是否已成功采集一次。它是进程内静态元数据（区域/内存/主机名等），
+   *  只需启动时取一次，不该挂在每次改设置都触发的刷新热路径上。失败时保持 false 以便重试。 */
+  private clientRuntimeInfoLoaded = false
   private cachedAppPromptRules: AppPromptRule[] = []
   private cachedUserStats: UserStats = createDefaultUserStats()
   private cachedHotwords: string[] = []
@@ -261,6 +264,8 @@ export class RecorderOrchestrator {
 
     startInsertionTargetTracking()
     await this.refreshRuntimeSettings()
+    // 静态机器信息只在启动采集一次；不 await，避免拖慢建连（clientMeta 可空，采集期间为 null 无碍）。
+    void this.ensureClientRuntimeInfo()
     this.ensureConnection()
 
     // 快捷键切换润色模式（由 Rust global_shortcut 触发）
@@ -434,9 +439,11 @@ export class RecorderOrchestrator {
     this.cachedStreamingDisplay = Boolean(streamingDisplay)
     await this.overlayService.refreshSettings()
 
-    // 热词 / 服务器语言 / 客户端运行时信息彼此独立，并行加载而非依次 await，
-    // 减少本函数的总耗时（每次切换 AI 整理开关等都会触发这里）。
-    const [hotwordsResult, languageResult, runtimeInfoResult] = await Promise.allSettled([
+    // 热词 / 服务器语言彼此独立，并行加载而非依次 await，减少本函数的总耗时
+    // （每次切换 AI 整理开关等都会触发这里）。
+    // 客户端运行时信息（区域/内存/主机名等）是进程内静态元数据，已移出此热路径，
+    // 仅在启动时经 ensureClientRuntimeInfo() 采集一次，避免改任意设置都重新采集。
+    const [hotwordsResult, languageResult] = await Promise.allSettled([
       Promise.all([
         getSetting(BUILTIN_SET_WORDS_KEY, {}),
         getSetting(BUILTIN_SET_ACTIVE_KEY, {}),
@@ -453,12 +460,23 @@ export class RecorderOrchestrator {
         const l = lang as string
         return l && l !== 'auto' ? l : ''
       }),
-      bridge.getClientRuntimeInfo(),
     ])
 
     this.cachedHotwords = hotwordsResult.status === 'fulfilled' ? hotwordsResult.value : []
     this.cachedLanguage = languageResult.status === 'fulfilled' ? languageResult.value : ''
-    this.cachedClientRuntimeInfo = runtimeInfoResult.status === 'fulfilled' ? runtimeInfoResult.value : null
+  }
+
+  /** 采集一次客户端运行时信息并缓存。静态元数据，进程内只成功采集一次；
+   *  失败不置位 loaded，留待下次重试（避免把 unknown/0 永久缓存）。
+   *  clientMeta 本就可空，采集期间为 null 不影响业务。 */
+  async ensureClientRuntimeInfo() {
+    if (this.clientRuntimeInfoLoaded) return
+    try {
+      this.cachedClientRuntimeInfo = await bridge.getClientRuntimeInfo()
+      this.clientRuntimeInfoLoaded = true
+    } catch {
+      this.cachedClientRuntimeInfo = null
+    }
   }
 
   /** 工作模式或服务地址变更后强制重连 provider。

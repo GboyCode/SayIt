@@ -143,6 +143,7 @@ export default function GeneralSettingsPage() {
 
         <Card>
           <CardContent className="space-y-4 p-6">
+            <h2 className="text-lg font-semibold">偏好设置</h2>
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium">录音就绪提示音</p>
