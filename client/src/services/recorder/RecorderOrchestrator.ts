@@ -1230,18 +1230,64 @@ export class RecorderOrchestrator {
         addRuntimeEvent('warn', 'recorder', '处理超时但文本插入仍在进行，延长等待')
         return
       }
-      this.timedOutProcessingContext = {
+      const timedOutCtx = {
         timedOutAt: Date.now(),
         audioDurationSec: audioDur,
         wallTimeSec,
         promptResolution: this.currentPromptResolution ? { ...this.currentPromptResolution } : null,
         appContext: this.currentActiveAppContext ? { ...this.currentActiveAppContext } : null,
       }
+      this.timedOutProcessingContext = timedOutCtx
       addRuntimeEvent('warn', 'recorder', '处理超时，自动回到空闲状态', {
         audioSec: audioDur,
         timeoutMs: processingTimeoutMs,
         lateFinalGraceMs: LATE_FINAL_GRACE_MS,
       })
+
+      // 安全网：快照本次录音音频与元数据。若宽限期内没等到迟到的 final，就把音频存入历史
+      // （标记为空结果），用户可在历史里“重新识别”，避免超时丢失整段录音。
+      // resetToIdle 不会清空 recordedChunks，这里再 slice 一份，防止后续录音替换缓冲。
+      const audioChunks = this.recordedChunks.slice()
+      const historyMeta = this.buildHistoryMetadata(timedOutCtx.promptResolution)
+      window.setTimeout(() => {
+        // onFinal 若在宽限期内消费了 context（迟到 final 已落历史）→ 跳过，避免重复记录。
+        if (this.timedOutProcessingContext !== timedOutCtx) return
+        this.timedOutProcessingContext = null
+        void (async () => {
+          try {
+            let audioFilePath: string | undefined
+            const recordId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+            const saveAudioEnabled = await getSetting('audioRetentionEnabled', true)
+            if (saveAudioEnabled && audioChunks.length > 0) {
+              try {
+                const savedPath = await saveRecordingAudio(recordId, audioChunks)
+                if (savedPath) audioFilePath = savedPath
+              } catch (err) {
+                addRuntimeEvent('warn', 'recorder', '保存音频文件失败（超时兜底）', { error: String(err) })
+              }
+            }
+            await addHistory({
+              id: recordId,
+              timestamp: Date.now(),
+              asrText: '',
+              llmText: '',
+              asrMs: 0,
+              llmMs: 0,
+              durationSec: timedOutCtx.wallTimeSec,
+              audioDurationSec: timedOutCtx.audioDurationSec > 0 ? timedOutCtx.audioDurationSec : undefined,
+              charCount: 0,
+              isEmpty: true,
+              audioFilePath,
+              ...historyMeta,
+            })
+            void bridge.emit('history-updated')
+            addRuntimeEvent('info', 'recorder', '处理超时：已把录音存入历史，可重新识别', { audioSec: timedOutCtx.audioDurationSec })
+          } catch (err) {
+            addRuntimeEvent('warn', 'recorder', '超时兜底写入历史失败', { error: String(err) })
+          }
+        })()
+      }, LATE_FINAL_GRACE_MS)
+
       this.resetToIdle({ preserveLateFinalContext: true })
     }, processingTimeoutMs)
   }

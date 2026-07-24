@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
+use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::commands::system::write_log_line;
@@ -72,6 +73,9 @@ pub struct WindowState {
     last_ack_generation: AtomicU64,
     last_ack_at_ms: AtomicI64,
     recovery_started_show_id: AtomicU64,
+    page_load_started_at_ms: AtomicI64,
+    page_load_finished_at_ms: AtomicI64,
+    renderer_ready_at_ms: AtomicI64,
     /// 进程/状态创建时间，用于日志记录运行时长（配合资源计数排查“长时间运行后悬浮窗失效”）
     created_at: Instant,
 }
@@ -91,6 +95,9 @@ impl WindowState {
             last_ack_generation: AtomicU64::new(0),
             last_ack_at_ms: AtomicI64::new(0),
             recovery_started_show_id: AtomicU64::new(0),
+            page_load_started_at_ms: AtomicI64::new(0),
+            page_load_finished_at_ms: AtomicI64::new(0),
+            renderer_ready_at_ms: AtomicI64::new(0),
             created_at: Instant::now(),
         }
     }
@@ -181,6 +188,7 @@ impl WindowState {
     /// React listener，因此在 ready 时重放最近状态并重新请求确认。
     pub fn overlay_ready(&self, app: &AppHandle) {
         let show_id = self.active_show_id.load(Ordering::SeqCst);
+        self.renderer_ready_at_ms.store(now_ms(), Ordering::SeqCst);
         if show_id == 0 {
             if let Some(overlay) = app.get_webview_window("overlay") {
                 let _ = overlay.hide();
@@ -189,9 +197,10 @@ impl WindowState {
         }
 
         write_log_line(&format!(
-            "[overlay-health] renderer ready show_id={} generation={}",
+            "[overlay-health] renderer ready show_id={} generation={} diagnostic={}",
             show_id,
             self.active_generation.load(Ordering::SeqCst),
+            compact_json(&self.diagnostic_snapshot(app)),
         ));
         if self.ensure_visible(app, show_id) {
             self.emit_latest(app, true);
@@ -242,6 +251,7 @@ impl WindowState {
         let ack_show_id = self.last_ack_show_id.load(Ordering::SeqCst);
         let ack_generation = self.last_ack_generation.load(Ordering::SeqCst);
         let recovery_started = self.recovery_started_show_id.load(Ordering::SeqCst) == show_id;
+        let diagnostic = self.diagnostic_snapshot(app);
         json!({
             "showId": show_id,
             "activeShowId": active_show_id,
@@ -251,8 +261,63 @@ impl WindowState {
             "ackLatencyMs": if ack_show_id == show_id { self.ack_latency_ms() } else { -1 },
             "recoveryStarted": recovery_started,
             "recoverySucceeded": recovery_started && ack_show_id == show_id && ack_generation > 0,
+            "failureClass": self.failure_class(app),
+            // Keep the existing frontend response contract; `diagnostic` adds detail.
             "window": overlay_window_snapshot(app),
+            "diagnostic": diagnostic,
         })
+    }
+
+    fn reset_renderer_lifecycle(&self) {
+        self.page_load_started_at_ms.store(0, Ordering::SeqCst);
+        self.page_load_finished_at_ms.store(0, Ordering::SeqCst);
+        self.renderer_ready_at_ms.store(0, Ordering::SeqCst);
+    }
+
+    fn record_page_load(&self, event: PageLoadEvent, url: &str) {
+        let timestamp = now_ms();
+        let event_name = match event {
+            PageLoadEvent::Started => {
+                self.page_load_started_at_ms.store(timestamp, Ordering::SeqCst);
+                "started"
+            }
+            PageLoadEvent::Finished => {
+                self.page_load_finished_at_ms.store(timestamp, Ordering::SeqCst);
+                "finished"
+            }
+        };
+        write_log_line(&format!(
+            "[overlay-health] page load {} show_id={} generation={} url={}",
+            event_name,
+            self.active_show_id.load(Ordering::SeqCst),
+            self.active_generation.load(Ordering::SeqCst),
+            url,
+        ));
+    }
+
+    fn diagnostic_snapshot(&self, app: &AppHandle) -> Value {
+        let page_started_at = self.page_load_started_at_ms.load(Ordering::SeqCst);
+        let page_finished_at = self.page_load_finished_at_ms.load(Ordering::SeqCst);
+        let renderer_ready_at = self.renderer_ready_at_ms.load(Ordering::SeqCst);
+        let current_ms = now_ms();
+        json!({
+            "window": overlay_window_snapshot(app),
+            "pageLoadStarted": page_started_at > 0,
+            "pageLoadFinished": page_finished_at > 0,
+            "rendererReady": renderer_ready_at > 0,
+            "pageLoadStartedAgeMs": event_age_ms(current_ms, page_started_at),
+            "pageLoadFinishedAgeMs": event_age_ms(current_ms, page_finished_at),
+            "rendererReadyAgeMs": event_age_ms(current_ms, renderer_ready_at),
+        })
+    }
+
+    fn failure_class(&self, app: &AppHandle) -> &'static str {
+        classify_overlay_failure(
+            &overlay_window_snapshot(app),
+            self.page_load_started_at_ms.load(Ordering::SeqCst) > 0,
+            self.page_load_finished_at_ms.load(Ordering::SeqCst) > 0,
+            self.renderer_ready_at_ms.load(Ordering::SeqCst) > 0,
+        )
     }
 
     fn ack_latency_ms(&self) -> i64 {
@@ -449,8 +514,10 @@ impl WindowState {
         self.last_ack_generation.store(0, Ordering::SeqCst);
         self.recovery_started_show_id.store(show_id, Ordering::SeqCst);
         write_log_line(&format!(
-            "[overlay-health] recovery begin show_id={} snapshot={}",
-            show_id, compact_json(&overlay_window_snapshot(app)),
+            "[overlay-health] recovery begin show_id={} failure_class={} diagnostic={}",
+            show_id,
+            self.failure_class(app),
+            compact_json(&self.diagnostic_snapshot(app)),
         ));
 
         if let Some(overlay) = app.get_webview_window("overlay") {
@@ -471,8 +538,9 @@ impl WindowState {
 
         if app.get_webview_window("overlay").is_some() {
             write_log_line(&format!(
-                "[overlay-health] recovery FAILED show_id={} reason=stale_handle",
+                "[overlay-health] recovery FAILED show_id={} reason=stale_handle diagnostic={}",
                 show_id,
+                compact_json(&self.diagnostic_snapshot(app)),
             ));
             return;
         }
@@ -483,6 +551,7 @@ impl WindowState {
     }
 
     fn create_overlay(&self, app: &AppHandle, layout: OverlayLayout, base_width: f64) {
+        self.reset_renderer_lifecycle();
         let bounds = calc_overlay_bounds(app, &layout, base_width);
         let builder = WebviewWindowBuilder::new(
             app,
@@ -499,7 +568,11 @@ impl WindowState {
         .skip_taskbar(true)
         .resizable(false)
         .focused(false)
-        .visible(false);
+        .visible(false)
+        .on_page_load(|window, payload| {
+            let state = window.app_handle().state::<WindowState>();
+            state.record_page_load(payload.event(), payload.url().as_str());
+        });
 
         match builder.build() {
             Ok(overlay) => {
@@ -507,13 +580,14 @@ impl WindowState {
                 set_overlay_interactivity(&overlay, layout.is_interactive());
                 let show_error = overlay.show().err().map(|error| format!("{:?}", error));
                 write_log_line(&format!(
-                    "[overlay-health] create OK show_id={} generation={} initial_bounds={:?} position_error={:?} show_error={:?} visible={}",
+                    "[overlay-health] create dispatched show_id={} generation={} initial_bounds={:?} position_error={:?} show_error={:?} shell_visible={} diagnostic={}",
                     self.active_show_id.load(Ordering::SeqCst),
                     self.active_generation.load(Ordering::SeqCst),
                     bounds,
                     position_error,
                     show_error,
                     overlay.is_visible().unwrap_or(false),
+                    compact_json(&self.diagnostic_snapshot(app)),
                 ));
             }
             Err(error) => {
@@ -602,8 +676,10 @@ fn spawn_render_watchdog(app: AppHandle, show_id: u64) {
                     return;
                 }
                 write_log_line(&format!(
-                    "[overlay-health] ack timeout phase=1 show_id={} snapshot={}",
-                    show_id, compact_json(&overlay_window_snapshot(&app)),
+                    "[overlay-health] ack timeout phase=1 show_id={} failure_class={} diagnostic={}",
+                    show_id,
+                    state.failure_class(&app),
+                    compact_json(&state.diagnostic_snapshot(&app)),
                 ));
                 state.emit_latest(&app, true);
             }
@@ -615,8 +691,10 @@ fn spawn_render_watchdog(app: AppHandle, show_id: u64) {
                     return;
                 }
                 write_log_line(&format!(
-                    "[overlay-health] ack timeout phase=2 show_id={} — confirmed unhealthy",
+                    "[overlay-health] ack timeout phase=2 show_id={} failure_class={} — confirmed unhealthy diagnostic={}",
                     show_id,
+                    state.failure_class(&app),
+                    compact_json(&state.diagnostic_snapshot(&app)),
                 ));
                 state.recover_overlay(&app, show_id);
             }
@@ -628,16 +706,17 @@ fn spawn_render_watchdog(app: AppHandle, show_id: u64) {
             }
             if state.is_acked(show_id, 1) {
                 write_log_line(&format!(
-                    "[overlay-health] recovery OK show_id={} latency_ms={} snapshot={}",
+                    "[overlay-health] recovery OK show_id={} latency_ms={} diagnostic={}",
                     show_id,
                     state.ack_latency_ms(),
-                    compact_json(&overlay_window_snapshot(&app)),
+                    compact_json(&state.diagnostic_snapshot(&app)),
                 ));
             } else {
                 write_log_line(&format!(
-                    "[overlay-health] recovery FAILED show_id={} reason=no_render_ack snapshot={}",
+                    "[overlay-health] recovery FAILED show_id={} reason=no_render_ack failure_class={} diagnostic={}",
                     show_id,
-                    compact_json(&overlay_window_snapshot(&app)),
+                    state.failure_class(&app),
+                    compact_json(&state.diagnostic_snapshot(&app)),
                 ));
             }
         });
@@ -660,6 +739,54 @@ fn gui_resource_counts() -> (u32, u32) {
 #[cfg(not(windows))]
 fn gui_resource_counts() -> (u32, u32) {
     (0, 0)
+}
+
+fn event_age_ms(current_ms: i64, event_ms: i64) -> i64 {
+    if event_ms <= 0 {
+        -1
+    } else {
+        current_ms.saturating_sub(event_ms)
+    }
+}
+
+fn classify_overlay_failure(
+    window: &Value,
+    page_load_started: bool,
+    page_load_finished: bool,
+    renderer_ready: bool,
+) -> &'static str {
+    if window.get("handleExists").and_then(Value::as_bool) != Some(true) {
+        return "handle_missing";
+    }
+
+    // Tauri can register a WebviewWindow label before wry asynchronously creates the
+    // native WebView2 controller. A label with no readable position/size is therefore a
+    // shell/phantom handle, not a successfully-created overlay.
+    let native_window_ready = window.get("position").is_some_and(|value| !value.is_null())
+        && window.get("size").is_some_and(|value| !value.is_null());
+    if !native_window_ready {
+        return "native_create_failed";
+    }
+    if !page_load_started {
+        return "page_load_not_started";
+    }
+    if !page_load_finished {
+        return "page_load_incomplete";
+    }
+    if !renderer_ready {
+        return "renderer_not_ready";
+    }
+
+    let visible = window.get("visible").and_then(Value::as_bool) == Some(true);
+    let on_screen = window
+        .get("intersectsAnyMonitor")
+        .and_then(Value::as_bool)
+        == Some(true);
+    if !visible || !on_screen {
+        return "visibility_or_position";
+    }
+
+    "render_ack_missing"
 }
 
 fn compact_json(value: &Value) -> String {
@@ -721,6 +848,68 @@ fn overlay_window_snapshot(app: &AppHandle) -> Value {
 
 fn set_overlay_interactivity(overlay: &tauri::WebviewWindow, interactive: bool) {
     let _ = overlay.set_ignore_cursor_events(!interactive);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::classify_overlay_failure;
+    use serde_json::json;
+
+    fn native_window() -> serde_json::Value {
+        json!({
+            "handleExists": true,
+            "visible": true,
+            "intersectsAnyMonitor": true,
+            "position": { "x": 10, "y": 20 },
+            "size": { "width": 200, "height": 56 }
+        })
+    }
+
+    #[test]
+    fn classifies_phantom_tauri_handle_as_native_create_failure() {
+        let window = json!({
+            "handleExists": true,
+            "visible": null,
+            "intersectsAnyMonitor": false,
+            "position": null,
+            "size": null
+        });
+        assert_eq!(
+            classify_overlay_failure(&window, false, false, false),
+            "native_create_failed"
+        );
+    }
+
+    #[test]
+    fn classifies_page_and_renderer_stages() {
+        let window = native_window();
+        assert_eq!(
+            classify_overlay_failure(&window, false, false, false),
+            "page_load_not_started"
+        );
+        assert_eq!(
+            classify_overlay_failure(&window, true, false, false),
+            "page_load_incomplete"
+        );
+        assert_eq!(
+            classify_overlay_failure(&window, true, true, false),
+            "renderer_not_ready"
+        );
+        assert_eq!(
+            classify_overlay_failure(&window, true, true, true),
+            "render_ack_missing"
+        );
+    }
+
+    #[test]
+    fn classifies_visible_but_offscreen_window() {
+        let mut window = native_window();
+        window["intersectsAnyMonitor"] = json!(false);
+        assert_eq!(
+            classify_overlay_failure(&window, true, true, true),
+            "visibility_or_position"
+        );
+    }
 }
 
 fn monitor_info(app: &AppHandle) -> (f64, f64, f64) {

@@ -45,12 +45,17 @@ fn open_log_file() -> Option<std::fs::File> {
         .ok()
 }
 
-fn rotate_if_needed() {
+fn rotate_if_needed(file: &mut Option<std::fs::File>) {
     let path = log_file_path();
     let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     if size < MAX_LOG_SIZE {
         return;
     }
+
+    // Windows 不允许重命名仍由本进程打开的日志文件。先释放句柄，否则轮转会
+    // 静默失败，正式版长期运行后 sayit.log 会无限增长。
+    *file = None;
+
     // Rotate: sayit.log -> sayit.1.log, sayit.1.log -> sayit.2.log, etc.
     let dir = log_dir();
     for i in (1..ROTATED_FILES_KEEP).rev() {
@@ -60,6 +65,7 @@ fn rotate_if_needed() {
     }
     let rotated = dir.join("sayit.1.log");
     let _ = std::fs::rename(&path, &rotated);
+    *file = open_log_file();
 }
 
 pub fn write_log_line(line: &str) {
@@ -68,7 +74,7 @@ pub fn write_log_line(line: &str) {
     // 之后所有诊断日志都写不出来"的雪崩，恰恰是排查间歇性问题最怕遇到的情况。
     let mut guard = LOG_FILE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     // Rotate check — reopen file if needed
-    rotate_if_needed();
+    rotate_if_needed(&mut guard);
     if guard.is_none() {
         *guard = open_log_file();
     }
@@ -505,5 +511,34 @@ pub fn reveal_file_in_folder(file_path: String) -> Result<(), String> {
             .spawn()
             .map_err(|e| format!("打开文件夹失败: {}", e))?;
     }
+    Ok(())
+}
+
+/// 直接打开指定文件夹。
+#[tauri::command]
+pub fn open_folder(folder_path: String) -> Result<(), String> {
+    let path = std::path::PathBuf::from(&folder_path);
+    if !path.is_dir() {
+        return Err(format!("文件夹不存在: {}", folder_path));
+    }
+
+    #[cfg(target_os = "windows")]
+    std::process::Command::new("explorer")
+        .arg(&path)
+        .spawn()
+        .map_err(|e| format!("打开文件夹失败: {}", e))?;
+
+    #[cfg(target_os = "macos")]
+    std::process::Command::new("open")
+        .arg(&path)
+        .spawn()
+        .map_err(|e| format!("打开文件夹失败: {}", e))?;
+
+    #[cfg(target_os = "linux")]
+    std::process::Command::new("xdg-open")
+        .arg(&path)
+        .spawn()
+        .map_err(|e| format!("打开文件夹失败: {}", e))?;
+
     Ok(())
 }

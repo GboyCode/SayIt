@@ -3,19 +3,16 @@
 import * as bridge from '@/services/bridge'
 import { refreshPTTSetting } from '@/services/webviewKeyboardFallback'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
-import { Download, FolderOpen, Check, Info } from 'lucide-react'
-import { Button } from '@/components/ui/button'
+import { Info } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Tooltip } from '@/components/ui/tooltip'
 import { listMicrophones } from '@/services/audio'
-import { exportAllDataBundle, exportSettings } from '@/services/exports'
 import { refreshRecorderSettings } from '@/services/recorder'
 import { getSetting, setSetting } from '@/services/store'
 import { drawBars, resetWaveform } from '@/services/waveform'
 import { Switch } from '@/components/ui/switch'
 import AppSection from './AppSection'
+import BackupSection from './BackupSection'
 import MicrophoneSection from './MicrophoneSection'
 import type { MicVolumeLevel } from './MicrophoneSection'
 import { ComboShortcutInput, PTTShortcutInput } from './ShortcutInputs'
@@ -122,37 +119,6 @@ export default function GeneralSettingsPage() {
     }
   }
 
-  const [exportResult, setExportResult] = useState<{ filePath: string | null; canceled: boolean } | null>(null)
-  const [exporting, setExporting] = useState(false)
-  const [exportProgress, setExportProgress] = useState<{ current: number; total: number } | null>(null)
-
-  const handleExportSettings = async () => {
-    const r = await exportSettings()
-    setExportResult(r)
-    if (!r.canceled) setTimeout(() => setExportResult(null), 8000)
-  }
-  const handleExportAll = async () => {
-    setExporting(true)
-    setExportProgress(null)
-    const unlisten = await listen<{ current: number; total: number }>('export-progress', (e) => {
-      setExportProgress({ current: e.payload.current, total: e.payload.total })
-    })
-    try {
-      const r = await exportAllDataBundle()
-      setExportResult(r)
-      if (!r.canceled) setTimeout(() => setExportResult(null), 15000)
-    } finally {
-      unlisten()
-      setExporting(false)
-      setExportProgress(null)
-    }
-  }
-  const handleRevealExport = () => {
-    if (exportResult?.filePath) {
-      void invoke('reveal_file_in_folder', { filePath: exportResult.filePath })
-    }
-  }
-
   return (
     <div className="mx-auto max-w-4xl p-8">
       <h1 className="mb-6 text-2xl font-bold">设置</h1>
@@ -248,52 +214,7 @@ export default function GeneralSettingsPage() {
           </CardContent>
         </Card>
 
-        <Card>
-          <CardContent className="p-6">
-            <div className="flex flex-wrap items-center justify-between gap-4">
-              <div>
-                <h2 className="text-lg font-semibold">数据导出</h2>
-                <p className="mt-1 text-sm text-muted-foreground">可导出当前设置，或一键打包导出历史、收藏、热词和设置。</p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button variant="outline" size="sm" className="gap-1.5" onClick={() => void handleExportSettings()}>
-                  <Download className="mr-1 h-4 w-4" />导出设置
-                </Button>
-                <Button variant="outline" size="sm" className="gap-1.5" onClick={() => void handleExportAll()} disabled={exporting}>
-                  <Download className="mr-1 h-4 w-4" />{exporting ? '导出中...' : '导出全部（含音频）'}
-                </Button>
-              </div>
-            </div>
-            {exporting && exportProgress && (
-              <div className="mt-3">
-                <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-                  <div
-                    className="h-full rounded-full bg-primary transition-all"
-                    style={{ width: `${Math.round((exportProgress.current / exportProgress.total) * 100)}%` }}
-                  />
-                </div>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {exportProgress.current} / {exportProgress.total} 文件
-                </p>
-              </div>
-            )}
-            {exportResult && !exportResult.canceled && exportResult.filePath && (
-              <div className="mt-3 flex items-center gap-2 text-xs text-success">
-                <Check className="h-3.5 w-3.5 shrink-0" />
-                <span className="min-w-0 truncate">已保存到 {exportResult.filePath}</span>
-                <button
-                  onClick={handleRevealExport}
-                  className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                >
-                  <FolderOpen className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            )}
-            {exportResult?.canceled && (
-              <p className="mt-3 text-xs text-muted-foreground">已取消导出。</p>
-            )}
-          </CardContent>
-        </Card>
+        <BackupSection />
       </div>
     </div>
   )

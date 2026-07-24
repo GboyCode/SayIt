@@ -19,6 +19,26 @@ use tauri::tray::{TrayIconBuilder, MouseButton, MouseButtonState, TrayIconEvent}
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use std::thread;
 
+/// Environment-level WebView2 flags must be identical for every webview that shares
+/// com.sayit.app/EBWebView. Keep them global; never copy them into a single window's
+/// `additionalBrowserArgs` in tauri.conf.json (WebView2 rejects the second environment
+/// with ERROR_INVALID_STATE when the option sets differ).
+const WEBVIEW2_BROWSER_ARGS: &str =
+    "--ignore-certificate-errors --auto-accept-camera-and-microphone-capture \
+     --disable-backgrounding-occluded-windows --disable-renderer-backgrounding \
+     --disable-background-timer-throttling";
+
+fn browser_args_fingerprint(value: &str) -> String {
+    // Stable FNV-1a fingerprint: enough to compare field reports without logging a
+    // potentially sensitive inherited proxy argument verbatim.
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
 /// Clean up expired audio files based on retention setting.
 fn cleanup_expired_audio(storage: &Storage) {
     let retention_val = storage.get("audioRetentionDays", Some(&serde_json::json!(30)));
@@ -118,9 +138,21 @@ fn cleanup_expired_logs(storage: &Storage) {
 }
 
 fn main() {
-    // Initialize logger so log::info!/warn!/error! produce output
+    // Mirror the Rust log facade to sayit.log as well as stderr. This is essential on
+    // Windows release builds (`windows_subsystem = "windows"`), where stderr is invisible.
+    // It also captures tauri-runtime-wry errors such as the original WebView2 HRESULT.
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .format_timestamp_millis()
+        .format(|buf, record| {
+            use std::io::Write;
+            let line = format!(
+                "[RUST-LOG] level={} target={} {}",
+                record.level(),
+                record.target(),
+                record.args()
+            );
+            commands::system::write_log_line(&line);
+            writeln!(buf, "{line}")
+        })
         .init();
 
     // ── 全局 panic 钩子（悬浮窗/热键间歇性失效排查埋点）──
@@ -154,7 +186,12 @@ fn main() {
         }));
     }
 
-    log::info!("SayIt starting, version={}", env!("CARGO_PKG_VERSION"));
+    log::info!(
+        "SayIt starting version={} profile={} pid={}",
+        env!("CARGO_PKG_VERSION"),
+        if cfg!(debug_assertions) { "debug" } else { "release" },
+        std::process::id(),
+    );
     log::info!("Log file: {:?}", dirs::data_local_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("com.sayit.app")
@@ -168,14 +205,23 @@ fn main() {
     // or not focused. Without these flags, WebView2 throttles setInterval timers in the
     // background, delaying the heartbeat well past the server's idle timeout and causing
     // spurious "idle timeout" disconnects while the app is just sitting idle in the tray.
-    if std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").is_err() {
-        std::env::set_var(
-            "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-            "--ignore-certificate-errors --auto-accept-camera-and-microphone-capture \
-             --disable-backgrounding-occluded-windows --disable-renderer-backgrounding \
-             --disable-background-timer-throttling",
-        );
-    }
+    let (browser_args_source, browser_args) = match std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS") {
+        Ok(value) => ("inherited", value),
+        Err(_) => {
+            std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", WEBVIEW2_BROWSER_ARGS);
+            ("app-default", WEBVIEW2_BROWSER_ARGS.to_string())
+        }
+    };
+    log::info!(
+        "WebView2 environment userDataDir={:?} argsSource={} argsLen={} argsFingerprint={}",
+        dirs::data_local_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("com.sayit.app")
+            .join("EBWebView"),
+        browser_args_source,
+        browser_args.len(),
+        browser_args_fingerprint(&browser_args),
+    );
 
     let db_path = dirs::data_local_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -200,8 +246,8 @@ fn main() {
     let ptt_str = ptt_setting_val.as_str().unwrap_or("ShiftRight").to_string();
     let hf_setting_val = storage.get("shortcutHandsFree", None);
     let hf_str = hf_setting_val.as_str().unwrap_or("AltRight").to_string();
-    eprintln!("[main] PTT setting from DB: raw={:?} parsed={:?}", ptt_setting_val, ptt_str);
-    eprintln!("[main] HF setting from DB: raw={:?} parsed={:?}", hf_setting_val, hf_str);
+    log::info!("PTT setting from DB: raw={:?} parsed={:?}", ptt_setting_val, ptt_str);
+    log::info!("HF setting from DB: raw={:?} parsed={:?}", hf_setting_val, hf_str);
 
     let window_state = WindowState::new();
     let keyboard_hook = KeyboardHookManager::new();
@@ -225,6 +271,30 @@ fn main() {
         .manage(keyboard_hook)
         .manage(context_detector)
         .setup(move |app| {
+            // SayIt's main window and lazy overlay share one WebView2 user-data directory.
+            // Per-window browser arguments violate WebView2's environment compatibility
+            // contract. Fail loudly during startup instead of leaving a half-working app
+            // whose main window works but whose overlay can never be created.
+            let unsafe_windows = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .filter_map(|window| {
+                    window.additional_browser_args.as_ref().map(|args| {
+                        format!("{}(argsLen={})", window.label, args.len())
+                    })
+                })
+                .collect::<Vec<_>>();
+            if !unsafe_windows.is_empty() {
+                let message = format!(
+                    "per-window additionalBrowserArgs is forbidden for shared WebView2 data: {}",
+                    unsafe_windows.join(", ")
+                );
+                log::error!("WebView2 configuration invariant failed: {message}");
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, message).into());
+            }
+
             let hook: tauri::State<KeyboardHookManager> = app.state();
             hook.start(app.handle(), &ptt_str, &hf_str);
 
@@ -392,6 +462,7 @@ fn main() {
             commands::system::append_debug_log,
             commands::system::save_audio_to_downloads,
             commands::system::reveal_file_in_folder,
+            commands::system::open_folder,
             // Audio
             commands::audio::save_audio_file,
             commands::audio::save_pcm_as_wav,
@@ -410,6 +481,13 @@ fn main() {
             commands::export::save_text_export,
             commands::export::save_export_bundle,
             commands::export::save_full_export,
+            // Backup / Restore (配置与全部数据的导入导出)
+            commands::backup::get_backup_directory,
+            commands::backup::export_config,
+            commands::backup::export_full,
+            commands::backup::import_config,
+            commands::backup::import_full,
+            commands::backup::restart_app,
             // Diagnostics
             commands::diagnostics::collect_settings,
             commands::diagnostics::get_diagnostics_preview,
@@ -457,4 +535,39 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod config_tests {
+    use serde_json::Value;
+
+    #[test]
+    fn configured_windows_do_not_override_webview2_browser_args() {
+        let config: Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+            .expect("tauri.conf.json must be valid JSON");
+        let windows = config
+            .pointer("/app/windows")
+            .and_then(Value::as_array)
+            .expect("tauri.conf.json must define app.windows");
+
+        let offenders = windows
+            .iter()
+            .filter_map(|window| {
+                window
+                    .get("additionalBrowserArgs")
+                    .filter(|value| !value.is_null())
+                    .map(|_| {
+                        window
+                            .get("label")
+                            .and_then(Value::as_str)
+                            .unwrap_or("<unknown>")
+                    })
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            offenders.is_empty(),
+            "WebView2 args must be global; per-window overrides found on: {offenders:?}"
+        );
+    }
 }

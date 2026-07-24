@@ -711,3 +711,51 @@ fn parse_stats(json: &Option<String>) -> (f64, i64) {
         None => (0.0, 0),
     }
 }
+
+// ─── 备份 / 恢复辅助（导入导出用）───
+impl Storage {
+    /// 导出 app_settings 为 { key: value } 对象；exclude 中的 key 会被跳过。
+    pub fn export_app_settings(&self, exclude: &[&str]) -> Value {
+        let db = self.db.lock().unwrap();
+        let mut map = serde_json::Map::new();
+        if let Ok(mut stmt) = db.prepare("SELECT key, value_json FROM app_settings") {
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            });
+            if let Ok(rows) = rows {
+                for row in rows.flatten() {
+                    let (key, value_json) = row;
+                    if exclude.contains(&key.as_str()) {
+                        continue;
+                    }
+                    let val: Value = serde_json::from_str(&value_json).unwrap_or(Value::Null);
+                    map.insert(key, val);
+                }
+            }
+        }
+        Value::Object(map)
+    }
+
+    /// 导入 app_settings：逐 key upsert（覆盖同名，不删除备份中未出现的 key）。
+    /// exclude 中的 key 会被跳过。
+    pub fn import_app_settings(
+        &self,
+        obj: &serde_json::Map<String, Value>,
+        exclude: &[&str],
+    ) -> SqlResult<()> {
+        let db = self.db.lock().unwrap();
+        let now = chrono::Utc::now().timestamp_millis();
+        for (key, val) in obj {
+            if exclude.contains(&key.as_str()) {
+                continue;
+            }
+            let json_str = serde_json::to_string(val).unwrap_or_else(|_| "null".to_string());
+            db.execute(
+                "INSERT INTO app_settings (key, value_json, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
+                params![key, json_str, now],
+            )?;
+        }
+        Ok(())
+    }
+}
