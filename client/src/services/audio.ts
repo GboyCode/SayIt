@@ -140,12 +140,17 @@ export async function listMicrophones(): Promise<MediaDeviceInfo[]> {
   // 先申请一次权限（用完立刻关闭），再重新枚举，才能拿到系统里所有麦克风及其名称。
   const needPermission = devices.length === 0 || devices.every((d) => !d.label)
   if (needPermission) {
+    let stream: MediaStream | null = null
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      stream.getTracks().forEach((t) => t.stop())
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      // 关键：必须在音频流仍活跃时枚举，才能拿到设备名字。
+      // WebView2 的 --auto-accept-camera-and-microphone-capture 下权限不持久，
+      // 流一旦停止，enumerateDevices() 的 label 又会变空。
       devices = audioInputs(await navigator.mediaDevices.enumerateDevices())
     } catch {
       // 权限被拒或设备不存在：保留已有结果（可能只有通用项）
+    } finally {
+      if (stream) stream.getTracks().forEach((t) => t.stop())
     }
   }
 
