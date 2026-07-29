@@ -126,16 +126,20 @@ export default function FeedbackSection() {
           </button>
         </div>
 
-        {/* 提交成功后：成功提示与“查看反馈进度”链接同行，常驻直到重新输入 */}
+        {/* 提交成功后：成功提示 + 服务器地址 + 查看进度超链接（常驻直到重新输入） */}
         {submitted && (
-          <div className="mt-2 text-xs">
+          <div className="mt-2 text-xs leading-relaxed text-muted-foreground">
             <span className="text-green-600 dark:text-green-400">发送成功，感谢您的反馈。</span>
-            <button
-              onClick={handleOpenFeedbackPage}
-              className="ml-1 text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
-            >
-              查看反馈进度 →
-            </button>
+            <span className="mt-1 block">
+              请访问 <span className="break-all text-foreground/80">{getBackendBaseUrl()}</span>，
+              <button
+                onClick={handleOpenFeedbackPage}
+                className="text-foreground transition-opacity hover:opacity-70"
+              >
+                <span className="underline underline-offset-2">查看反馈进度</span>
+                <sup className="ml-0.5">↗</sup>
+              </button>
+            </span>
           </div>
         )}
       </div>
