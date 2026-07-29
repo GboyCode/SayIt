@@ -44,7 +44,7 @@ if ((import.meta as unknown as Record<string, unknown>).hot) {
       mediaStream = null
     }
     if (audioCtx && audioCtx.state !== 'closed') {
-      audioCtx.close().catch(() => {})
+      audioCtx.close().catch(() => { })
     }
     audioCtx = null
     onAudioData = null
@@ -132,8 +132,24 @@ registerProcessor('pcm-processor', PCMProcessor);
 `
 
 export async function listMicrophones(): Promise<MediaDeviceInfo[]> {
-  const devices = await navigator.mediaDevices.enumerateDevices()
-  return devices.filter((d) => d.kind === 'audioinput')
+  const audioInputs = (list: MediaDeviceInfo[]) => list.filter((d) => d.kind === 'audioinput')
+
+  let devices = audioInputs(await navigator.mediaDevices.enumerateDevices())
+
+  // 未授予麦克风权限时，enumerateDevices() 只会返回一个无名字的通用设备。
+  // 先申请一次权限（用完立刻关闭），再重新枚举，才能拿到系统里所有麦克风及其名称。
+  const needPermission = devices.length === 0 || devices.every((d) => !d.label)
+  if (needPermission) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      stream.getTracks().forEach((t) => t.stop())
+      devices = audioInputs(await navigator.mediaDevices.enumerateDevices())
+    } catch {
+      // 权限被拒或设备不存在：保留已有结果（可能只有通用项）
+    }
+  }
+
+  return devices
 }
 
 function createAudioContext() {
@@ -178,7 +194,7 @@ async function teardownCapture() {
   }
 
   if (audioCtx && audioCtx.state !== 'closed') {
-    await audioCtx.close().catch(() => {})
+    await audioCtx.close().catch(() => { })
   }
   audioCtx = null
   actualSampleRate = TARGET_SAMPLE_RATE
