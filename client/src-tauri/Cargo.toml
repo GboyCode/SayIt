@@ -57,3 +57,5 @@ windows = { version = "0.58", features = [
   "Win32_Media_Audio",
   "Win32_Media_Audio_Endpoints",
 ] }
+# 与 tauri/wry 内部同版本，用于挂 WebView2 的 PermissionRequested 处理器（把麦克风置为持久授权）
+webview2-com = "0.38"

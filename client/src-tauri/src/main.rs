@@ -324,6 +324,55 @@ fn main() {
                 if let Ok(icon) = tauri::image::Image::from_bytes(ico_bytes) {
                     let _ = main_window.set_icon(icon);
                 }
+
+                // 麦克风/摄像头权限：--auto-accept-camera-and-microphone-capture 只放行采集，
+                // 不会把权限置为持久 granted，导致新版 WebView2 隐藏 enumerateDevices 的设备名与
+                // deviceId（设置里麦克风列表只剩一个通用项）。挂 PermissionRequested 显式 Allow，
+                // 使权限变为 granted，恢复完整设备枚举与选择。失败仅记录日志、不影响其余功能。
+                #[cfg(target_os = "windows")]
+                {
+                    let _ = main_window.with_webview(|webview| {
+                        use webview2_com::Microsoft::Web::WebView2::Win32::{
+                            COREWEBVIEW2_PERMISSION_KIND_CAMERA,
+                            COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
+                            COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+                        };
+                        use webview2_com::PermissionRequestedEventHandler;
+                        unsafe {
+                            let controller = webview.controller();
+                            if let Ok(core) = controller.CoreWebView2() {
+                                let handler = PermissionRequestedEventHandler::create(Box::new(
+                                    |_sender, args| {
+                                        if let Some(args) = args {
+                                            let mut kind = Default::default();
+                                            args.PermissionKind(&mut kind)?;
+                                            if kind == COREWEBVIEW2_PERMISSION_KIND_MICROPHONE
+                                                || kind == COREWEBVIEW2_PERMISSION_KIND_CAMERA
+                                            {
+                                                args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW)?;
+                                                log::info!(
+                                                    "WebView2 permission allowed: kind={:?}",
+                                                    kind
+                                                );
+                                            }
+                                        }
+                                        Ok(())
+                                    },
+                                ));
+                                let mut token = Default::default();
+                                match core.add_PermissionRequested(&handler, &mut token) {
+                                    Ok(_) => log::info!(
+                                        "WebView2 PermissionRequested handler attached"
+                                    ),
+                                    Err(e) => log::error!(
+                                        "failed to attach PermissionRequested handler: {e:?}"
+                                    ),
+                                }
+                            }
+                        }
+                    });
+                }
+
                 if !launched_minimized {
                     let _ = main_window.show();
                     let _ = main_window.set_focus();
