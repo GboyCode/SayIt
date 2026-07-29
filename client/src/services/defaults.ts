@@ -69,6 +69,7 @@ export const DEFAULTS: Record<string, unknown> = {
 
   // ── 应用设置 ──
   autoCheckUpdate: true, // 自动检查更新。可选: true | false
+  historyEnabled: true, // 保存历史记录（文本+录音）。关闭后不再保存新记录，适合共享电脑。可选: true | false
   audioRetentionEnabled: true, // 保留录音文件。可选: true | false
   audioRetentionDays: -1, // 录音保留天数。可选: 7 | 30 | 90 | -1（永久）
   logRetentionDays: 30, // 日志保留天数。可选: 7 | 15 | 30 | 90

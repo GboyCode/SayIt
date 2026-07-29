@@ -29,6 +29,7 @@ export default function GeneralSettingsPage() {
   const [protectClipboard, setProtectClipboard] = useState(true)
   const [pttKey, setPttKey] = useState('AltLeft')
   const [handsFreeKey, setHandsFreeKey] = useState('Alt+L')
+  const [historyEnabled, setHistoryEnabled] = useState(true)
   const [audioRetentionEnabled, setAudioRetentionEnabled] = useState(true)
   const [audioRetentionDays, setAudioRetentionDays] = useState(30)
   const [logRetentionDays, setLogRetentionDays] = useState(30)
@@ -45,6 +46,7 @@ export default function GeneralSettingsPage() {
     getSetting('protectClipboard', true).then((value) => setProtectClipboard(Boolean(value)))
     getSetting('shortcutPTT', 'AltRight').then((value) => setPttKey(value as string))
     getSetting('shortcutHandsFree', 'Alt+L').then((value) => setHandsFreeKey(value as string))
+    getSetting('historyEnabled', true).then((value) => setHistoryEnabled(Boolean(value)))
     getSetting('audioRetentionEnabled', true).then((value) => setAudioRetentionEnabled(Boolean(value)))
     getSetting('readySoundEnabled', true).then((value) => setReadySoundEnabled(Boolean(value)))
     getSetting('audioRetentionDays', -1).then((value) => {
@@ -55,7 +57,7 @@ export default function GeneralSettingsPage() {
       const v = Number(value)
       if (v === 7 || v === 15 || v === 30 || v === 90) setLogRetentionDays(v)
     })
-    listMicrophones().then(setMics).catch(() => {})
+    listMicrophones().then(setMics).catch(() => { })
   }, [])
 
   const toggleAutoLaunch = async () => { const next = !autoLaunch; setAutoLaunch(next); await bridge.setAutoLaunch(next) }
@@ -63,6 +65,7 @@ export default function GeneralSettingsPage() {
   const handleMicChange = async (deviceId: string) => { setSelectedMic(deviceId); await setSetting('selectedMic', deviceId); await refreshRecorderSettings() }
   const toggleMuteSystemAudio = async () => { const next = !muteSystemAudio; setMuteSystemAudio(next); await setSetting('muteSystemAudioWhileRecording', next); await refreshRecorderSettings() }
   const toggleProtectClipboard = async () => { const next = !protectClipboard; setProtectClipboard(next); await setSetting('protectClipboard', next); await refreshRecorderSettings() }
+  const toggleHistoryEnabled = async () => { const next = !historyEnabled; setHistoryEnabled(next); await setSetting('historyEnabled', next) }
   const toggleAudioRetention = async () => { const next = !audioRetentionEnabled; setAudioRetentionEnabled(next); await setSetting('audioRetentionEnabled', next) }
   const toggleReadySound = async () => { const next = !readySoundEnabled; setReadySoundEnabled(next); await setSetting('readySoundEnabled', next); await refreshRecorderSettings() }
   const handleAudioRetentionDaysChange = async (value: number) => { setAudioRetentionDays(value); await setSetting('audioRetentionDays', value) }
@@ -172,6 +175,18 @@ export default function GeneralSettingsPage() {
           onCanvasRef={(node) => { canvasRef.current = node }} onMicChange={handleMicChange} onTestMic={testMic} errorMessage={micError} />
 
         <AppSection autoLaunch={autoLaunch} onToggleAutoLaunch={toggleAutoLaunch} autoCheckUpdate={autoCheckUpdate} onToggleAutoCheckUpdate={toggleAutoCheckUpdate} />
+
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold">历史记录</h2>
+                <p className="mt-1 text-sm text-muted-foreground">保存每次转写的文本与录音到本地历史，可随时回看、复制和重新识别。关闭后不再保存新的记录（适合与他人共用的电脑）；已有记录不会被删除，可在历史页手动清除。</p>
+              </div>
+              <Switch checked={historyEnabled} onChange={() => void toggleHistoryEnabled()} />
+            </div>
+          </CardContent>
+        </Card>
 
         <Card>
           <CardContent className="p-6">

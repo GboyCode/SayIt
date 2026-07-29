@@ -603,6 +603,7 @@ export class RecorderOrchestrator {
           const wallSec = this.wallTimeAtStopSec > 0 ? this.wallTimeAtStopSec : audioDur
           // Save audio even for empty results
           const saveAndRecord = async () => {
+            if (!(await getSetting('historyEnabled', true))) return
             let audioFilePath: string | undefined
             const recordId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
             const saveAudioEnabled = await getSetting('audioRetentionEnabled', true)
@@ -703,6 +704,7 @@ export class RecorderOrchestrator {
         const wallSec = this.wallTimeAtStopSec > 0 ? this.wallTimeAtStopSec : audioDur
         if (audioDur >= 0.5 && this.recordedChunks.length > 0) {
           const saveErrorHistory = async () => {
+            if (!(await getSetting('historyEnabled', true))) return
             let audioFilePath: string | undefined
             const recordId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
             const saveAudioEnabled = await getSetting('audioRetentionEnabled', true)
@@ -1353,6 +1355,7 @@ export class RecorderOrchestrator {
         this.timedOutProcessingContext = null
         void (async () => {
           try {
+            if (!(await getSetting('historyEnabled', true))) return
             let audioFilePath: string | undefined
             const recordId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
             const saveAudioEnabled = await getSetting('audioRetentionEnabled', true)
@@ -1614,38 +1617,41 @@ export class RecorderOrchestrator {
     })
 
     try {
-      // Save audio file if we have recorded chunks
-      let audioFilePath: string | undefined
-      const recordId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
-      const saveAudioEnabled = await getSetting('audioRetentionEnabled', true)
-      if (saveAudioEnabled && this.recordedChunks.length > 0) {
-        try {
-          const savedPath = await saveRecordingAudio(recordId, this.recordedChunks)
-          if (savedPath) audioFilePath = savedPath
-        } catch (err) {
-          addRuntimeEvent('warn', 'recorder', '保存音频文件失败', { error: String(err) })
+      // 关闭历史记录时不保存任何记录与音频（共享电脑隐私），但仍完成文本插入
+      if (await getSetting('historyEnabled', true)) {
+        // Save audio file if we have recorded chunks
+        let audioFilePath: string | undefined
+        const recordId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+        const saveAudioEnabled = await getSetting('audioRetentionEnabled', true)
+        if (saveAudioEnabled && this.recordedChunks.length > 0) {
+          try {
+            const savedPath = await saveRecordingAudio(recordId, this.recordedChunks)
+            if (savedPath) audioFilePath = savedPath
+          } catch (err) {
+            addRuntimeEvent('warn', 'recorder', '保存音频文件失败', { error: String(err) })
+          }
         }
+
+        const providerMeta = await this.buildProviderMetadata(result)
+
+        await addHistory({
+          id: recordId,
+          timestamp: Date.now(),
+          asrText: result.asrText,
+          llmText: textToPaste,
+          asrMs: result.asrMs,
+          llmMs: result.llmMs,
+          durationSec: wallSec,
+          audioDurationSec: audioDur > 0 ? audioDur : undefined,
+          asrDurationSec: result.durationSec > 0 ? result.durationSec : undefined,
+          charCount: hasText ? textToPaste.length : 0,
+          isEmpty: !hasText,
+          audioFilePath,
+          ...this.buildHistoryMetadata(promptResolution),
+          ...providerMeta,
+        })
+        void bridge.emit('history-updated')
       }
-
-      const providerMeta = await this.buildProviderMetadata(result)
-
-      await addHistory({
-        id: recordId,
-        timestamp: Date.now(),
-        asrText: result.asrText,
-        llmText: textToPaste,
-        asrMs: result.asrMs,
-        llmMs: result.llmMs,
-        durationSec: wallSec,
-        audioDurationSec: audioDur > 0 ? audioDur : undefined,
-        asrDurationSec: result.durationSec > 0 ? result.durationSec : undefined,
-        charCount: hasText ? textToPaste.length : 0,
-        isEmpty: !hasText,
-        audioFilePath,
-        ...this.buildHistoryMetadata(promptResolution),
-        ...providerMeta,
-      })
-      void bridge.emit('history-updated')
     } catch (error) {
       addRuntimeEvent('warn', 'recorder', '写入历史记录失败', { error: String(error) })
     }
