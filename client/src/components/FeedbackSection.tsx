@@ -2,7 +2,11 @@
 
 import { useEffect, useState } from 'react'
 import { X } from 'lucide-react'
+import { open } from '@tauri-apps/plugin-shell'
 import { getLastTranscript, submitFeedback } from '@/services/feedback'
+
+// 已发布反馈的公开只读页面（官方站点）
+const FEEDBACK_PAGE_URL = 'https://sayitapp.site/feedback'
 
 export default function FeedbackSection() {
   const [lastTranscript, setLastTranscript] = useState<string>('')
@@ -10,6 +14,7 @@ export default function FeedbackSection() {
   const [feedbackText, setFeedbackText] = useState('')
   const [sending, setSending] = useState(false)
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
+  const [submitted, setSubmitted] = useState(false)
 
   useEffect(() => {
     getLastTranscript().then((record) => {
@@ -39,6 +44,7 @@ export default function FeedbackSection() {
       setMessage({ ok: result.ok, text: result.message })
       if (result.ok) {
         setFeedbackText('')
+        setSubmitted(true)
         setTimeout(() => setMessage(null), 4000)
       }
     } catch (err) {
@@ -52,6 +58,14 @@ export default function FeedbackSection() {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSubmit()
+    }
+  }
+
+  const handleOpenFeedbackPage = async () => {
+    try {
+      await open(FEEDBACK_PAGE_URL)
+    } catch {
+      // 打开外部浏览器失败时静默忽略，不影响反馈提交流程
     }
   }
 
@@ -106,6 +120,18 @@ export default function FeedbackSection() {
             {sending ? '发送中...' : '发送反馈'}
           </button>
         </div>
+
+        {/* 提交成功后：引导用户到公开的只读反馈页查看进度 */}
+        {submitted && (
+          <div className="mt-2">
+            <button
+              onClick={handleOpenFeedbackPage}
+              className="text-xs text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
+            >
+              查看反馈进度 →
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )
