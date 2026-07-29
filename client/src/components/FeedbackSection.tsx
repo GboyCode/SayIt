@@ -116,14 +116,15 @@ export default function FeedbackSection() {
             {submitted ? (
               <p className="text-muted-foreground">
                 <span className="text-green-600 dark:text-green-400">发送成功，感谢您的反馈。</span>
-                待作者通过后，可访问 <span className="break-all text-foreground/80">{feedbackUrl}</span>，
+                待作者通过后，可访问{' '}
                 <button
                   onClick={handleOpenFeedbackPage}
                   className="text-foreground transition-opacity hover:opacity-70"
                 >
-                  <span className="underline underline-offset-2">查看反馈进度</span>
+                  <span className="break-all underline underline-offset-2">{feedbackUrl}</span>
                   <sup className="ml-0.5">↗</sup>
                 </button>
+                ，查看反馈进度
               </p>
             ) : (
               message && (
