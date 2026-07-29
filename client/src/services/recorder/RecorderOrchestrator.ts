@@ -1165,7 +1165,8 @@ export class RecorderOrchestrator {
    */
   private updateVolumeWarning(level: MicLevel, sampleCount: number) {
     const REWARN_MS = 5000
-    const CLEAR_VOICED = 8000 // ~0.5s @16kHz 连续正常音量才清除
+    const CLEAR_VOICED = 8000 // ~0.5s @16kHz 累计正常音量才清除
+    const VOICED_GAP_TOLERANCE = 4800 // ~300ms：容忍说话中字与字之间的短暂停顿，不清零已累计的清除进度
     const firstWarn = this.hasDetectedVoiceThisSession ? 80000 : 32000 // 5s / 2s @16kHz
 
     // 系统已确认被静音：保持红色高警，不让琥珀提醒覆盖它；
@@ -1197,9 +1198,12 @@ export class RecorderOrchestrator {
     }
 
     // 非正常音量（muted / low）：累计安静时长；本段安静里只要出现过任何信号就记下来
-    this.consecutiveVoicedSamples = 0
     this.consecutiveSilentSamples += sampleCount
     if (level === 'low') this.quietRunSawSignal = true
+    // 说话时字与字之间的短暂停顿（<~300ms）不清零已累计的正常音量，否则一句话里的自然
+    // 停顿会反复把"清除进度"打回 0，导致明明在正常说话也凑不满连续 0.5s、警告始终清不掉。
+    // 只有持续安静超过这个小间隙，才认为不是说话停顿、归零重新计。
+    if (this.consecutiveSilentSamples >= VOICED_GAP_TOLERANCE) this.consecutiveVoicedSamples = 0
 
     if (this.consecutiveSilentSamples < firstWarn) return
 
