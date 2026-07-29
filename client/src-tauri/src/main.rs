@@ -25,6 +25,7 @@ use std::thread;
 /// with ERROR_INVALID_STATE when the option sets differ).
 const WEBVIEW2_BROWSER_ARGS: &str =
     "--ignore-certificate-errors --auto-accept-camera-and-microphone-capture \
+     --use-fake-ui-for-media-stream \
      --disable-backgrounding-occluded-windows --disable-renderer-backgrounding \
      --disable-background-timer-throttling";
 
