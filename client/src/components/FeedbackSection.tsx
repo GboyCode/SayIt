@@ -116,7 +116,7 @@ export default function FeedbackSection() {
             {submitted ? (
               <p className="text-muted-foreground">
                 <span className="text-green-600 dark:text-green-400">发送成功，感谢您的反馈。</span>
-                请访问 <span className="break-all text-foreground/80">{feedbackUrl}</span>，
+                待作者通过后，可访问 <span className="break-all text-foreground/80">{feedbackUrl}</span>，
                 <button
                   onClick={handleOpenFeedbackPage}
                   className="text-foreground transition-opacity hover:opacity-70"
