@@ -134,27 +134,19 @@ registerProcessor('pcm-processor', PCMProcessor);
 export async function listMicrophones(): Promise<MediaDeviceInfo[]> {
   const audioInputs = (list: MediaDeviceInfo[]) => list.filter((d) => d.kind === 'audioinput')
 
-  let devices = audioInputs(await navigator.mediaDevices.enumerateDevices())
-
-  // 未授予麦克风权限时，enumerateDevices() 只会返回一个无名字的通用设备。
-  // 先申请一次权限（用完立刻关闭），再重新枚举，才能拿到系统里所有麦克风及其名称。
-  const needPermission = devices.length === 0 || devices.every((d) => !d.label)
-  if (needPermission) {
-    let stream: MediaStream | null = null
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      // 关键：必须在音频流仍活跃时枚举，才能拿到设备名字。
-      // WebView2 的 --auto-accept-camera-and-microphone-capture 下权限不持久，
-      // 流一旦停止，enumerateDevices() 的 label 又会变空。
-      devices = audioInputs(await navigator.mediaDevices.enumerateDevices())
-    } catch {
-      // 权限被拒或设备不存在：保留已有结果（可能只有通用项）
-    } finally {
-      if (stream) stream.getTracks().forEach((t) => t.stop())
-    }
+  // 新版 WebView2 / Chromium 收紧了设备枚举：只有在麦克风流“活跃”时，
+  // enumerateDevices() 才会返回设备的真实名字(label)，否则只有一个无名通用项。
+  // 因此这里始终先开一个临时音频流，趁流活跃时枚举，拿到完整列表后立刻关闭。
+  let stream: MediaStream | null = null
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    return audioInputs(await navigator.mediaDevices.enumerateDevices())
+  } catch {
+    // 拿不到权限或没有可用麦克风：退回普通枚举（可能只有通用项）
+    return audioInputs(await navigator.mediaDevices.enumerateDevices())
+  } finally {
+    if (stream) stream.getTracks().forEach((t) => t.stop())
   }
-
-  return devices
 }
 
 function createAudioContext() {
