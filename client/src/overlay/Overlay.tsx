@@ -17,6 +17,8 @@ interface OverlayPayload {
   fallbackReason?: string
   errorMessage?: string
   warning?: string
+  /** warning 的严重级别：warn=琥珀（声音小/未检测到），error=红色高警（麦克风已被静音） */
+  warningTone?: 'warn' | 'error'
   toastText?: string
   /** toast 的语气：info=中性（如切换预设），warn=琥珀色+图标（如未检测到声音） */
   toastTone?: 'info' | 'warn'
@@ -84,6 +86,7 @@ export default function Overlay() {
   const [copied, setCopied] = useState(false)
   const [thinkingDuration, setThinkingDuration] = useState(0)
   const [warning, setWarning] = useState('')
+  const [warningTone, setWarningTone] = useState<'warn' | 'error'>('warn')
   const rootRef = useRef<HTMLDivElement | null>(null)
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const elapsedSecRef = useRef(0)
@@ -141,11 +144,13 @@ export default function Overlay() {
       if (typeof payload.toastText === 'string') setToastText(payload.toastText)
       if (payload.toastTone === 'info' || payload.toastTone === 'warn') setToastTone(payload.toastTone)
       if (typeof payload.warning === 'string') setWarning(payload.warning)
+      if (payload.warningTone === 'warn' || payload.warningTone === 'error') setWarningTone(payload.warningTone)
       if (typeof payload.streamingText === 'string') setStreamingText(payload.streamingText)
       if (typeof payload.streaming === 'boolean') setStreamingOn(payload.streaming)
       if (payload.state === 'waiting') {
         setElapsedSec(0)
         setWarning('')
+        setWarningTone('warn')
         setStreamingText('')
         setStreamingOn(false)
         setBars((prev) => Array(prev.length).fill(3))
@@ -185,7 +190,7 @@ export default function Overlay() {
             display: style?.display ?? 'missing',
             visibility: style?.visibility ?? 'missing',
             opacity: style?.opacity ?? 'missing',
-          }).catch(() => {})
+          }).catch(() => { })
         })
       })
     }
@@ -197,7 +202,7 @@ export default function Overlay() {
           return
         }
         removeOverlayListener = unlisten
-        void bridge.overlayReady().catch(() => {})
+        void bridge.overlayReady().catch(() => { })
       })
 
     return () => {
@@ -263,11 +268,10 @@ export default function Overlay() {
               type="button"
               onClick={handleCopyFallback}
               title={copied ? '已复制' : '复制文本'}
-              className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition-colors ${
-                copied
-                  ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-200'
-                  : 'border-white/10 bg-white/10 text-white/90 hover:bg-white/20'
-              }`}
+              className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition-colors ${copied
+                ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-200'
+                : 'border-white/10 bg-white/10 text-white/90 hover:bg-white/20'
+                }`}
             >
               {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
             </button>
@@ -325,100 +329,111 @@ export default function Overlay() {
               />
             </div>
           )}
-        <div
-          className="flex items-center rounded-full border px-4 py-2"
-          style={{
-            background: 'var(--overlay-bg)',
-            color: 'var(--overlay-text)',
-            borderColor: 'var(--overlay-border)',
-          }}
-        >
-          {state === 'waiting' && (
-            <div className="flex items-center gap-[3px]" style={{ height: '20px' }}>
-              {[0, 1, 2].map((i) => (
-                <div
-                  key={i}
-                  className="h-[3px] w-[3px] rounded-full"
-                  style={{
-                    backgroundColor: 'var(--overlay-text-dim)',
-                    animation: `dot-pulse 1s ease-in-out ${i * 0.15}s infinite`,
-                  }}
-                />
-              ))}
-            </div>
-          )}
-
-          {state === 'listening' && (
-            <>
-              <div className="flex items-center gap-[2px]" style={{ height: '20px' }}>
-                {bars.map((height, index) => {
-                  const color = getListeningBarColor(index, bars.length, theme)
-                  return (
-                    <div
-                      key={index}
-                      className="w-[2.5px] rounded-full"
-                      style={{
-                        backgroundColor: color,
-                        boxShadow: 'none',
-                        height: `${Math.min(18, Math.max(3, height))}px`,
-                        opacity: 0.7 + (Math.min(18, height) / 18) * 0.3,
-                        transition: 'height 50ms ease-out, opacity 50ms ease-out',
-                      }}
-                    />
-                  )
-                })}
+          <div
+            className="flex items-center rounded-full border px-4 py-2"
+            style={{
+              background: 'var(--overlay-bg)',
+              color: 'var(--overlay-text)',
+              borderColor: 'var(--overlay-border)',
+            }}
+          >
+            {state === 'waiting' && (
+              <div className="flex items-center gap-[3px]" style={{ height: '20px' }}>
+                {[0, 1, 2].map((i) => (
+                  <div
+                    key={i}
+                    className="h-[3px] w-[3px] rounded-full"
+                    style={{
+                      backgroundColor: 'var(--overlay-text-dim)',
+                      animation: `dot-pulse 1s ease-in-out ${i * 0.15}s infinite`,
+                    }}
+                  />
+                ))}
               </div>
-              {showDuration && (
-                <span
-                  className="ml-1.5 min-w-[24px] text-right font-mono tabular-nums text-xs"
-                  style={{ color: timerColor }}
+            )}
+
+            {state === 'listening' && (
+              warning && warningTone === 'error' ? (
+                // 静音高警：波形此时是平的、无意义，直接在胶囊里居中显示红字，
+                // 既更醒目、也避免波形+长文字撑破固定宽度把胶囊圆角裁掉。
+                <div
+                  className="flex items-center whitespace-nowrap px-1 text-xs font-semibold text-red-500 animate-pulse"
+                  style={{ height: '20px' }}
                 >
-                  {timerText}
-                </span>
-              )}
-              {warning && (
-                <span className="ml-2 whitespace-nowrap text-xs text-amber-400 animate-pulse">
                   {warning}
-                </span>
-              )}
-            </>
-          )}
-
-          {state === 'thinking' && (
-            <div className="flex items-center gap-2">
-              <div className="relative h-1 w-12 overflow-hidden rounded-full bg-white/10">
-                <div
-                  className="absolute left-0 top-0 h-full rounded-full"
-                  style={{
-                    backgroundColor: thinkingColor,
-                    width: '100%',
-                    transformOrigin: 'left',
-                    animation: `progress-fill ${thinkingDuration}s cubic-bezier(0.4, 0, 0.2, 1) forwards`,
-                  }}
-                />
-              </div>
-              <span className="text-xs whitespace-nowrap" style={{ color: thinkingColor }}>处理中</span>
-            </div>
-          )}
-
-          {state === 'error' && (
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-red-400">{errorMessage || '出错了'}</span>
-            </div>
-          )}
-
-          {state === 'toast' && (
-            <div className="flex items-center gap-2">
-              {toastTone === 'warn' ? (
-                <span className="whitespace-nowrap text-xs text-amber-400">{toastText}</span>
+                </div>
               ) : (
-                <span className="whitespace-nowrap text-xs" style={{ color: 'var(--overlay-text)' }}>
-                  {toastText}
-                </span>
-              )}
-            </div>
-          )}
-        </div>
+                <>
+                  <div className="flex items-center gap-[2px]" style={{ height: '20px' }}>
+                    {bars.map((height, index) => {
+                      const color = getListeningBarColor(index, bars.length, theme)
+                      return (
+                        <div
+                          key={index}
+                          className="w-[2.5px] rounded-full"
+                          style={{
+                            backgroundColor: color,
+                            boxShadow: 'none',
+                            height: `${Math.min(18, Math.max(3, height))}px`,
+                            opacity: 0.7 + (Math.min(18, height) / 18) * 0.3,
+                            transition: 'height 50ms ease-out, opacity 50ms ease-out',
+                          }}
+                        />
+                      )
+                    })}
+                  </div>
+                  {showDuration && !warning && (
+                    <span
+                      className="ml-1.5 min-w-[24px] text-right font-mono tabular-nums text-xs"
+                      style={{ color: timerColor }}
+                    >
+                      {timerText}
+                    </span>
+                  )}
+                  {warning && (
+                    <span className="ml-2 whitespace-nowrap text-xs text-amber-400 animate-pulse">
+                      {warning}
+                    </span>
+                  )}
+                </>
+              )
+            )}
+
+            {state === 'thinking' && (
+              <div className="flex items-center gap-2">
+                <div className="relative h-1 w-12 overflow-hidden rounded-full bg-white/10">
+                  <div
+                    className="absolute left-0 top-0 h-full rounded-full"
+                    style={{
+                      backgroundColor: thinkingColor,
+                      width: '100%',
+                      transformOrigin: 'left',
+                      animation: `progress-fill ${thinkingDuration}s cubic-bezier(0.4, 0, 0.2, 1) forwards`,
+                    }}
+                  />
+                </div>
+                <span className="text-xs whitespace-nowrap" style={{ color: thinkingColor }}>处理中</span>
+              </div>
+            )}
+
+            {state === 'error' && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-red-400">{errorMessage || '出错了'}</span>
+              </div>
+            )}
+
+            {state === 'toast' && (
+              <div className="flex items-center gap-2">
+                {toastTone === 'warn' ? (
+                  <span className="whitespace-nowrap text-xs text-amber-400">{toastText}</span>
+                ) : (
+                  <span className="whitespace-nowrap text-xs" style={{ color: 'var(--overlay-text)' }}>
+                    {toastText}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

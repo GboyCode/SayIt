@@ -479,6 +479,7 @@ fn main() {
             // Audio output mute (录音期间静音系统输出，防回采)
             commands::audio_mute::mute_system_output,
             commands::audio_mute::restore_system_output,
+            commands::audio_mute::get_mic_mute_state,
             // Shortcuts
             commands::shortcuts::shortcuts_changed,
             commands::shortcuts::test_shortcut,

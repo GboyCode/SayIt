@@ -35,7 +35,7 @@ export class OverlayService {
   /** 本次录音是否开启流式实时显示：为真则从录音一开始就显示气泡（占位），中途不再缩放窗口 */
   private streamingActive = false
 
-  constructor(private readonly getElapsedSec: () => number) {}
+  constructor(private readonly getElapsedSec: () => number) { }
 
   async refreshSettings() {
     this.theme = normalizeTheme(await getSetting('overlayWaveTheme', 'black-rainbow'))
@@ -170,17 +170,43 @@ export class OverlayService {
     void bridge.updateOverlay({
       state: 'listening',
       warning: this.activeWarning,
+      warningTone: 'warn',
       elapsedSec: clampSec(this.getElapsedSec()),
       ...this.getCommonPayload(),
     })
   }
 
-  /** Show low volume warning on the overlay */
+  /** Show low volume warning on the overlay（有声音但偏低：请靠近麦克风，琥珀色） */
   showLowVolumeWarning() {
     if (this.activeWarning) return
     void bridge.updateOverlay({
       state: 'listening',
       warning: '请靠近麦克风',
+      warningTone: 'warn',
+      elapsedSec: clampSec(this.getElapsedSec()),
+      ...this.getCommonPayload(),
+    })
+  }
+
+  /** Show "no signal detected" warning（几乎无信号但未能确认被静音：选错设备/未授权等，琥珀色） */
+  showNoSignalWarning() {
+    if (this.activeWarning) return
+    void bridge.updateOverlay({
+      state: 'listening',
+      warning: '未检测到声音',
+      warningTone: 'warn',
+      elapsedSec: clampSec(this.getElapsedSec()),
+      ...this.getCommonPayload(),
+    })
+  }
+
+  /** Show "mic is muted" high-alert（系统层面确认被静音：红色高警） */
+  showMicMutedAlert() {
+    if (this.activeWarning) return
+    void bridge.updateOverlay({
+      state: 'listening',
+      warning: '麦克风已被静音',
+      warningTone: 'error',
       elapsedSec: clampSec(this.getElapsedSec()),
       ...this.getCommonPayload(),
     })
@@ -192,6 +218,7 @@ export class OverlayService {
     void bridge.updateOverlay({
       state: 'listening',
       warning: '',
+      warningTone: 'warn',
       elapsedSec: clampSec(this.getElapsedSec()),
       ...this.getCommonPayload(),
     })

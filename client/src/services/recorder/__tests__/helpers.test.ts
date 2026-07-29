@@ -4,7 +4,29 @@ import {
   buildStatsAppId,
   isModifierPTTSetting,
   computeProcessingTimeoutMs,
+  classifyMicLevel,
+  MIC_MUTE_PEAK_THRESHOLD,
+  MIC_LOW_RMS_THRESHOLD,
 } from '../helpers'
+
+describe('classifyMicLevel', () => {
+  it('峰值≈0 判为 muted（无信号 / 可能被静音）', () => {
+    expect(classifyMicLevel(0, 0)).toBe('muted')
+    // 即使 RMS 因为某些原因不为 0，只要峰值低于阈值仍算无信号
+    expect(classifyMicLevel(0.05, MIC_MUTE_PEAK_THRESHOLD - 0.0001)).toBe('muted')
+  })
+
+  it('有峰值但 RMS 偏低 判为 low（请靠近麦克风）', () => {
+    expect(classifyMicLevel(0.004, 0.05)).toBe('low')
+    // 峰值刚好达标、RMS 低于低音量阈值
+    expect(classifyMicLevel(MIC_LOW_RMS_THRESHOLD - 0.0001, MIC_MUTE_PEAK_THRESHOLD)).toBe('low')
+  })
+
+  it('RMS 达到正常水平 判为 voiced', () => {
+    expect(classifyMicLevel(0.03, 0.2)).toBe('voiced')
+    expect(classifyMicLevel(MIC_LOW_RMS_THRESHOLD, 0.1)).toBe('voiced')
+  })
+})
 
 describe('summarizeAppContext', () => {
   it('null 返回 null', () => {

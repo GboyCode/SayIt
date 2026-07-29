@@ -24,6 +24,7 @@ import {
   normalizeCustomThemeActive,
   normalizeCustomThemes,
 } from '../hotwords/model'
+import { invoke } from '@tauri-apps/api/core'
 import { createWaveformBarState, computeBarsFromPCM, resetWaveformBarState } from '../waveform'
 import { elapsedSecFromPerf } from '../timeModel'
 import {
@@ -51,6 +52,8 @@ import {
   buildStatsAppId as _buildStatsAppId,
   isModifierPTTSetting as _isModifierPTTSetting,
   computeProcessingTimeoutMs as _computeProcessingTimeoutMs,
+  classifyMicLevel,
+  type MicLevel,
 } from './helpers'
 
 type StateTransition =
@@ -147,16 +150,23 @@ export class RecorderOrchestrator {
   private captureReadyPromise: Promise<void> | null = null
   /** 5-minute auto-stop timer for hands-free mode */
   private handsFreeAutoStopId: ReturnType<typeof setTimeout> | null = null
-  /** Low volume detection: consecutive silent samples count */
+  /** 连续「非正常音量」（静音或偏低）的采样数 */
   private consecutiveSilentSamples = 0
-  /** 连续正常音量的采样数——用于「持续说话一段时间才清除低音量警告」的迟滞判断，避免瞬时小声音把警告瞬间清掉造成闪烁 */
+  /** 当前这段安静里是否出现过「有声音但偏低」的帧（峰值不为零）。
+   *  用于区分「完全无信号（可能被静音/选错设备）」与「有声音但太小」——
+   *  只有整段安静里从没出现过任何信号，才判定为「未检测到声音」。 */
+  private quietRunSawSignal = false
+  /** 连续正常音量的采样数——用于「持续说话一段时间才清除警告」的迟滞判断，避免瞬时小声音把警告瞬间清掉造成闪烁 */
   private consecutiveVoicedSamples = 0
-  /** 低音量警告当前是否正在显示 */
-  private lowVolumeWarningShown = false
-  /** 本次录音是否已经听到过一次正常音量的说话。一旦听到过，说明麦克风正常、距离合适，
-   *  后续静音只是正常停顿思考，不再弹「请靠近麦克风」，避免催促感/压迫感。 */
+  /** 悬浮窗当前正在显示的音量类警告 */
+  private currentVolumeWarning: 'none' | 'muted' | 'low' = 'none'
+  /** 本次录音是否已经听到过一次正常音量的说话。一旦听到过，说明麦克风正常，
+   *  后续安静只是正常停顿思考——只给温和「请靠近麦克风」，绝不再报「未检测到声音」造成惊吓。 */
   private hasDetectedVoiceThisSession = false
   private lastLowVolumeWarnAt = 0
+  /** 系统层面确认麦克风被静音（录音开始时查询得到）。为真时悬浮窗显示红色高警，
+   *  并抑制基于信号的琥珀提醒，直到检测到真实说话（用户中途取消了静音）。 */
+  private osMicMuted = false
 
   /** Audio stats tracking */
   private audioStatsRmsSum = 0
@@ -362,7 +372,7 @@ export class RecorderOrchestrator {
     this.clearProcessingTimeout()
     this.overlayService.dispose()
     stopInsertionTargetTracking()
-    void stopCapture().catch(() => {})
+    void stopCapture().catch(() => { })
     this.provider.disconnect()
   }
 
@@ -556,10 +566,12 @@ export class RecorderOrchestrator {
     this.currentPromptResolution = null
     this.cachedProbeResult = null
     this.consecutiveSilentSamples = 0
+    this.quietRunSawSignal = false
     this.consecutiveVoicedSamples = 0
-    this.lowVolumeWarningShown = false
+    this.currentVolumeWarning = 'none'
     this.hasDetectedVoiceThisSession = false
     this.lastLowVolumeWarnAt = 0
+    this.osMicMuted = false
     clearCapturedInsertionTarget()
     this.recordStartPerf = 0
     if (!options?.preserveLateFinalContext) {
@@ -683,7 +695,7 @@ export class RecorderOrchestrator {
         // 停止音频采集
         if (this.state === 'recording') {
           this.overlayService.stopListeningTicker()
-          void stopCapture().catch(() => {})
+          void stopCapture().catch(() => { })
         }
 
         // 保存音频到历史记录（即使识别失败，也保留音频以便重新识别）
@@ -718,7 +730,7 @@ export class RecorderOrchestrator {
             })
             void bridge.emit('history-updated')
           }
-          void saveErrorHistory().catch(() => {})
+          void saveErrorHistory().catch(() => { })
         }
 
         this.resetToIdle()
@@ -984,10 +996,12 @@ export class RecorderOrchestrator {
     this.audioStatsSilentFrames = 0
     this.audioStatsTotalFrames = 0
     this.consecutiveSilentSamples = 0
+    this.quietRunSawSignal = false
     this.consecutiveVoicedSamples = 0
-    this.lowVolumeWarningShown = false
+    this.currentVolumeWarning = 'none'
     this.hasDetectedVoiceThisSession = false
     this.lastLowVolumeWarnAt = 0
+    this.osMicMuted = false
     resetWaveformBarState(this.overlayWaveState, this.overlayService.getBarCount(), 3)
 
     // Hands-free mode: arm a 5-minute auto-stop timer
@@ -1011,22 +1025,22 @@ export class RecorderOrchestrator {
 
     const promptOpts = this.currentPromptResolution
       ? {
-          systemPrompt: this.cachedAiEnabled ? this.currentPromptResolution.systemPrompt : undefined,
-          disableAi: !this.cachedAiEnabled,
-          clientMeta: this.cachedClientRuntimeInfo,
-          appContext: activeAppContext,
-          hotwords: this.cachedHotwords.length > 0 ? this.cachedHotwords : undefined,
-          language: this.cachedLanguage || undefined,
-          streamingDisplay: this.cachedStreamingDisplay,
-        }
+        systemPrompt: this.cachedAiEnabled ? this.currentPromptResolution.systemPrompt : undefined,
+        disableAi: !this.cachedAiEnabled,
+        clientMeta: this.cachedClientRuntimeInfo,
+        appContext: activeAppContext,
+        hotwords: this.cachedHotwords.length > 0 ? this.cachedHotwords : undefined,
+        language: this.cachedLanguage || undefined,
+        streamingDisplay: this.cachedStreamingDisplay,
+      }
       : {
-          disableAi: !this.cachedAiEnabled,
-          clientMeta: this.cachedClientRuntimeInfo,
-          appContext: activeAppContext,
-          hotwords: this.cachedHotwords.length > 0 ? this.cachedHotwords : undefined,
-          language: this.cachedLanguage || undefined,
-          streamingDisplay: this.cachedStreamingDisplay,
-        }
+        disableAi: !this.cachedAiEnabled,
+        clientMeta: this.cachedClientRuntimeInfo,
+        appContext: activeAppContext,
+        hotwords: this.cachedHotwords.length > 0 ? this.cachedHotwords : undefined,
+        language: this.cachedLanguage || undefined,
+        streamingDisplay: this.cachedStreamingDisplay,
+      }
 
     // Wrap the async setup so stopRecording can wait for it
     let resolveCaptureReady: () => void
@@ -1051,67 +1065,38 @@ export class RecorderOrchestrator {
           },
           undefined,
           (pcmFrame) => {
-          this.audioSentSamples += pcmFrame.length
-          const bars = computeBarsFromPCM(pcmFrame, this.overlayWaveState, {
-            barCount: this.overlayService.getBarCount(),
-            minHeight: 3,
-            maxHeight: 18,
-          })
-          this.overlayService.pushListeningBars(bars)
+            this.audioSentSamples += pcmFrame.length
+            const bars = computeBarsFromPCM(pcmFrame, this.overlayWaveState, {
+              barCount: this.overlayService.getBarCount(),
+              minHeight: 3,
+              maxHeight: 18,
+            })
+            this.overlayService.pushListeningBars(bars)
 
-          // Low volume detection: accumulate silent samples at 16kHz
-          // 3 seconds = 48000 samples, warn every 5 seconds = 80000 samples
-          let sum = 0
-          for (let i = 0; i < pcmFrame.length; i++) {
-            sum += pcmFrame[i] * pcmFrame[i]
-          }
-          const rms = Math.sqrt(sum / pcmFrame.length) / 32768
-
-          // Audio stats tracking
-          this.audioStatsTotalFrames++
-          this.audioStatsRmsSum += rms
-          if (rms > this.audioStatsPeakRms) this.audioStatsPeakRms = rms
-          // Track peak amplitude (max absolute sample value / 32768) for backend silent detection
-          for (let j = 0; j < pcmFrame.length; j++) {
-            const amp = Math.abs(pcmFrame[j]) / 32768
-            if (amp > this.audioStatsPeakAmplitude) this.audioStatsPeakAmplitude = amp
-          }
-          if (rms < RecorderOrchestrator.SILENCE_RMS_THRESHOLD) this.audioStatsSilentFrames++
-
-          if (rms < 0.0003) {
-            this.consecutiveSilentSamples += pcmFrame.length
-            this.consecutiveVoicedSamples = 0
-            // 两级静音阈值，避免过度提醒又不漏真问题：
-            //  - 还没听到过说话（可能设备选错/离太远/静音）：静音 2s 就提醒（最有价值）。
-            //  - 已经听到过说话（设备正常）：正常停顿思考不该催，静音 5s 才提醒。
-            //  两种情况都每 5s 重弹一次。
-            const FIRST_WARN = this.hasDetectedVoiceThisSession ? 80000 : 32000 // 5s / 2s @16kHz
-            const REWARN_MS = 5000
-            if (this.consecutiveSilentSamples >= FIRST_WARN) {
-              const now = Date.now()
-              if (now - this.lastLowVolumeWarnAt >= REWARN_MS) {
-                this.lastLowVolumeWarnAt = now
-                this.lowVolumeWarningShown = true
-                addRuntimeEvent('warn', 'recorder', '持续低音量，可能未检测到声音')
-                this.overlayService.showLowVolumeWarning()
-              }
+            // 计算本帧 RMS 与峰值幅度（均归一化到 0..1）。峰值用于区分「完全无信号（可能被静音/
+            // 选错设备）」与「有声音但偏低」：静音流是一串 0（峰值≈0），偏低则有波动只是幅度小。
+            let sum = 0
+            let framePeakRaw = 0
+            for (let i = 0; i < pcmFrame.length; i++) {
+              const s = pcmFrame[i]
+              sum += s * s
+              const amp = s < 0 ? -s : s
+              if (amp > framePeakRaw) framePeakRaw = amp
             }
-          } else {
-            // 需连续 ~0.5s（8000 采样 @16kHz）正常音量才认定“已恢复”，再清警告 + 重置静音累计。
-            // 单帧/瞬时小声音不会清掉警告，避免“一闪而逝”；用户真正开口约 0.5s 后自然消失。
-            this.consecutiveVoicedSamples += pcmFrame.length
-            const CLEAR_VOICED = 8000
-            if (this.consecutiveVoicedSamples >= CLEAR_VOICED) {
-              this.hasDetectedVoiceThisSession = true
-              if (this.lowVolumeWarningShown) {
-                this.overlayService.clearWarning()
-                this.lowVolumeWarningShown = false
-              }
-              this.consecutiveSilentSamples = 0
-            }
-          }
-        },
-      ),
+            const rms = Math.sqrt(sum / pcmFrame.length) / 32768
+            const framePeak = framePeakRaw / 32768
+
+            // Audio stats tracking
+            this.audioStatsTotalFrames++
+            this.audioStatsRmsSum += rms
+            if (rms > this.audioStatsPeakRms) this.audioStatsPeakRms = rms
+            if (framePeak > this.audioStatsPeakAmplitude) this.audioStatsPeakAmplitude = framePeak
+            if (rms < RecorderOrchestrator.SILENCE_RMS_THRESHOLD) this.audioStatsSilentFrames++
+
+            // 两档提醒：静音（未检测到声音）/ 偏低（请靠近麦克风）
+            this.updateVolumeWarning(classifyMicLevel(rms, framePeak), pcmFrame.length)
+          },
+        ),
       ])
       resolveCaptureReady!()
 
@@ -1133,6 +1118,8 @@ export class RecorderOrchestrator {
       // 实时读取供应商/WorkspaceId（避免切换供应商后缓存过期，导致非实时模型也弹气泡）。
       void this.applyStreamingActive()
       this.overlayService.startListeningTicker()
+      // 录音一开始就查一次麦克风是否被系统静音，被静音则悬浮窗即时红色高警（不阻塞录音）
+      void this.checkMicMuted()
       // 就绪提示音已触发，稍后再静音系统输出（避免把提示音一起静掉）
       this.scheduleSystemMuteIfEnabled()
       armHandsFreeTimer()
@@ -1163,6 +1150,95 @@ export class RecorderOrchestrator {
       }
       this.resetToIdle({ keepOverlay: true })
     }
+  }
+
+  /**
+   * 录音时的音量提醒状态机（两档）：
+   *  - muted（峰值≈0，几乎无信号）：极可能麦克风被静音 / 选错设备 / 未授权 → 「未检测到声音」
+   *  - low （有声音但 RMS 偏低）：距离远 / 说太小声 → 「请靠近麦克风」
+   *  - voiced（正常）：连续约 0.5s 即认定恢复，清除提醒
+   *
+   * 关键准确性约束：「未检测到声音」只在「从录音开始就没听到过正常说话，且这整段安静里
+   * 从未出现过任何信号」时才报——避免把说话后的正常停顿思考误判成设备故障（那种情况只
+   * 温和提示「请靠近麦克风」）。计时/迟滞沿用原逻辑：没听到过说话时更早提醒（2s），
+   * 听到过后放宽（5s）；同档每 5s 重弹；连续正常音量 0.5s 才清警告，避免瞬时小声闪烁。
+   */
+  private updateVolumeWarning(level: MicLevel, sampleCount: number) {
+    const REWARN_MS = 5000
+    const CLEAR_VOICED = 8000 // ~0.5s @16kHz 连续正常音量才清除
+    const firstWarn = this.hasDetectedVoiceThisSession ? 80000 : 32000 // 5s / 2s @16kHz
+
+    // 系统已确认被静音：保持红色高警，不让琥珀提醒覆盖它；
+    // 一旦收到真实说话（用户中途取消了静音）立即恢复正常。
+    if (this.osMicMuted) {
+      if (level !== 'voiced') return
+      this.osMicMuted = false
+      this.overlayService.clearWarning()
+      this.currentVolumeWarning = 'none'
+      this.consecutiveVoicedSamples = 0
+      this.consecutiveSilentSamples = 0
+      this.quietRunSawSignal = false
+      this.hasDetectedVoiceThisSession = true
+      return
+    }
+
+    if (level === 'voiced') {
+      this.consecutiveVoicedSamples += sampleCount
+      this.consecutiveSilentSamples = 0
+      this.quietRunSawSignal = false
+      if (this.consecutiveVoicedSamples >= CLEAR_VOICED) {
+        this.hasDetectedVoiceThisSession = true
+        if (this.currentVolumeWarning !== 'none') {
+          this.overlayService.clearWarning()
+          this.currentVolumeWarning = 'none'
+        }
+      }
+      return
+    }
+
+    // 非正常音量（muted / low）：累计安静时长；本段安静里只要出现过任何信号就记下来
+    this.consecutiveVoicedSamples = 0
+    this.consecutiveSilentSamples += sampleCount
+    if (level === 'low') this.quietRunSawSignal = true
+
+    if (this.consecutiveSilentSamples < firstWarn) return
+
+    // 只有「从没听到过说话 且 这段安静里完全没有信号」才报「未检测到声音」，其余一律温和「请靠近麦克风」
+    const kind: 'muted' | 'low' =
+      !this.hasDetectedVoiceThisSession && !this.quietRunSawSignal ? 'muted' : 'low'
+
+    const now = Date.now()
+    // 切换到不同档位立即刷新文案；同档位按节流重弹，避免频繁催促
+    if (kind === this.currentVolumeWarning && now - this.lastLowVolumeWarnAt < REWARN_MS) return
+    this.lastLowVolumeWarnAt = now
+    this.currentVolumeWarning = kind
+    if (kind === 'muted') {
+      addRuntimeEvent('warn', 'recorder', '未检测到麦克风声音（可能选错设备或未授权）')
+      this.overlayService.showNoSignalWarning()
+    } else {
+      addRuntimeEvent('warn', 'recorder', '麦克风音量偏低')
+      this.overlayService.showLowVolumeWarning()
+    }
+  }
+
+  /**
+   * 录音开始时查询系统麦克风是否被静音；确认被静音则悬浮窗即时红色高警「麦克风已被静音」。
+   * 仅在能可靠定位设备时才据此判定（系统默认设备，或按名字唯一匹配到选中设备），
+   * 否则（如选了特定设备但拿不到名字/同名多个）返回不判定，交给基于信号的琥珀提醒兜底。
+   */
+  private async checkMicMuted() {
+    try {
+      // 目前仅可靠支持系统默认麦克风的静音查询；选了特定设备时交给信号检测兜底（不硬报静音）
+      if (this.cachedMicId) return
+      const res = await invoke<{ matched: boolean; muted: boolean }>('get_mic_mute_state', { deviceLabel: null })
+      // 查询是异步的，回来时可能已停止录音 / 已听到说话，则不再弹
+      if (this.state !== 'recording' || this.hasDetectedVoiceThisSession) return
+      if (res.matched && res.muted) {
+        this.osMicMuted = true
+        addRuntimeEvent('warn', 'recorder', '麦克风已被系统静音')
+        this.overlayService.showMicMutedAlert()
+      }
+    } catch { /* 查询失败不影响录音，交给信号检测兜底 */ }
   }
 
   private async stopRecording() {
