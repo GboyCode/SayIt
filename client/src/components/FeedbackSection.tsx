@@ -14,6 +14,9 @@ export default function FeedbackSection() {
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
   const [submitted, setSubmitted] = useState(false)
 
+  // 公开反馈页地址 = 用户在设置里填写的服务器地址 + /feedback.html
+  const feedbackUrl = `${getBackendBaseUrl()}/feedback.html`
+
   useEffect(() => {
     getLastTranscript().then((record) => {
       if (record) {
@@ -63,8 +66,7 @@ export default function FeedbackSection() {
 
   const handleOpenFeedbackPage = async () => {
     try {
-      // 公开反馈页与用户在设置里填写的服务器地址一致
-      await open(`${getBackendBaseUrl()}/feedback.html`)
+      await open(feedbackUrl)
     } catch {
       // 打开外部浏览器失败时静默忽略，不影响反馈提交流程
     }
@@ -108,40 +110,37 @@ export default function FeedbackSection() {
           style={{ fieldSizing: 'content' as never, minHeight: '1.5rem', maxHeight: '6rem' }}
         />
 
-        {/* 底部 */}
-        <div className="mt-3 flex items-center justify-between">
-          <div className="min-h-[1.25rem]">
-            {message && (
-              <p className={`text-xs ${message.ok ? 'text-green-600 dark:text-green-400' : 'text-destructive'}`}>
-                {message.text}
+        {/* 底部：状态提示（错误 / 成功）在左，发送按钮在右——成功提示也在此处显示，不再额外撑高卡片 */}
+        <div className="mt-3 flex items-center justify-between gap-3">
+          <div className="min-h-[1.25rem] flex-1 text-xs leading-relaxed">
+            {submitted ? (
+              <p className="text-muted-foreground">
+                <span className="text-green-600 dark:text-green-400">发送成功，感谢您的反馈。</span>
+                请访问 <span className="break-all text-foreground/80">{feedbackUrl}</span>，
+                <button
+                  onClick={handleOpenFeedbackPage}
+                  className="text-foreground transition-opacity hover:opacity-70"
+                >
+                  <span className="underline underline-offset-2">查看反馈进度</span>
+                  <sup className="ml-0.5">↗</sup>
+                </button>
               </p>
+            ) : (
+              message && (
+                <p className={message.ok ? 'text-green-600 dark:text-green-400' : 'text-destructive'}>
+                  {message.text}
+                </p>
+              )
             )}
           </div>
           <button
             onClick={handleSubmit}
             disabled={sending || feedbackText.trim().length < 2}
-            className="rounded-full bg-secondary px-4 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-foreground hover:text-background disabled:opacity-40"
+            className="shrink-0 rounded-full bg-secondary px-4 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-foreground hover:text-background disabled:opacity-40"
           >
             {sending ? '发送中...' : '发送反馈'}
           </button>
         </div>
-
-        {/* 提交成功后：成功提示 + 服务器地址 + 查看进度超链接（常驻直到重新输入） */}
-        {submitted && (
-          <div className="mt-2 text-xs leading-relaxed text-muted-foreground">
-            <span className="text-green-600 dark:text-green-400">发送成功，感谢您的反馈。</span>
-            <span className="mt-1 block">
-              请访问 <span className="break-all text-foreground/80">{getBackendBaseUrl()}</span>，
-              <button
-                onClick={handleOpenFeedbackPage}
-                className="text-foreground transition-opacity hover:opacity-70"
-              >
-                <span className="underline underline-offset-2">查看反馈进度</span>
-                <sup className="ml-0.5">↗</sup>
-              </button>
-            </span>
-          </div>
-        )}
       </div>
     </div>
   )
