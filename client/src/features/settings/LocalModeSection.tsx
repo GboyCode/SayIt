@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { FolderOpen, Copy, Check, Zap, CheckCircle2, X, type LucideIcon } from 'lucide-react'
+import { open } from '@tauri-apps/plugin-dialog'
+import { FolderOpen, Copy, Check, Zap, CheckCircle2, X, HardDrive, Loader2, Info, type LucideIcon } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Tooltip } from '@/components/ui/tooltip'
@@ -54,6 +55,12 @@ interface DownloadProgress {
   file_count: number
   status: string
   error: string | null
+}
+
+interface ModelsDirInfo {
+  current: string
+  default_dir: string
+  is_custom: boolean
 }
 
 function formatSize(bytes: number): string {
@@ -137,11 +144,10 @@ function OfflineGuideDialog({ models, onClose }: { models: ModelInfo[]; onClose:
             <button
               key={name}
               onClick={() => setSelectedSource(i)}
-              className={`flex-1 rounded-md px-2 py-1.5 text-xs transition-colors ${
-                selectedSource === i
-                  ? 'bg-accent font-medium text-foreground'
-                  : 'text-muted-foreground hover:text-foreground'
-              }`}
+              className={`flex-1 rounded-md px-2 py-1.5 text-xs transition-colors ${selectedSource === i
+                ? 'bg-accent font-medium text-foreground'
+                : 'text-muted-foreground hover:text-foreground'
+                }`}
             >
               {name === 'HuggingFace Mirror' ? 'HF Mirror (China)' : name}
             </button>
@@ -158,8 +164,8 @@ function OfflineGuideDialog({ models, onClose }: { models: ModelInfo[]; onClose:
             // GitHub 地址用国内代理加速手动下载
             const archiveUrl = model.archive_url
               ? (model.archive_url.startsWith('https://github.com/')
-                  ? `https://gh-proxy.com/${model.archive_url}`
-                  : model.archive_url)
+                ? `https://gh-proxy.com/${model.archive_url}`
+                : model.archive_url)
               : ''
             return (
               <div key={model.id}>
@@ -213,6 +219,120 @@ function OfflineGuide({ models }: { models: ModelInfo[] }) {
       </button>
       {open && <OfflineGuideDialog models={models} onClose={() => setOpen(false)} />}
     </>
+  )
+}
+
+/** 模型存储位置：查看 / 更改 / 恢复默认。更改时可选把已下载模型一并迁移。 */
+function ModelsDirSection({ onChanged }: { onChanged: () => void }) {
+  const [info, setInfo] = useState<ModelsDirInfo | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  // 待确认的目录变更：null=无。dir=null 表示恢复默认。
+  const [pending, setPending] = useState<{ dir: string | null } | null>(null)
+
+  const load = async () => {
+    try { setInfo(await invoke<ModelsDirInfo>('get_models_dir')) } catch { /* ignore */ }
+  }
+  useEffect(() => { void load() }, [])
+
+  async function pickDir() {
+    setError('')
+    try {
+      const selected = await open({ directory: true, multiple: false, title: '选择模型存储位置' })
+      if (typeof selected !== 'string') return // 取消
+      if (info && selected === info.current) return // 未变化
+      setPending({ dir: selected })
+    } catch (err) {
+      setError(String(err))
+    }
+  }
+
+  function requestResetDefault() {
+    if (!info || !info.is_custom) return
+    setPending({ dir: null })
+  }
+
+  async function applyChange() {
+    if (!pending) return
+    setBusy(true)
+    setError('')
+    try {
+      // 一律自动迁移已下载的模型到新目录
+      await invoke<string>('set_models_dir', { dir: pending.dir, moveExisting: true })
+      setPending(null)
+      await load()
+      onChanged() // 路径变了，刷新已下载模型列表
+    } catch (err) {
+      setError(String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Card>
+      <CardContent className="p-6">
+        <div className="mb-2 flex items-center gap-2">
+          <HardDrive className="h-4 w-4 text-muted-foreground" />
+          <h2 className="text-base font-semibold">模型存储位置</h2>
+          <Tooltip variant="light" content="本地模型体积较大，可以选择其他路径存放。已下载的模型在更换目录后会自动迁移。">
+            <Info className="h-3.5 w-3.5 cursor-help text-muted-foreground/50 transition-colors hover:text-muted-foreground" />
+          </Tooltip>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md bg-muted/30 px-3 py-2">
+            <code className="min-w-0 flex-1 truncate text-[11px] text-foreground/70 select-all" title={info?.current}>
+              {info?.current || '加载中…'}
+            </code>
+            {info?.is_custom && (
+              <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">自定义</span>
+            )}
+            <Tooltip content="打开目录">
+              <button
+                type="button"
+                onClick={() => void invoke<string>('open_models_folder')}
+                className="shrink-0 rounded p-1 text-muted-foreground/50 transition-colors hover:bg-accent hover:text-muted-foreground"
+              >
+                <FolderOpen className="h-3.5 w-3.5" />
+              </button>
+            </Tooltip>
+          </div>
+          <Button size="sm" variant="outline" onClick={() => void pickDir()} disabled={busy}>
+            更改位置
+          </Button>
+          {info?.is_custom && (
+            <Button size="sm" variant="ghost" onClick={requestResetDefault} disabled={busy}>
+              恢复默认
+            </Button>
+          )}
+        </div>
+
+        {error && <p className="mt-2 text-xs text-destructive break-all">操作失败：{error}</p>}
+      </CardContent>
+
+      {pending && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => !busy && setPending(null)}>
+          <div className="w-[420px] rounded-xl border bg-card p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-base font-semibold">
+              {pending.dir === null ? '恢复默认模型位置' : '更改模型存储位置'}
+            </h3>
+            <p className="mt-2 text-sm text-muted-foreground break-all">
+              新位置：{pending.dir === null ? (info?.default_dir || '默认目录') : pending.dir}
+            </p>
+            <p className="mt-3 text-xs text-muted-foreground">
+              已下载的模型会自动迁移到新位置，跨磁盘移动大文件可能需要一些时间，请勿中途退出。
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <Button size="sm" variant="outline" onClick={() => setPending(null)} disabled={busy}>取消</Button>
+              <Button size="sm" onClick={() => void applyChange()} disabled={busy}>
+                {busy ? (<><Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />处理中…</>) : '确定'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </Card>
   )
 }
 
@@ -327,11 +447,10 @@ export default function LocalModeSection() {
                 key={lang.value}
                 type="button"
                 onClick={() => { setAsrLanguage(lang.value); void setSetting('localAsr.language', lang.value) }}
-                className={`rounded-md border px-4 py-1.5 text-sm transition-colors ${
-                  asrLanguage === lang.value
-                    ? 'border-primary bg-primary text-primary-foreground'
-                    : 'border-border bg-card text-foreground hover:bg-accent'
-                }`}
+                className={`rounded-md border px-4 py-1.5 text-sm transition-colors ${asrLanguage === lang.value
+                  ? 'border-primary bg-primary text-primary-foreground'
+                  : 'border-border bg-card text-foreground hover:bg-accent'
+                  }`}
               >
                 {lang.label}
               </button>
@@ -380,11 +499,10 @@ export default function LocalModeSection() {
                   key={src.value}
                   type="button"
                   onClick={() => { setDownloadSource(src.value); void setSetting('localAsr.downloadSource', src.value) }}
-                  className={`rounded-md border px-3 py-1 text-xs transition-colors ${
-                    downloadSource === src.value
-                      ? 'border-primary bg-primary text-primary-foreground'
-                      : 'border-border bg-card text-foreground hover:bg-accent'
-                  }`}
+                  className={`rounded-md border px-3 py-1 text-xs transition-colors ${downloadSource === src.value
+                    ? 'border-primary bg-primary text-primary-foreground'
+                    : 'border-border bg-card text-foreground hover:bg-accent'
+                    }`}
                 >
                   {src.label}
                 </button>
@@ -402,9 +520,8 @@ export default function LocalModeSection() {
               return (
                 <div
                   key={model.id}
-                  className={`flex items-center justify-between rounded-lg border p-3 ${
-                    isSelected ? 'border-primary bg-primary/5' : 'border-border'
-                  }`}
+                  className={`flex items-center justify-between rounded-lg border p-3 ${isSelected ? 'border-primary bg-primary/5' : 'border-border'
+                    }`}
                 >
                   <div className="flex-1">
                     <div className="flex items-center gap-2">
@@ -485,6 +602,8 @@ export default function LocalModeSection() {
 
         </CardContent>
       </Card>
+
+      <ModelsDirSection onChanged={() => void refreshDownloaded()} />
 
       {/* 删除确认对话框 */}
       {confirmDeleteId && (

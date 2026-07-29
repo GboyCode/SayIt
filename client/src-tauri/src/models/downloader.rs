@@ -2,6 +2,7 @@
 
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 use tauri::{AppHandle, Emitter};
 
 #[derive(Debug, Clone, Serialize)]
@@ -22,12 +23,34 @@ pub struct DownloadProgress {
     pub error: Option<String>,
 }
 
-/// 获取模型存储根目录
-pub fn models_dir() -> PathBuf {
+/// 用户自定义的模型存储根目录（进程级）。None = 用默认路径。
+/// 启动时由 main.rs 从设置 `localAsr.modelsDir` 灌入；用户在设置里更改时同步更新。
+/// 所有取模型路径的地方都走 `models_dir()`，改这一处即全链路生效。
+static CUSTOM_MODELS_DIR: RwLock<Option<PathBuf>> = RwLock::new(None);
+
+/// 默认模型存储根目录（未自定义时使用）。
+pub fn default_models_dir() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("com.sayit.app")
         .join("models")
+}
+
+/// 设置/清除自定义模型根目录。传 None 恢复默认。
+pub fn set_custom_models_dir(dir: Option<PathBuf>) {
+    if let Ok(mut guard) = CUSTOM_MODELS_DIR.write() {
+        *guard = dir;
+    }
+}
+
+/// 获取模型存储根目录：优先自定义路径，否则默认路径。
+pub fn models_dir() -> PathBuf {
+    if let Ok(guard) = CUSTOM_MODELS_DIR.read() {
+        if let Some(ref dir) = *guard {
+            return dir.clone();
+        }
+    }
+    default_models_dir()
 }
 
 /// 获取指定模型的目录

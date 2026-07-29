@@ -125,8 +125,8 @@ export default function DiagnosticsPage() {
             const isQwenOmni = asrProvider.startsWith('qwen_omni')
             const qwenOmniModel = asrProvider === 'qwen_omni_35_plus' ? 'qwen3.5-omni-plus-realtime'
               : asrProvider === 'qwen_omni_35_flash' ? 'qwen3.5-omni-flash-realtime'
-              : asrProvider === 'qwen_omni_flash' ? 'qwen3-omni-flash-realtime'
-              : asrProvider === 'qwen_omni_turbo' ? 'qwen-omni-turbo-realtime' : undefined
+                : asrProvider === 'qwen_omni_flash' ? 'qwen3-omni-flash-realtime'
+                  : asrProvider === 'qwen_omni_turbo' ? 'qwen-omni-turbo-realtime' : undefined
             const result = await invoke<{ ok: boolean; message: string }>('test_asr_connection', {
               config: {
                 provider: isQwenOmni ? 'qwen_omni' : asrProvider,
@@ -148,34 +148,34 @@ export default function DiagnosticsPage() {
       items.push({ label: 'ASR', status: 'ok', detail: '由服务器提供' })
     }
 
-    // AI 检查
-    if (workMode !== 'server') {
-      const aiEnabled = await getSetting('aiEnabled', false) as boolean
-      if (!aiEnabled) {
-        items.push({ label: 'AI 校对', status: 'disabled', detail: '未开启（极速模式）' })
-      } else {
-        const aiProvider = await getSetting('cloudAi.provider', '') as string
-        const aiApiKey = await getSetting('cloudAi.apiKey', '') as string
-        const aiApiUrl = await getSetting('cloudAi.apiUrl', '') as string
-        const aiModel = await getSetting('cloudAi.model', '') as string
-        const displayName = AI_DISPLAY[aiProvider] || aiProvider
+    // AI 检查：所有模式都先看「AI 整理」总开关。关闭即极速模式（不经 AI），
+    // 无论服务器/云 API/本地都应显示「未开启」。此前服务器模式跳过该判断、
+    // 固定显示「由服务器提供」，导致用户关掉 AI 整理后诊断页看不出未开启。
+    const aiEnabled = await getSetting('aiEnabled', false) as boolean
+    if (!aiEnabled) {
+      items.push({ label: 'AI 校对', status: 'disabled', detail: '未开启（极速模式）' })
+    } else if (workMode === 'server') {
+      items.push({ label: 'AI 校对', status: 'ok', detail: '由服务器提供' })
+    } else {
+      const aiProvider = await getSetting('cloudAi.provider', '') as string
+      const aiApiKey = await getSetting('cloudAi.apiKey', '') as string
+      const aiApiUrl = await getSetting('cloudAi.apiUrl', '') as string
+      const aiModel = await getSetting('cloudAi.model', '') as string
+      const displayName = AI_DISPLAY[aiProvider] || aiProvider
 
-        if (!aiProvider || (!aiApiKey && aiProvider !== 'ollama') || !aiApiUrl) {
-          items.push({ label: 'AI 校对', status: 'error', detail: '未完整配置' })
-        } else {
-          // 实际测试连通性
-          try {
-            const result = await invoke<{ ok: boolean; message: string }>('test_ai_connection', {
-              config: { provider: aiProvider, api_url: aiApiUrl, api_key: aiApiKey, model: aiModel },
-            })
-            items.push({ label: 'AI 校对', status: result.ok ? 'ok' : 'error', detail: result.ok ? `${displayName}（${aiModel}）` : `${displayName} — ${result.message}` })
-          } catch (err) {
-            items.push({ label: 'AI 校对', status: 'error', detail: `${displayName} — ${String(err)}` })
-          }
+      if (!aiProvider || (!aiApiKey && aiProvider !== 'ollama') || !aiApiUrl) {
+        items.push({ label: 'AI 校对', status: 'error', detail: '未完整配置' })
+      } else {
+        // 实际测试连通性
+        try {
+          const result = await invoke<{ ok: boolean; message: string }>('test_ai_connection', {
+            config: { provider: aiProvider, api_url: aiApiUrl, api_key: aiApiKey, model: aiModel },
+          })
+          items.push({ label: 'AI 校对', status: result.ok ? 'ok' : 'error', detail: result.ok ? `${displayName}（${aiModel}）` : `${displayName} — ${result.message}` })
+        } catch (err) {
+          items.push({ label: 'AI 校对', status: 'error', detail: `${displayName} — ${String(err)}` })
         }
       }
-    } else {
-      items.push({ label: 'AI 校对', status: 'ok', detail: '由服务器提供' })
     }
 
     setHealth(items)
@@ -299,11 +299,10 @@ export default function DiagnosticsPage() {
                   <button
                     key={tab.value}
                     onClick={() => setLogFilter(tab.value)}
-                    className={`rounded-md px-2.5 py-1 text-xs transition-colors ${
-                      logFilter === tab.value
+                    className={`rounded-md px-2.5 py-1 text-xs transition-colors ${logFilter === tab.value
                         ? 'bg-primary/10 text-primary'
                         : 'text-muted-foreground hover:text-foreground'
-                    }`}
+                      }`}
                   >
                     {tab.label}{tab.count > 0 ? ` (${tab.count})` : ''}
                   </button>

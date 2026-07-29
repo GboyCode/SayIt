@@ -178,11 +178,25 @@ export function convertChineseNumbers(text: string): string {
 
   // 2.5b 整点：X点（后面不跟数字/点）→ 9点（如 上午九点 → 上午9点）。
   //      「点」后跟数字的（三点一四）留给小数规则，避免误伤。
+  //
+  //      收紧：裸整点必须有明确「时间信号」才转，否则保留中文。目的是不把口语里
+  //      表「a little bit」的「一点」误当成「1 点钟」——如「调宽一点」「有一点」
+  //      「快一点」。时间信号（满足其一即转）：
+  //        ① 前面紧邻时段词（上午 / 下午 / 晚上 …）；
+  //        ② 后面紧跟「钟」（一点钟）；
+  //        ③ 小时是含「十」的两位（十点 / 十二点，几乎只作时间用）。
+  //      无信号时宁可不转，交给 AI 整理处理歧义场景（与整体「尽力而为」取向一致）。
+  const TIME_OF_DAY_PREFIX = /(凌晨|清晨|早晨|早上|上午|中午|下午|傍晚|晚上|夜里|半夜|今早|今晚|明早|明晚|昨晚)$/
   result = result.replace(
     new RegExp(`([${TIME_HOUR}]+)点(?![${DIGIT_CHARS}点])`, 'g'),
     (m: string, hourStr: string, offset: number, str: string) => {
       const hour = validHour(hourStr)
-      return hour === null ? m : maybeSpace(str, offset, `${hour}点`)
+      if (hour === null) return m
+      const hasTenUnit = hourStr.includes('十')
+      const hasClockSuffix = (str[offset + m.length] || '') === '钟'
+      const hasTimePrefix = TIME_OF_DAY_PREFIX.test(str.slice(0, offset))
+      if (!hasTenUnit && !hasClockSuffix && !hasTimePrefix) return m
+      return maybeSpace(str, offset, `${hour}点`)
     },
   )
 

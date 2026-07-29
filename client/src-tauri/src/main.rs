@@ -249,6 +249,14 @@ fn main() {
     log::info!("PTT setting from DB: raw={:?} parsed={:?}", ptt_setting_val, ptt_str);
     log::info!("HF setting from DB: raw={:?} parsed={:?}", hf_setting_val, hf_str);
 
+    // 自定义模型存储目录：启动时读回并设为进程内生效路径（空串 = 用默认）。
+    // 必须在任何取模型路径的调用之前设定，且要在 storage 被 move 进 manage 之前读。
+    let models_dir_val = storage.get("localAsr.modelsDir", None);
+    if let Some(custom_dir) = models_dir_val.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+        models::downloader::set_custom_models_dir(Some(std::path::PathBuf::from(custom_dir)));
+        log::info!("Custom models dir from DB: {}", custom_dir);
+    }
+
     let window_state = WindowState::new();
     let keyboard_hook = KeyboardHookManager::new();
     let context_detector = ContextDetector::new();
@@ -518,6 +526,8 @@ fn main() {
             models::registry::delete_model,
             models::registry::open_models_folder,
             models::registry::open_model_folder,
+            models::registry::get_models_dir,
+            models::registry::set_models_dir,
             models::local_asr::local_transcribe,
             models::local_asr::preload_local_model,
             models::local_asr::unload_local_model,

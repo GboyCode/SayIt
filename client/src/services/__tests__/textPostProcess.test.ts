@@ -122,6 +122,24 @@ describe('convertChineseNumbers', () => {
     expect(convertChineseNumbers('九点二十开会')).toBe('9点20开会')
   })
 
+  it('不误伤口语「一点」(a little bit)：无时间信号的裸整点保留中文', () => {
+    expect(convertChineseNumbers('把页面调宽一点')).toBe('把页面调宽一点')
+    expect(convertChineseNumbers('有一点担心')).toBe('有一点担心')
+    expect(convertChineseNumbers('再快一点')).toBe('再快一点')
+    expect(convertChineseNumbers('声音大一点')).toBe('声音大一点')
+    expect(convertChineseNumbers('一点点小事')).toBe('一点点小事')
+    // 无时段词的裸整点也保守不转（宁可不转，交给 AI 整理）
+    expect(convertChineseNumbers('九点开会')).toBe('九点开会')
+  })
+
+  it('整点：有时间信号才转（时段词 / 钟 / 含十两位）', () => {
+    expect(convertChineseNumbers('下午一点开会')).toBe('下午1点开会')
+    expect(convertChineseNumbers('晚上八点')).toBe('晚上8点')
+    expect(convertChineseNumbers('一点钟到')).toBe('1点钟到')
+    expect(convertChineseNumbers('十二点了')).toBe('12点了')
+    expect(convertChineseNumbers('十点休息')).toBe('10点休息')
+  })
+
   it('空文本安全', () => {
     expect(convertChineseNumbers('')).toBe('')
   })

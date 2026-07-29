@@ -353,6 +353,19 @@ export default function History() {
     setRecords((prev) => prev.map((r) => (r.id === id ? { ...r, favorite: nextFavorite } : r)))
   }
 
+  const handleEdit = async (id: string, nextText: string) => {
+    const editedAt = Date.now()
+    const patch = {
+      llmText: nextText,
+      charCount: nextText.length,
+      isEmpty: !nextText.trim(),
+      manualEditedAt: editedAt,
+    }
+    await updateHistoryRecord(id, patch)
+    // 局部更新，避免整页刷新丢失展开态/滚动位置
+    setRecords((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)))
+  }
+
   const handleExport = async () => {
     const result = await exportHistory({ keyword: debouncedKeyword })
     setExportResult(result)
@@ -526,6 +539,7 @@ export default function History() {
         onDelete={handleDelete}
         onToggleFavorite={handleToggleFavorite}
         onReprocess={handleReprocess}
+        onEdit={handleEdit}
         highlight={debouncedKeyword}
         emptyText={keyword.trim() ? '没有匹配的历史记录' : favoriteOnly ? '还没有收藏记录，去历史记录里点一下星标吧。' : '还没有记录，去语音工作台试试吧'}
       />

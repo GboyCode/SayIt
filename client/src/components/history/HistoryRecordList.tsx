@@ -1,5 +1,5 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Trash2, ChevronDown, ChevronUp, VolumeX, Star, Play, Pause, RotateCcw, Loader2, Download, Check, Copy, X, FolderOpen } from 'lucide-react'
+import { Trash2, ChevronDown, ChevronUp, VolumeX, Star, Play, Pause, RotateCcw, Loader2, Download, Check, Copy, X, FolderOpen, Pencil } from 'lucide-react'
 import { Tooltip } from '@/components/ui/tooltip'
 import { Card, CardContent } from '@/components/ui/card'
 import { type HistoryRecord } from '@/services/store'
@@ -25,6 +25,8 @@ interface HistoryRecordListProps {
   onDelete: (id: string) => Promise<void> | void
   onToggleFavorite?: (id: string, nextFavorite: boolean) => Promise<void> | void
   onReprocess?: (record: HistoryRecord) => Promise<void> | void
+  /** 手工编辑转换结果并保存 */
+  onEdit?: (id: string, nextText: string) => Promise<void> | void
   emptyText?: string
   /** 搜索关键词：在正文与 ASR 原文里高亮命中处 */
   highlight?: string
@@ -78,15 +80,19 @@ function HistoryItem({
   onDelete,
   onToggleFavorite,
   onReprocess,
+  onEdit,
   highlight = '',
 }: {
   record: HistoryRecord
   onDelete: () => void
   onToggleFavorite?: (nextFavorite: boolean) => void
   onReprocess?: () => Promise<void> | void
+  onEdit?: (nextText: string) => Promise<void> | void
   highlight?: string
 }) {
   const [expanded, setExpanded] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [editText, setEditText] = useState('')
   const [audioPlaying, setAudioPlaying] = useState(false)
   const [audioLoading, setAudioLoading] = useState(false)
   const [reprocessing, setReprocessing] = useState(false)
@@ -202,6 +208,41 @@ function HistoryItem({
     }
   }, [onReprocess, reprocessing])
 
+  // ── 编辑：自动保存（失焦 / 离开页面即存，无需按钮）──
+  // 用 ref 保存最新值，供失焦回调与卸载清理读取，避免闭包拿到旧值。
+  const editTextRef = useRef('')
+  const editingRef = useRef(false)
+  const textRef = useRef(text)
+  const onEditRef = useRef(onEdit)
+  textRef.current = text
+  onEditRef.current = onEdit
+
+  const startEdit = useCallback(() => {
+    editTextRef.current = text
+    editingRef.current = true
+    setEditText(text)
+    setEditing(true)
+  }, [text])
+
+  // 提交：仅当仍在编辑且内容有变化时写回。幂等——重复调用（失焦后又卸载）不会重复保存。
+  const commitEdit = useCallback(async () => {
+    if (!editingRef.current) return
+    editingRef.current = false
+    setEditing(false)
+    const next = editTextRef.current
+    if (!onEditRef.current || next === textRef.current) return
+    await onEditRef.current(next)
+  }, [])
+
+  // 取消：不保存，直接退出（后续失焦/卸载因 editingRef=false 而跳过）。
+  const cancelEdit = useCallback(() => {
+    editingRef.current = false
+    setEditing(false)
+  }, [])
+
+  // 离开页面（组件卸载）时若仍在编辑，自动保存。
+  useEffect(() => () => { void commitEdit() }, [commitEdit])
+
   const handleDownloadAudio = useCallback(async () => {
     if (!record.audioFilePath || downloading) return
     setDownloading(true)
@@ -270,7 +311,24 @@ function HistoryItem({
         </span>
 
         <div className="min-w-0 flex-1">
-          {isEmpty ? (
+          {editing ? (
+            <div onClick={(e) => e.stopPropagation()}>
+              <textarea
+                value={editText}
+                onChange={(e) => { setEditText(e.target.value); editTextRef.current = e.target.value }}
+                autoFocus
+                rows={Math.min(Math.max(editText.split('\n').length, 2), 12)}
+                className="w-full resize-y rounded-md border border-input-border bg-input-bg px-2.5 py-1.5 text-sm leading-relaxed focus:border-input-focus-border focus:outline-none"
+                onBlur={() => { void commitEdit() }}
+                onKeyDown={(e) => {
+                  // Esc 取消（不保存）；Ctrl/Cmd+Enter 立即保存（失焦触发提交）
+                  if (e.key === 'Escape') { e.preventDefault(); cancelEdit() }
+                  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); (e.target as HTMLTextAreaElement).blur() }
+                }}
+              />
+              <span className="mt-1 inline-block text-[11px] text-muted-foreground/50">改完点击其它地方即自动保存 · Esc 取消</span>
+            </div>
+          ) : isEmpty ? (
             <div className="flex items-center gap-2">
               <VolumeX className="h-3.5 w-3.5 text-muted-foreground/40" />
               <p className="text-sm italic text-muted-foreground/60">无有效声音</p>
@@ -287,13 +345,24 @@ function HistoryItem({
                 })
               }}
             >
-              {text.includes('\n') ? (
-                text.split(/\n{2,}/).map((para, idx) => (
-                  <p key={idx} className={idx > 0 ? 'mt-1.5' : undefined}>{highlightText(para, highlight)}</p>
-                ))
-              ) : (
-                <p>{highlightText(text, highlight)}</p>
-              )}
+              {(() => {
+                // 编辑过的记录：在正文末尾内联一个小铅笔图标（hover 提示「已编辑」），不占额外行、不混入正文文本
+                const editedMark = record.manualEditedAt ? (
+                  <Tooltip content="已编辑">
+                    <Pencil className="ml-1 inline-block h-3 w-3 translate-y-[1px] text-muted-foreground/40" />
+                  </Tooltip>
+                ) : null
+                if (text.includes('\n')) {
+                  const paras = text.split(/\n{2,}/)
+                  return paras.map((para, idx) => (
+                    <p key={idx} className={idx > 0 ? 'mt-1.5' : undefined}>
+                      {highlightText(para, highlight)}
+                      {idx === paras.length - 1 && editedMark}
+                    </p>
+                  ))
+                }
+                return <p>{highlightText(text, highlight)}{editedMark}</p>
+              })()}
             </div>
           )}
 
@@ -304,150 +373,149 @@ function HistoryItem({
             <div className="overflow-hidden">
               {(expanded || true) && (
                 <div className="mt-2 space-y-2 text-xs">
-              {!isEmpty && record.asrText && (
-                <div className="text-muted-foreground">
-                  <span className="font-medium">ASR 原文：</span>
-                  <span className="whitespace-pre-line">{highlightText(record.asrText, highlight)}</span>
-                </div>
-              )}
-              <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
-                {record.workMode && (
-                  <>
-                    <span className="rounded border border-border px-1.5 py-0.5 text-xs">
-                      {record.workMode === 'server' ? '服务器' : record.workMode === 'cloud_api' ? '云 API' : '本地'}
-                    </span>
-                    {record.asrProvider && (
-                      <span className="text-xs">ASR: {ASR_PROVIDER_DISPLAY[record.asrProvider] || record.asrProvider}</span>
+                  {!isEmpty && record.asrText && (
+                    <div className="text-muted-foreground">
+                      <span className="font-medium">ASR 原文：</span>
+                      <span className="whitespace-pre-line">{highlightText(record.asrText, highlight)}</span>
+                    </div>
+                  )}
+                  <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
+                    {record.workMode && (
+                      <>
+                        <span className="rounded border border-border px-1.5 py-0.5 text-xs">
+                          {record.workMode === 'server' ? '服务器' : record.workMode === 'cloud_api' ? '云 API' : '本地'}
+                        </span>
+                        {record.asrProvider && (
+                          <span className="text-xs">ASR: {ASR_PROVIDER_DISPLAY[record.asrProvider] || record.asrProvider}</span>
+                        )}
+                        {record.aiProvider && record.aiProvider !== 'server' && record.llmMs > 0 && (
+                          <span className="text-xs">
+                            AI: {record.aiProvider}{record.aiModel ? ` (${record.aiModel})` : ''}
+                          </span>
+                        )}
+                        <span className="text-border">|</span>
+                      </>
                     )}
-                    {record.aiProvider && record.aiProvider !== 'server' && record.llmMs > 0 && (
-                      <span className="text-xs">
-                        AI: {record.aiProvider}{record.aiModel ? ` (${record.aiModel})` : ''}
-                      </span>
-                    )}
+                    <span>语音长度 {voiceDurationSec.toFixed(1)}s</span>
                     <span className="text-border">|</span>
-                  </>
-                )}
-                <span>语音长度 {voiceDurationSec.toFixed(1)}s</span>
-                <span className="text-border">|</span>
-                <span>识别 {((record.asrMs + record.llmMs) / 1000).toFixed(1)}s (ASR {record.asrMs}ms + LLM {record.llmMs}ms)</span>
-                {record.audioFilePath && (
-                  <Tooltip content={audioPlaying ? '暂停播放' : '播放录音'}>
-                    <button
-                      type="button"
-                      onClick={() => { void handleTogglePlayback() }}
-                      disabled={audioLoading}
-                      className="relative top-[0.5px] flex h-7 w-7 items-center justify-center rounded p-1.5 hover:bg-accent disabled:opacity-50"
-                      aria-label={audioPlaying ? '暂停播放' : '播放录音'}
-                    >
-                      {audioLoading ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                      ) : audioPlaying ? (
-                        <Pause className="h-3.5 w-3.5 text-primary" />
-                      ) : (
-                        <Play className="h-3.5 w-3.5 text-muted-foreground" />
-                      )}
-                    </button>
-                  </Tooltip>
-                )}
-                {record.audioFilePath && (
-                  <Tooltip content={downloadStatus === 'ok' ? `已保存到 ${downloadPath}` : downloadStatus === 'fail' ? `下载失败: ${downloadPath}` : '下载音频'}>
-                    <button
-                      type="button"
-                      onClick={() => { void handleDownloadAudio() }}
-                      disabled={downloading}
-                      className="relative top-[0.5px] flex h-7 w-7 items-center justify-center rounded p-1.5 hover:bg-accent disabled:opacity-50"
-                      aria-label="下载音频"
-                    >
-                      {downloading ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                      ) : downloadStatus === 'ok' ? (
-                        <Check className="h-3.5 w-3.5 text-success" />
-                      ) : downloadStatus === 'fail' ? (
-                        <X className="h-3.5 w-3.5 text-destructive" />
-                      ) : (
-                        <Download className="h-3.5 w-3.5 text-muted-foreground" />
-                      )}
-                    </button>
-                  </Tooltip>
-                )}
-                {record.audioFilePath && onReprocess && (
-                  <Tooltip content="重新识别">
-                    <button
-                      type="button"
-                      onClick={() => { void handleReprocess() }}
-                      disabled={reprocessing}
-                      className="relative top-[0.5px] flex h-7 w-7 items-center justify-center rounded p-1.5 hover:bg-accent disabled:opacity-50"
-                      aria-label="重新识别"
-                    >
-                      {reprocessing ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                      ) : (
-                        <RotateCcw className="h-3.5 w-3.5 text-muted-foreground" />
-                      )}
-                    </button>
-                  </Tooltip>
-                )}
-              </div>
-              {downloadStatus === 'ok' && downloadPath && (
-                <div className="mt-1 flex items-center gap-2 text-xs text-success break-all">
-                  <span className="min-w-0 truncate">已保存到 {downloadPath}</span>
-                  <button
-                    onClick={() => void invoke('reveal_file_in_folder', { filePath: downloadPath })}
-                    className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                    aria-label="打开文件所在目录"
-                  >
-                    <FolderOpen className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              )}
-              {downloadStatus === 'fail' && downloadPath && (
-                <div className="mt-1 text-xs text-destructive break-all">
-                  下载失败: {downloadPath}
-                </div>
-              )}
-              {/* 音频进度条 + 倍速 */}
-              {audioReady && (
-                <div className="mt-2 flex items-center gap-2">
-                  <span className="w-[72px] shrink-0 text-[11px] tabular-nums text-muted-foreground">
-                    {formatElapsed(currentTime)} / {formatElapsed(duration)}
-                  </span>
-                  <div className="relative h-3 min-w-0 flex-1 overflow-visible">
-                    <div className="absolute left-0 right-0 top-1/2 h-px -translate-y-1/2 bg-border" />
-                    <div className="absolute left-0 top-1/2 h-px -translate-y-1/2 bg-foreground" style={{ width: `${progress * 100}%` }} />
-                    <div
-                      className="absolute top-1/2 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-foreground bg-card shadow-sm"
-                      style={{ left: `${progress * 100}%` }}
-                    />
-                    <input
-                      type="range"
-                      min={0}
-                      max={Math.max(duration, 0.1)}
-                      step={0.1}
-                      value={Math.min(currentTime, duration || 0)}
-                      onChange={(e) => handleSeek(Number(e.target.value))}
-                      className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                    />
+                    <span>识别 {((record.asrMs + record.llmMs) / 1000).toFixed(1)}s (ASR {record.asrMs}ms + LLM {record.llmMs}ms)</span>
+                    {record.audioFilePath && (
+                      <Tooltip content={audioPlaying ? '暂停播放' : '播放录音'}>
+                        <button
+                          type="button"
+                          onClick={() => { void handleTogglePlayback() }}
+                          disabled={audioLoading}
+                          className="relative top-[0.5px] flex h-7 w-7 items-center justify-center rounded p-1.5 hover:bg-accent disabled:opacity-50"
+                          aria-label={audioPlaying ? '暂停播放' : '播放录音'}
+                        >
+                          {audioLoading ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                          ) : audioPlaying ? (
+                            <Pause className="h-3.5 w-3.5 text-primary" />
+                          ) : (
+                            <Play className="h-3.5 w-3.5 text-muted-foreground" />
+                          )}
+                        </button>
+                      </Tooltip>
+                    )}
+                    {record.audioFilePath && (
+                      <Tooltip content={downloadStatus === 'ok' ? `已保存到 ${downloadPath}` : downloadStatus === 'fail' ? `下载失败: ${downloadPath}` : '下载音频'}>
+                        <button
+                          type="button"
+                          onClick={() => { void handleDownloadAudio() }}
+                          disabled={downloading}
+                          className="relative top-[0.5px] flex h-7 w-7 items-center justify-center rounded p-1.5 hover:bg-accent disabled:opacity-50"
+                          aria-label="下载音频"
+                        >
+                          {downloading ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                          ) : downloadStatus === 'ok' ? (
+                            <Check className="h-3.5 w-3.5 text-success" />
+                          ) : downloadStatus === 'fail' ? (
+                            <X className="h-3.5 w-3.5 text-destructive" />
+                          ) : (
+                            <Download className="h-3.5 w-3.5 text-muted-foreground" />
+                          )}
+                        </button>
+                      </Tooltip>
+                    )}
+                    {record.audioFilePath && onReprocess && (
+                      <Tooltip content="重新识别">
+                        <button
+                          type="button"
+                          onClick={() => { void handleReprocess() }}
+                          disabled={reprocessing}
+                          className="relative top-[0.5px] flex h-7 w-7 items-center justify-center rounded p-1.5 hover:bg-accent disabled:opacity-50"
+                          aria-label="重新识别"
+                        >
+                          {reprocessing ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                          ) : (
+                            <RotateCcw className="h-3.5 w-3.5 text-muted-foreground" />
+                          )}
+                        </button>
+                      </Tooltip>
+                    )}
                   </div>
-                  <div className="flex shrink-0 gap-0.5">
-                    {[0.75, 1, 1.5, 2, 2.5].map((rate) => (
+                  {downloadStatus === 'ok' && downloadPath && (
+                    <div className="mt-1 flex items-center gap-2 text-xs text-success break-all">
+                      <span className="min-w-0 truncate">已保存到 {downloadPath}</span>
                       <button
-                        key={rate}
-                        type="button"
-                        onClick={() => handleRateChange(rate)}
-                        className={`rounded px-1.5 py-0.5 text-[11px] transition-colors ${
-                          playbackRate === rate
-                            ? 'bg-foreground text-background font-medium'
-                            : 'text-muted-foreground hover:bg-accent'
-                        }`}
+                        onClick={() => void invoke('reveal_file_in_folder', { filePath: downloadPath })}
+                        className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                        aria-label="打开文件所在目录"
                       >
-                        {rate}x
+                        <FolderOpen className="h-3.5 w-3.5" />
                       </button>
-                    ))}
-                  </div>
+                    </div>
+                  )}
+                  {downloadStatus === 'fail' && downloadPath && (
+                    <div className="mt-1 text-xs text-destructive break-all">
+                      下载失败: {downloadPath}
+                    </div>
+                  )}
+                  {/* 音频进度条 + 倍速 */}
+                  {audioReady && (
+                    <div className="mt-2 flex items-center gap-2">
+                      <span className="w-[72px] shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                        {formatElapsed(currentTime)} / {formatElapsed(duration)}
+                      </span>
+                      <div className="relative h-3 min-w-0 flex-1 overflow-visible">
+                        <div className="absolute left-0 right-0 top-1/2 h-px -translate-y-1/2 bg-border" />
+                        <div className="absolute left-0 top-1/2 h-px -translate-y-1/2 bg-foreground" style={{ width: `${progress * 100}%` }} />
+                        <div
+                          className="absolute top-1/2 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-foreground bg-card shadow-sm"
+                          style={{ left: `${progress * 100}%` }}
+                        />
+                        <input
+                          type="range"
+                          min={0}
+                          max={Math.max(duration, 0.1)}
+                          step={0.1}
+                          value={Math.min(currentTime, duration || 0)}
+                          onChange={(e) => handleSeek(Number(e.target.value))}
+                          className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                        />
+                      </div>
+                      <div className="flex shrink-0 gap-0.5">
+                        {[0.75, 1, 1.5, 2, 2.5].map((rate) => (
+                          <button
+                            key={rate}
+                            type="button"
+                            onClick={() => handleRateChange(rate)}
+                            className={`rounded px-1.5 py-0.5 text-[11px] transition-colors ${playbackRate === rate
+                              ? 'bg-foreground text-background font-medium'
+                              : 'text-muted-foreground hover:bg-accent'
+                              }`}
+                          >
+                            {rate}x
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
-            </div>
-          )}
             </div>
           </div>
         </div>
@@ -474,6 +542,18 @@ function HistoryItem({
             </Tooltip>
           )}
 
+          {!isEmpty && onEdit && !editing && (
+            <Tooltip content="编辑文本">
+              <button
+                onClick={startEdit}
+                className="inline-flex items-center rounded p-1 transition-colors hover:bg-accent"
+                aria-label="编辑"
+              >
+                <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
+              </button>
+            </Tooltip>
+          )}
+
           {onToggleFavorite && (
             <Tooltip content={record.favorite ? '取消收藏' : '收藏'}>
               <button
@@ -487,18 +567,18 @@ function HistoryItem({
           )}
 
           <Tooltip content={expanded ? '收起详情' : '展开详情'}>
-            <button 
-              onClick={() => setExpanded(!expanded)} 
-              className="rounded p-1 hover:bg-accent" 
+            <button
+              onClick={() => setExpanded(!expanded)}
+              className="rounded p-1 hover:bg-accent"
               aria-label="详情"
             >
               {expanded ? <ChevronUp className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />}
             </button>
           </Tooltip>
           <Tooltip content="删除记录">
-            <button 
-              onClick={onDelete} 
-              className="rounded p-1 hover:bg-accent" 
+            <button
+              onClick={onDelete}
+              className="rounded p-1 hover:bg-accent"
               aria-label="删除"
             >
               <Trash2 className="h-3.5 w-3.5 text-destructive" />
@@ -516,6 +596,7 @@ function DayGroup({
   onDelete,
   onToggleFavorite,
   onReprocess,
+  onEdit,
   highlight,
 }: {
   label: string
@@ -523,6 +604,7 @@ function DayGroup({
   onDelete: (id: string) => void
   onToggleFavorite?: (id: string, nextFavorite: boolean) => Promise<void> | void
   onReprocess?: (record: HistoryRecord) => Promise<void> | void
+  onEdit?: (id: string, nextText: string) => Promise<void> | void
   highlight?: string
 }) {
   return (
@@ -537,6 +619,7 @@ function DayGroup({
               onDelete={() => onDelete(record.id)}
               onToggleFavorite={onToggleFavorite ? (next) => onToggleFavorite(record.id, next) : undefined}
               onReprocess={onReprocess ? () => onReprocess(record) : undefined}
+              onEdit={onEdit ? (nextText) => onEdit(record.id, nextText) : undefined}
               highlight={highlight}
             />
           ))}
@@ -551,6 +634,7 @@ export default function HistoryRecordList({
   onDelete,
   onToggleFavorite,
   onReprocess,
+  onEdit,
   emptyText = '还没有记录，去语音工作台试试吧',
   highlight,
 }: HistoryRecordListProps) {
@@ -591,6 +675,7 @@ export default function HistoryRecordList({
           onDelete={onDelete}
           onToggleFavorite={onToggleFavorite}
           onReprocess={onReprocess}
+          onEdit={onEdit}
           highlight={highlight}
         />
       ))}

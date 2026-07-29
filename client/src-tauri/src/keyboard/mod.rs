@@ -860,6 +860,14 @@ unsafe extern "system" fn low_level_keyboard_proc(
                     && state.hf_vk_codes.contains(&vk)
                     && !is_ptt_key; // PTT takes priority if same key
 
+                // Alt 键（VK_LMENU=0xA4 / VK_RMENU=0xA5）作为单键热键时，keyup 也必须吞掉。
+                // 否则被放行的 Alt 抬起会被 Windows 判为「单击了一下 Alt」→ 激活前台程序的
+                // 菜单栏（如记事本显示「文件(F)」等加速键下划线），抢走输入框焦点，导致随后
+                // 插字落到菜单上、实际没插进去（而 SendInput 仍上报成功，形成假成功）。
+                // keydown 既已被吞、系统自始至终没见过这个 Alt，连 keyup 一起吞不会造成
+                // 「修饰键卡住」。非 Alt 单键（F 键、Space、侧键等）维持原状：只吞 keydown。
+                let is_alt_key = vk == 0xA4 || vk == 0xA5;
+
                 // ── 诊断：仅在「当前配置的 PTT/免提热键」被按下时记录 flags/scanCode ──
                 // 只记热键本身（不记正常打字的 Ctrl/Shift 等），量可控；用于抓远程桌面
                 // 场景下误触发热键的那次事件特征，和真实按键对比后再对症过滤幻影键。
@@ -879,9 +887,10 @@ unsafe extern "system" fn low_level_keyboard_proc(
                     let is_down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
                     let is_up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
 
-                    // 只吞掉 keydown，keyup 必须放行让系统更新键盘状态
-                    // 否则 Windows 会认为修饰键一直按着
-                    if is_down {
+                    // 吞掉 keydown。keyup 默认放行（让系统更新键盘状态，否则 Windows 会
+                    // 认为修饰键一直按着）；但 Alt 类键的 keyup 必须一并吞掉，见上方
+                    // is_alt_key 处的说明（防止激活前台菜单栏抢焦点）。
+                    if is_down || (is_up && is_alt_key) {
                         consumed = true;
                     }
 
@@ -935,6 +944,10 @@ unsafe extern "system" fn low_level_keyboard_proc(
                         state.hf_key_down.store(true, Ordering::SeqCst);
                     }
                     if is_up {
+                        // Alt 类免提键的 keyup 也吞掉，避免激活前台菜单栏（与 PTT 同理）。
+                        if is_alt_key {
+                            consumed = true;
+                        }
                         // 只有配对过真实 keydown 才 toggle；孤儿 keyup（幻影）直接忽略。
                         let had_down = state.hf_key_down.swap(false, Ordering::SeqCst);
                         if had_down {

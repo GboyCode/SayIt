@@ -2,6 +2,9 @@
 
 use super::catalog::{self, LocalModelInfo, ModelInfo};
 use super::downloader;
+use crate::storage::Storage;
+use serde::Serialize;
+use std::path::Path;
 use tauri::AppHandle;
 
 /// 列出所有可用模型
@@ -196,6 +199,127 @@ pub fn open_models_folder() -> Result<String, String> {
         let _ = std::process::Command::new("xdg-open").arg(&path).spawn();
     }
     Ok(path)
+}
+
+/// 模型存储位置信息（供设置页展示）
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelsDirInfo {
+    /// 当前生效的模型根目录
+    pub current: String,
+    /// 默认模型根目录
+    pub default_dir: String,
+    /// 当前是否为用户自定义（非默认）
+    pub is_custom: bool,
+}
+
+/// 查询当前模型存储位置
+#[tauri::command]
+pub fn get_models_dir() -> ModelsDirInfo {
+    let current = downloader::models_dir();
+    let default_dir = downloader::default_models_dir();
+    ModelsDirInfo {
+        is_custom: current != default_dir,
+        current: current.to_string_lossy().to_string(),
+        default_dir: default_dir.to_string_lossy().to_string(),
+    }
+}
+
+/// 递归复制目录/文件（跨盘 rename 失败时的兜底）。
+fn copy_path_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+    if src.is_dir() {
+        std::fs::create_dir_all(dst).map_err(|e| format!("创建目录失败: {}", e))?;
+        for entry in std::fs::read_dir(src).map_err(|e| format!("读取目录失败: {}", e))? {
+            let entry = entry.map_err(|e| format!("读取条目失败: {}", e))?;
+            copy_path_recursive(&entry.path(), &dst.join(entry.file_name()))?;
+        }
+    } else {
+        std::fs::copy(src, dst).map_err(|e| format!("复制文件失败: {}", e))?;
+    }
+    Ok(())
+}
+
+/// 把旧模型根目录下的每个条目移动到新根目录。
+/// 优先 rename（同盘瞬时）；跨盘失败则递归复制后删除源。
+/// 目标已存在同名条目则跳过（不覆盖新目录已有内容）。
+fn move_dir_contents(from: &Path, to: &Path) -> Result<(), String> {
+    for entry in std::fs::read_dir(from).map_err(|e| format!("读取旧目录失败: {}", e))? {
+        let entry = entry.map_err(|e| format!("读取条目失败: {}", e))?;
+        let src = entry.path();
+        let dst = to.join(entry.file_name());
+        if dst.exists() {
+            continue;
+        }
+        if std::fs::rename(&src, &dst).is_ok() {
+            continue;
+        }
+        // 跨盘：递归复制后删除源
+        copy_path_recursive(&src, &dst)?;
+        if src.is_dir() {
+            let _ = std::fs::remove_dir_all(&src);
+        } else {
+            let _ = std::fs::remove_file(&src);
+        }
+    }
+    Ok(())
+}
+
+/// 设置模型存储位置。
+/// - `dir`：新目录（绝对路径）；传 None 或空串 = 恢复默认路径。
+/// - `move_existing`：为 true 时把旧目录下已下载的模型一并移动到新目录。
+///
+/// 会校验新目录可创建且可写；随后更新进程内生效路径并持久化到设置，
+/// 使重启后仍生效（main.rs 启动时会读取 `localAsr.modelsDir`）。
+#[tauri::command]
+pub async fn set_models_dir(
+    storage: tauri::State<'_, Storage>,
+    dir: Option<String>,
+    move_existing: bool,
+) -> Result<String, String> {
+    let trimmed = dir
+        .as_deref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let old_dir = downloader::models_dir();
+    let new_dir = match &trimmed {
+        Some(d) => std::path::PathBuf::from(d),
+        None => downloader::default_models_dir(),
+    };
+
+    // 目标与当前一致：仅确保持久化的设置与之同步，不做迁移。
+    if new_dir != old_dir {
+        let old_for_task = old_dir.clone();
+        let new_for_task = new_dir.clone();
+        // fs 操作（可能是跨盘大文件复制）放到阻塞线程池，避免占用异步运行时线程。
+        tokio::task::spawn_blocking(move || -> Result<(), String> {
+            std::fs::create_dir_all(&new_for_task)
+                .map_err(|e| format!("无法创建目录: {}", e))?;
+            // 可写性探测
+            let probe = new_for_task.join(".sayit_write_test");
+            std::fs::write(&probe, b"ok").map_err(|e| format!("目录不可写: {}", e))?;
+            let _ = std::fs::remove_file(&probe);
+            if move_existing && old_for_task.exists() {
+                move_dir_contents(&old_for_task, &new_for_task)?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| format!("迁移任务异常: {}", e))??;
+    }
+
+    // 更新进程内生效路径：自定义 → Some，恢复默认 → None
+    downloader::set_custom_models_dir(trimmed.as_ref().map(|_| new_dir.clone()));
+
+    // 持久化（重启后由 main.rs 读回）。恢复默认时存空串。
+    let value = match &trimmed {
+        Some(d) => serde_json::json!(d),
+        None => serde_json::json!(""),
+    };
+    storage
+        .set("localAsr.modelsDir", &value)
+        .map_err(|e| format!("保存设置失败: {}", e))?;
+
+    Ok(new_dir.to_string_lossy().to_string())
 }
 
 /// 打开指定模型的存储目录（不存在则创建）
