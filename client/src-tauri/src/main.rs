@@ -23,8 +23,12 @@ use std::thread;
 /// com.sayit.app/EBWebView. Keep them global; never copy them into a single window's
 /// `additionalBrowserArgs` in tauri.conf.json (WebView2 rejects the second environment
 /// with ERROR_INVALID_STATE when the option sets differ).
+// 注意：不要再加回 --auto-accept-camera-and-microphone-capture。
+// 该参数会抢先自动处理权限请求，使 PermissionRequested 事件不触发，权限停留在 "prompt"，
+// 导致新版 WebView2 隐藏 enumerateDevices 的设备名/deviceId。麦克风授权改由下面的
+// PermissionRequested 处理器负责（显式 Allow → 变为持久 granted → 恢复设备枚举）。
 const WEBVIEW2_BROWSER_ARGS: &str =
-    "--ignore-certificate-errors --auto-accept-camera-and-microphone-capture \
+    "--ignore-certificate-errors \
      --disable-backgrounding-occluded-windows --disable-renderer-backgrounding \
      --disable-background-timer-throttling";
 
