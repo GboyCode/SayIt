@@ -39,13 +39,15 @@ export default function FeedbackSection() {
     setMessage(null)
     try {
       const result = await submitFeedback(trimmed, { includeTranscript: showTranscript && !!lastTranscript })
-      setMessage({ ok: result.ok, text: result.message })
       if (result.ok) {
         setFeedbackText('')
-        setSubmitted(true)
-        setTimeout(() => setMessage(null), 4000)
+        setSubmitted(true) // 显示常驻的“发送成功 + 查看进度”行
+      } else {
+        setSubmitted(false)
+        setMessage({ ok: false, text: result.message })
       }
     } catch (err) {
+      setSubmitted(false)
       setMessage({ ok: false, text: '网络错误，请稍后重试' })
     } finally {
       setSending(false)
@@ -93,7 +95,11 @@ export default function FeedbackSection() {
         {/* 反馈输入 */}
         <textarea
           value={feedbackText}
-          onChange={(e) => setFeedbackText(e.target.value)}
+          onChange={(e) => {
+            setFeedbackText(e.target.value)
+            if (submitted) setSubmitted(false)
+            if (message) setMessage(null)
+          }}
           onKeyDown={handleKeyDown}
           placeholder="如何改进 SayIt？输入你的反馈建议..."
           rows={1}
@@ -120,12 +126,13 @@ export default function FeedbackSection() {
           </button>
         </div>
 
-        {/* 提交成功后：引导用户到公开的只读反馈页查看进度 */}
+        {/* 提交成功后：成功提示与“查看反馈进度”链接同行，常驻直到重新输入 */}
         {submitted && (
-          <div className="mt-2">
+          <div className="mt-2 text-xs">
+            <span className="text-green-600 dark:text-green-400">发送成功，感谢您的反馈。</span>
             <button
               onClick={handleOpenFeedbackPage}
-              className="text-xs text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
+              className="ml-1 text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
             >
               查看反馈进度 →
             </button>
