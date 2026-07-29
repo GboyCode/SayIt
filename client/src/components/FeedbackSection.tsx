@@ -3,10 +3,8 @@
 import { useEffect, useState } from 'react'
 import { X } from 'lucide-react'
 import { open } from '@tauri-apps/plugin-shell'
+import { getBackendBaseUrl } from '@/services/runtimeConfig'
 import { getLastTranscript, submitFeedback } from '@/services/feedback'
-
-// 已发布反馈的公开只读页面（官方站点）
-const FEEDBACK_PAGE_URL = 'https://sayitapp.site/feedback'
 
 export default function FeedbackSection() {
   const [lastTranscript, setLastTranscript] = useState<string>('')
@@ -63,7 +61,8 @@ export default function FeedbackSection() {
 
   const handleOpenFeedbackPage = async () => {
     try {
-      await open(FEEDBACK_PAGE_URL)
+      // 公开反馈页与用户在设置里填写的服务器地址一致
+      await open(`${getBackendBaseUrl()}/feedback.html`)
     } catch {
       // 打开外部浏览器失败时静默忽略，不影响反馈提交流程
     }
