@@ -3,11 +3,17 @@
 import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { open as shellOpen } from '@tauri-apps/plugin-shell'
-import { Eye, EyeOff, ExternalLink, AlertTriangle } from 'lucide-react'
+import { ExternalLink } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { Feedback, FormatHint, type FeedbackTone } from '@/components/ui/feedback'
+import { PasswordInput } from '@/components/ui/password-input'
+import { Segmented } from '@/components/ui/segmented'
 import { getSetting, setSetting } from '@/services/store'
+import { refreshModeStatus } from '@/stores/modeStatus'
+import { setEngineDraftDirty } from '@/stores/engineDraft'
 import { isQwenOmniProvider, resolveQwenOmniModel } from '@/lib/asrModels'
+import { describeProviderError } from '@/lib/errorMessages'
 
 const ASR_PROVIDERS = [
   { value: 'doubao_v2', label: '豆包 ASR（Doubao-Seed-ASR-2.0）' },
@@ -24,32 +30,10 @@ interface TestResult {
   elapsed_ms: number
 }
 
-function PasswordInput({ value, onChange, placeholder, className }: {
-  value: string
-  onChange: (v: string) => void
-  placeholder?: string
-  className?: string
-}) {
-  const [visible, setVisible] = useState(false)
-  return (
-    <div className="relative">
-      <input
-        type={visible ? 'text' : 'password'}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        className={className}
-      />
-      <button
-        type="button"
-        onClick={() => setVisible(!visible)}
-        className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground/50 hover:text-muted-foreground"
-        tabIndex={-1}
-      >
-        {visible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-      </button>
-    </div>
-  )
+interface SaveResult {
+  tone: FeedbackTone
+  message: string
+  detail?: string
 }
 
 const DEFAULT_OMNI_PROMPT = '你是一个语音转文字助手。请将用户的语音内容准确转写为文字，保持原意，适当添加标点符号，不要添加任何额外的解释或评论。'
@@ -66,8 +50,8 @@ const OMNI_PROMPT_POLISH = `你是语音文本精炼助手。输入是 ASR 语�
 只输出精炼后的文本。`
 
 const OMNI_PROMPT_PRESETS = [
-  { id: 'faithful', label: '忠实转录', prompt: DEFAULT_OMNI_PROMPT },
-  { id: 'polish', label: '口语润色', prompt: OMNI_PROMPT_POLISH },
+  { value: DEFAULT_OMNI_PROMPT, label: '忠实转录' },
+  { value: OMNI_PROMPT_POLISH, label: '口语润色' },
 ] as const
 
 // 供应商按平台分组，同平台共享 API Key
@@ -116,20 +100,32 @@ export default function CloudAPISection() {
   const [asrProvider, setAsrProvider] = useState('doubao_v2')
   const [asrApiKey, setAsrApiKey] = useState('')
   const [asrAppId, setAsrAppId] = useState('')
+  /** 已保存的凭证快照，用来判断「未保存」 */
+  const [saved, setSaved] = useState({ apiKey: '', appId: '', omniPrompt: '' })
   const [asrTesting, setAsrTesting] = useState(false)
-  const [asrMessage, setAsrMessage] = useState('')
+  const [result, setResult] = useState<SaveResult | null>(null)
   const [omniSystemPrompt, setOmniSystemPrompt] = useState(DEFAULT_OMNI_PROMPT)
   const [qwenWorkspaceId, setQwenWorkspaceId] = useState('')
+
+  const isOmni = isQwenOmniProvider(asrProvider)
+  const isDirty = asrApiKey !== saved.apiKey
+    || asrAppId !== saved.appId
+    || (isOmni && omniSystemPrompt !== saved.omniPrompt)
 
   // 加载指定平台的 ASR key（每个供应商分组独立，不回退到全局，避免带入其它供应商的 key）
   async function loadAsrKeys(provider: string) {
     const group = asrKeyGroup(provider)
-    setAsrApiKey(await getSetting(`cloudAsr.${group}.apiKey`, '') as string)
-    setAsrAppId(await getSetting(`cloudAsr.${group}.appId`, '') as string)
+    const apiKey = await getSetting(`cloudAsr.${group}.apiKey`, '') as string
+    const appId = await getSetting(`cloudAsr.${group}.appId`, '') as string
+    setAsrApiKey(apiKey)
+    setAsrAppId(appId)
+    return { apiKey, appId }
   }
 
   useEffect(() => {
     void loadSettings()
+    // 切走路由时复位"有未保存改动"，别把脏状态留给下一次进入
+    return () => setEngineDraftDirty(false)
   }, [])
 
   async function loadSettings() {
@@ -145,20 +141,36 @@ export default function CloudAPISection() {
         await setSetting(`cloudAsr.${group}.appId`, await getSetting('cloudAsr.appId', '') as string)
       }
     }
-    await loadAsrKeys(provider)
-    setOmniSystemPrompt(await getSetting('cloudAsr.omniSystemPrompt', DEFAULT_OMNI_PROMPT) as string)
+    const loaded = await loadAsrKeys(provider)
+    const prompt = await getSetting('cloudAsr.omniSystemPrompt', DEFAULT_OMNI_PROMPT) as string
+    setOmniSystemPrompt(prompt)
+    setSaved({ apiKey: loaded.apiKey, appId: loaded.appId, omniPrompt: prompt })
+    setEngineDraftDirty(false)
     setQwenWorkspaceId(await getSetting('cloudAsr.qwen.workspaceId', '') as string)
   }
 
+  /** 业务空间 ID 是选填项且即改即存，不参与「未保存」判断 */
   function handleQwenWorkspaceIdChange(v: string) {
     setQwenWorkspaceId(v)
     void setSetting('cloudAsr.qwen.workspaceId', v.trim())
   }
 
+  function markDirty(next: { apiKey?: string; appId?: string; omniPrompt?: string }) {
+    setResult(null)
+    const apiKey = next.apiKey ?? asrApiKey
+    const appId = next.appId ?? asrAppId
+    const omniPrompt = next.omniPrompt ?? omniSystemPrompt
+    setEngineDraftDirty(
+      apiKey !== saved.apiKey
+      || appId !== saved.appId
+      || (isOmni && omniPrompt !== saved.omniPrompt),
+    )
+  }
+
   // 切换供应商时自动保存 provider 并加载对应平台的 key，同步到全局 key
   function handleAsrProviderChange(newProvider: string) {
     setAsrProvider(newProvider)
-    setAsrMessage('')
+    setResult(null)
     void (async () => {
       await setSetting('cloudAsr.provider', newProvider)
       const group = asrKeyGroup(newProvider)
@@ -168,15 +180,25 @@ export default function CloudAPISection() {
       // 空也要写空，避免把上一个供应商的 key 带过来。
       setAsrApiKey(groupKey)
       setAsrAppId(groupAppId)
+      setSaved((prev) => ({ ...prev, apiKey: groupKey, appId: groupAppId }))
+      setEngineDraftDirty(false)
       await setSetting('cloudAsr.apiKey', groupKey)
       await setSetting('cloudAsr.appId', groupAppId)
+      void refreshModeStatus() // 同步左下角与页面右上角的就绪指示
     })()
   }
 
+  /**
+   * 保存并测试。
+   *
+   * 按钮原来在 `!asrApiKey` 时禁用，导致用户无法清空一个填错的密钥；文案也只写「保存」，
+   * 用户按下去之前不知道自己会触发一次联网请求。现在：有密钥 = 保存并试拨一次，
+   * 没密钥 = 只保存（等于清空），两种情况都给明确反馈。
+   */
   async function saveAndTestAsr() {
     if (asrTesting) return // 防止双击重复触发
     setAsrTesting(true)
-    setAsrMessage('')
+    setResult(null)
 
     // 先保存（互相独立，并行写入而非依次 await）
     const group = asrKeyGroup(asrProvider)
@@ -186,178 +208,199 @@ export default function CloudAPISection() {
       setSetting('cloudAsr.apiKey', asrApiKey),
       setSetting('cloudAsr.appId', asrAppId),
     ]
-    if (asrProvider.startsWith('qwen_omni')) {
+    if (isOmni) {
       savePromises.push(setSetting('cloudAsr.omniSystemPrompt', omniSystemPrompt))
     }
     await Promise.all(savePromises)
+    setSaved({ apiKey: asrApiKey, appId: asrAppId, omniPrompt: omniSystemPrompt })
+    setEngineDraftDirty(false)
+    void refreshModeStatus()
+
+    if (!asrApiKey.trim()) {
+      setResult({ tone: 'warning', message: '已清空密钥。填入密钥后才能使用云 API 模式。' })
+      setAsrTesting(false)
+      return
+    }
 
     // 再测试
     try {
-      const isQwenOmni = isQwenOmniProvider(asrProvider)
       const qwenOmniModel = resolveQwenOmniModel(asrProvider)
-
-      const result = await invoke<TestResult>('test_asr_connection', {
+      const testResult = await invoke<TestResult>('test_asr_connection', {
         config: {
-          provider: isQwenOmni ? 'qwen_omni' : asrProvider,
+          provider: isOmni ? 'qwen_omni' : asrProvider,
           api_key: asrApiKey,
           app_id: asrAppId,
-          ...(isQwenOmni && { extra: { model: qwenOmniModel } }),
+          ...(isOmni && { extra: { model: qwenOmniModel } }),
         },
       })
-      setAsrMessage(result.ok ? `已保存，${result.message}` : `已保存，但连接失败：${result.message}`)
+      if (testResult.ok) {
+        setResult({ tone: 'success', message: `已保存，密钥可用（${testResult.elapsed_ms} ms）。` })
+      } else {
+        const friendly = describeProviderError(testResult.message)
+        setResult({ tone: 'error', message: `已保存，但测试没通过：${friendly.message}`, detail: friendly.detail })
+      }
     } catch (err) {
-      setAsrMessage(`已保存，但测试失败：${String(err)}`)
+      const friendly = describeProviderError(err)
+      setResult({ tone: 'error', message: `已保存，但测试没通过：${friendly.message}`, detail: friendly.detail })
     } finally {
       setAsrTesting(false)
     }
   }
 
-  const inputClass = 'h-9 w-full rounded-md border border-input-border bg-input-bg px-3 text-sm outline-none transition-colors focus:border-input-focus-border'
-  const selectClass = 'h-9 w-full rounded-md border border-input-border bg-input-bg px-2 text-sm outline-none transition-colors focus:border-input-focus-border'
+  const inputClass = 'h-9 w-full rounded-md border border-input-border bg-input-bg px-3 text-sm transition-colors focus:border-input-focus-border'
+  const selectClass = 'h-9 w-full rounded-md border border-input-border bg-input-bg px-2 text-sm transition-colors focus:border-input-focus-border'
+  const keyLabel = asrProvider === 'doubao_v2' ? 'Access Token' : 'API Key'
 
   return (
     <Card>
       <CardContent className="p-6">
         <h2 className="mb-1 text-lg font-semibold">语音识别 (ASR)</h2>
-          <p className="mb-4 text-xs text-muted-foreground">
-            推荐使用豆包 ASR 进行语音识别，准确率高，速度快。
-          </p>
-          <div className="space-y-3">
-            <div>
-              <label className="mb-1 block text-sm text-muted-foreground">供应商</label>
-              <select
-                value={asrProvider}
-                onChange={(e) => handleAsrProviderChange(e.target.value)}
-                className={selectClass}
-              >
-                {ASR_PROVIDERS.map((p) => (
-                  <option key={p.value} value={p.value} disabled={'disabled' in p && !!p.disabled}>{p.label}</option>
-                ))}
-              </select>
-            </div>
+        <p className="mb-4 text-xs text-muted-foreground">
+          推荐使用豆包 ASR 进行语音识别，准确率高，速度快。
+        </p>
+        <div className="space-y-3">
+          <div>
+            <label htmlFor="asr-provider" className="mb-1 block text-sm text-muted-foreground">供应商</label>
+            <select
+              id="asr-provider"
+              value={asrProvider}
+              onChange={(e) => handleAsrProviderChange(e.target.value)}
+              className={selectClass}
+            >
+              {ASR_PROVIDERS.map((p) => (
+                <option key={p.value} value={p.value}>{p.label}</option>
+              ))}
+            </select>
+          </div>
 
-
-            {/* 只有豆包需要 App ID；千问（含流式/Omni）和 MiMo 只需要 API Key */}
-            {asrProvider === 'doubao_v2' && (
+          {/* 只有豆包需要 App ID；千问（含流式/Omni）和 MiMo 只需要 API Key */}
+          {asrProvider === 'doubao_v2' && (
             <div>
-              <label className="mb-1 block text-sm text-muted-foreground">App ID</label>
+              <label htmlFor="asr-app-id" className="mb-1 block text-sm text-muted-foreground">App ID</label>
               <input
+                id="asr-app-id"
                 value={asrAppId}
-                onChange={(e) => setAsrAppId(e.target.value)}
+                onChange={(e) => { setAsrAppId(e.target.value); markDirty({ appId: e.target.value }) }}
+                onKeyDown={(e) => { if (e.key === 'Enter') void saveAndTestAsr() }}
                 placeholder="输入 App ID（豆包需要）"
                 className={inputClass}
               />
-              {checkAsrAppIdFormat(asrAppId) && (
-                <p className="mt-1.5 flex items-center gap-1 text-xs text-amber-500">
-                  <AlertTriangle className="h-3 w-3 shrink-0" />
-                  {checkAsrAppIdFormat(asrAppId)}
-                </p>
+              {checkAsrAppIdFormat(asrAppId) && <FormatHint text={checkAsrAppIdFormat(asrAppId)} />}
+            </div>
+          )}
+
+          <div>
+            <div className="mb-1 flex items-center gap-2">
+              <label htmlFor="asr-api-key" className="text-sm text-muted-foreground">{keyLabel}</label>
+              {/* 密钥只活在 local state 里，切页就没了；原来这件事完全无提示 */}
+              {isDirty && (
+                <span className="rounded-full bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning-strong">
+                  未保存
+                </span>
               )}
             </div>
-            )}
-            <div>
-              <label className="mb-1 block text-sm text-muted-foreground">
-                {asrProvider === 'doubao_v2' ? 'Access Token' : 'API Key'}
-              </label>
-              <div className="flex gap-2">
-                <div className="flex-1">
-                  <PasswordInput
-                    value={asrApiKey}
-                    onChange={setAsrApiKey}
-                    placeholder={asrProvider === 'doubao_v2' ? '输入火山引擎 Access Token' : asrProvider === 'mimo' ? '输入小米 MiMo API Key' : '输入百炼平台 API Key'}
-                    className={inputClass}
-                  />
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-9 shrink-0"
-                  onClick={() => void saveAndTestAsr()}
-                  disabled={asrTesting || !asrApiKey}
-                >
-                  {asrTesting ? '测试中...' : '保存'}
-                </Button>
-              </div>
-              {asrMessage && <p className="mt-1.5 text-xs text-muted-foreground">{asrMessage}</p>}
-              {!asrMessage && checkAsrKeyFormat(asrProvider, asrApiKey) && (
-                <p className="mt-1.5 flex items-center gap-1 text-xs text-amber-500">
-                  <AlertTriangle className="h-3 w-3 shrink-0" />
-                  {checkAsrKeyFormat(asrProvider, asrApiKey)}
-                </p>
-              )}
-            </div>
-            {asrProvider === 'qwen_realtime' && (
-              <div>
-                <label className="mb-1 block text-sm text-muted-foreground">
-                  业务空间 ID（选填）
-                </label>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="min-w-[14rem] flex-1">
                 <PasswordInput
-                  value={qwenWorkspaceId}
-                  onChange={handleQwenWorkspaceIdChange}
-                  placeholder="如 ws-xxxxxxxx"
+                  id="asr-api-key"
+                  label={keyLabel}
+                  value={asrApiKey}
+                  onChange={(v) => { setAsrApiKey(v); markDirty({ apiKey: v }) }}
+                  onSubmit={() => void saveAndTestAsr()}
+                  placeholder={asrProvider === 'doubao_v2' ? '输入火山引擎 Access Token' : asrProvider === 'mimo' ? '输入小米 MiMo API Key' : '输入百炼平台 API Key'}
                   className={inputClass}
                 />
-                <p className="mt-1.5 text-xs text-muted-foreground">
-                  使用「流式实时字幕」功能需填入此 ID，否则可留空。登录
-                  <button
-                    type="button"
-                    onClick={() => void shellOpen('https://bailian.console.aliyun.com')}
-                    className="mx-0.5 inline-flex items-center gap-0.5 text-primary underline underline-offset-2 decoration-primary/50 transition-colors hover:decoration-primary"
-                  >
-                    百炼控制台
-                    <ExternalLink className="h-3 w-3" />
-                  </button>
-                  后，鼠标移到右上角「默认业务空间」即可查看。
-                </p>
               </div>
-            )}
-            {asrProvider.startsWith('qwen_omni') && (
-              <div>
-                <label className="mb-1.5 block text-sm text-muted-foreground">System Prompt</label>
-                <div className="mb-1.5 flex gap-1.5">
-                  {OMNI_PROMPT_PRESETS.map((p) => (
-                    <button
-                      key={p.id}
-                      type="button"
-                      onClick={() => setOmniSystemPrompt(p.prompt)}
-                      className={`rounded-md border px-2.5 py-1 text-xs transition-colors ${
-                        omniSystemPrompt === p.prompt
-                          ? 'border-primary bg-primary/10 text-primary'
-                          : 'border-input-border text-muted-foreground hover:border-primary/50'
-                      }`}
-                    >
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
-                <textarea
-                  value={omniSystemPrompt}
-                  onChange={(e) => setOmniSystemPrompt(e.target.value)}
-                  placeholder={DEFAULT_OMNI_PROMPT}
-                  rows={2}
-                  className="w-full rounded-md border border-input-border bg-input-bg px-3 py-2 text-sm outline-none transition-colors focus:border-input-focus-border resize-y"
-                />
-              </div>
-            )}
-            {asrProvider.startsWith('qwen_omni') && (
-              <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2">
-                <p className="text-xs text-amber-600 dark:text-amber-400">
-                  💡 该模型同时具备语音识别和 AI 理解能力，无需再单独配置下方的「AI 校对」。
-                </p>
-              </div>
-            )}
-            {asrProvider === 'doubao_v2' && (
-              <button
-                type="button"
-                onClick={() => void shellOpen('https://my.feishu.cn/wiki/V4vLw2UfDiWcATkK2dyckhvynzc')}
-                className="inline-flex items-center gap-1 text-xs text-primary/70 underline underline-offset-2 decoration-primary/30 transition-colors hover:text-primary hover:decoration-primary/60"
+              <Button
+                size="sm"
+                className="h-9 shrink-0"
+                onClick={() => void saveAndTestAsr()}
+                disabled={asrTesting}
               >
-                SayIt 语音识别配置
-                <ExternalLink className="h-3 w-3" />
-              </button>
+                {asrTesting ? '保存并测试中…' : '保存并测试'}
+              </Button>
+            </div>
+            {!result && checkAsrKeyFormat(asrProvider, asrApiKey) && (
+              <FormatHint text={checkAsrKeyFormat(asrProvider, asrApiKey)} />
+            )}
+            {result && (
+              <Feedback className="mt-2" tone={result.tone} message={result.message} detail={result.detail} />
             )}
           </div>
-        </CardContent>
-      </Card>
+
+          {asrProvider === 'qwen_realtime' && (
+            <div>
+              <label htmlFor="qwen-workspace-id" className="mb-1 block text-sm text-muted-foreground">
+                业务空间 ID（选填）
+              </label>
+              <PasswordInput
+                id="qwen-workspace-id"
+                label="业务空间 ID"
+                value={qwenWorkspaceId}
+                onChange={handleQwenWorkspaceIdChange}
+                placeholder="如 ws-xxxxxxxx"
+                className={inputClass}
+              />
+              <p className="mt-1.5 text-xs text-muted-foreground">
+                使用「流式实时字幕」功能需填入此 ID，否则可留空。登录
+                <button
+                  type="button"
+                  onClick={() => void shellOpen('https://bailian.console.aliyun.com')}
+                  className="mx-0.5 inline-flex items-center gap-0.5 text-primary underline underline-offset-2 decoration-primary/50 transition-colors hover:decoration-primary"
+                >
+                  百炼控制台
+                  <ExternalLink className="h-3 w-3" aria-hidden />
+                </button>
+                后，鼠标移到右上角「默认业务空间」即可查看。
+              </p>
+            </div>
+          )}
+
+          {isOmni && (
+            <div>
+              <label htmlFor="omni-system-prompt" className="mb-1.5 block text-sm text-muted-foreground">
+                System Prompt
+              </label>
+              <Segmented
+                className="mb-1.5"
+                label="System Prompt 预设"
+                size="sm"
+                value={omniSystemPrompt}
+                options={OMNI_PROMPT_PRESETS}
+                onChange={(v) => { setOmniSystemPrompt(v); markDirty({ omniPrompt: v }) }}
+              />
+              <textarea
+                id="omni-system-prompt"
+                value={omniSystemPrompt}
+                onChange={(e) => { setOmniSystemPrompt(e.target.value); markDirty({ omniPrompt: e.target.value }) }}
+                placeholder={DEFAULT_OMNI_PROMPT}
+                rows={2}
+                className="w-full resize-y rounded-md border border-input-border bg-input-bg px-3 py-2 text-sm transition-colors focus:border-input-focus-border"
+              />
+            </div>
+          )}
+
+          {isOmni && (
+            // 这条提示原来写的是「无需再单独配置下方的「AI 校对」」——「下方」没有 AI 校对，
+            // 页面拆分后它搬到了侧栏另一页，用户会往下滚着找一个不存在的东西。
+            <Feedback
+              tone="info"
+              message="这个模型自己就能听懂并整理，语音识别和 AI 整理一步完成。侧栏「AI 整理」里的供应商配置对它不生效，不用再单独填。"
+            />
+          )}
+
+          {asrProvider === 'doubao_v2' && (
+            <button
+              type="button"
+              onClick={() => void shellOpen('https://my.feishu.cn/wiki/V4vLw2UfDiWcATkK2dyckhvynzc')}
+              className="inline-flex items-center gap-1 text-xs text-primary underline underline-offset-2 decoration-primary/40 transition-colors hover:decoration-primary"
+            >
+              SayIt 语音识别配置
+              <ExternalLink className="h-3 w-3" aria-hidden />
+            </button>
+          )}
+        </div>
+      </CardContent>
+    </Card>
   )
 }

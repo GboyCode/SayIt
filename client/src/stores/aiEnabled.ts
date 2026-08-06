@@ -9,6 +9,7 @@ type Listener = () => void
 
 let currentValue = false
 let initialized = false
+let ready = false
 const listeners = new Set<Listener>()
 
 function emitChange() {
@@ -25,10 +26,20 @@ export async function initAiEnabled(): Promise<void> {
     currentValue = next
     emitChange()
   }
+  // 初始值已落定：下一帧再置 ready，让标题栏等订阅方在值稳定后才显示/放动画，
+  // 避免冷启动时开关从默认(关)跳到已保存(开)被看见。
+  const flipReady = () => { ready = true; emitChange() }
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(flipReady)
+  else flipReady()
 }
 
 export function getAiEnabled(): boolean {
   return currentValue
+}
+
+/** AI 开关初始值是否已从设置读回（供 UI 决定首帧是否显示/放动画） */
+export function getAiEnabledReady(): boolean {
+  return ready
 }
 
 export function subscribeAiEnabled(listener: Listener): () => void {

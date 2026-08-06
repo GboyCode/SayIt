@@ -7,8 +7,9 @@
 // - 「配置」不含使用统计 stats，避免覆盖本机计数；「全部」包含 stats。
 // - 全部导入时，历史记录里的 audioFilePath 是旧机绝对路径，会重写为本机 audio 目录下的同名文件。
 
-use serde::Serialize;
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
+use std::collections::HashSet;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -19,8 +20,68 @@ use crate::storage::Storage;
 
 /// 备份文件格式版本。导入时若备份版本高于此值则拒绝。
 const FORMAT_VERSION: i64 = 1;
+/// 分项配置文件格式；完整配置与全部数据继续使用 v1，保持兼容。
+const SELECTED_CONFIG_FORMAT_VERSION: i64 = 2;
+const MAX_HOTWORDS: usize = 1000;
+const BUILTIN_PRESET_IDS: &[&str] = &["intent", "faithful", "zh2en", "casual"];
 /// 「配置」档不导出/导入的 app_settings key（使用统计属于使用数据，不属于配置）。
 const CONFIG_EXCLUDE: &[&str] = &["stats"];
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigExportSelection {
+    mode: String,
+    #[serde(default)]
+    hotword_group_ids: Vec<String>,
+    #[serde(default)]
+    include_text_replacements: bool,
+    #[serde(default)]
+    text_replacements: Option<Vec<Value>>,
+    #[serde(default)]
+    prompt_preset_ids: Vec<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigImportSectionPreview {
+    kind: String,
+    label: String,
+    total: usize,
+    added: usize,
+    updated: usize,
+    skipped: usize,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigImportPreview {
+    scope: String,
+    format_version: i64,
+    import_token: String,
+    sections: Vec<ConfigImportSectionPreview>,
+    warnings: Vec<String>,
+    requires_restart: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigImportResult {
+    changed_sections: Vec<String>,
+    added: usize,
+    updated: usize,
+    skipped: usize,
+    requires_restart: bool,
+}
+
+struct SelectedImportPlan {
+    app_settings: Map<String, Value>,
+    prompt_presets: Option<Vec<Value>>,
+    sections: Vec<ConfigImportSectionPreview>,
+    warnings: Vec<String>,
+    added: usize,
+    updated: usize,
+    skipped: usize,
+}
 
 fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
@@ -69,6 +130,134 @@ fn build_config_value(storage: &Storage) -> Value {
     })
 }
 
+fn normalized_strings(value: Option<&Value>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    value
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .filter(|item| seen.insert((*item).to_string()))
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn build_selected_config_value(
+    storage: &Storage,
+    selection: &ConfigExportSelection,
+) -> Result<Value, String> {
+    let selected_hotword_ids: HashSet<&str> = selection
+        .hotword_group_ids
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let selected_preset_ids: HashSet<&str> = selection
+        .prompt_preset_ids
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let mut items = Map::new();
+
+    if !selected_hotword_ids.is_empty() {
+        let themes_value = storage.get("customHotwordThemes", None);
+        let active_value = storage.get("customThemeActive", None);
+        let active_map = active_value.as_object();
+        let groups = themes_value
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_object)
+            .filter(|theme| {
+                theme
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| selected_hotword_ids.contains(id))
+            })
+            .filter_map(|theme| {
+                let id = theme.get("id")?.as_str()?;
+                let name = theme.get("name")?.as_str()?.trim();
+                if name.is_empty() {
+                    return None;
+                }
+                Some(json!({
+                    "name": name,
+                    "words": normalized_strings(theme.get("words")),
+                    "enabled": active_map
+                        .and_then(|map| map.get(id))
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                }))
+            })
+            .collect::<Vec<_>>();
+        items.insert("hotwordGroups".to_string(), Value::Array(groups));
+    }
+
+    if selection.include_text_replacements {
+        let source_rules = selection.text_replacements.clone().unwrap_or_else(|| {
+            storage
+                .get("textReplacements", None)
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        });
+        let rules = source_rules
+            .into_iter()
+            .filter_map(|rule| {
+                let obj = rule.as_object()?;
+                let from = obj.get("from")?.as_str()?.trim();
+                if from.is_empty() {
+                    return None;
+                }
+                Some(json!({
+                    "from": from,
+                    "to": obj.get("to").and_then(Value::as_str).unwrap_or(""),
+                    "enabled": obj.get("enabled").and_then(Value::as_bool).unwrap_or(true),
+                }))
+            })
+            .collect::<Vec<_>>();
+        items.insert("textReplacements".to_string(), Value::Array(rules));
+    }
+
+    if !selected_preset_ids.is_empty() {
+        let presets = storage
+            .get("promptPresets", None)
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|preset| {
+                let obj = preset.as_object()?;
+                let id = obj.get("id")?.as_str()?;
+                if !selected_preset_ids.contains(id) || BUILTIN_PRESET_IDS.contains(&id) {
+                    return None;
+                }
+                let name = obj.get("name")?.as_str()?.trim();
+                let system_prompt = obj.get("systemPrompt")?.as_str()?.trim();
+                if name.is_empty() || system_prompt.is_empty() {
+                    return None;
+                }
+                Some(json!({ "name": name, "systemPrompt": system_prompt }))
+            })
+            .collect::<Vec<_>>();
+        items.insert("promptPresets".to_string(), Value::Array(presets));
+    }
+
+    if items.is_empty() {
+        return Err("请至少选择一项要导出的配置".to_string());
+    }
+
+    Ok(json!({
+        "kind": "config",
+        "formatVersion": SELECTED_CONFIG_FORMAT_VERSION,
+        "scope": "selected",
+        "appVersion": app_version(),
+        "exportedAt": chrono::Utc::now().to_rfc3339(),
+        "items": Value::Object(items),
+    }))
+}
+
 fn build_full_value(storage: &Storage) -> Value {
     json!({
         "kind": "full",
@@ -84,35 +273,58 @@ fn build_full_value(storage: &Storage) -> Value {
     })
 }
 
-fn check_version(data: &Value) -> Result<(), String> {
-    let v = data.get("formatVersion").and_then(|x| x.as_i64()).unwrap_or(0);
-    if v > FORMAT_VERSION {
+fn check_kind_and_version(data: &Value, expected_kind: &str, max_version: i64) -> Result<i64, String> {
+    let kind = data.get("kind").and_then(Value::as_str).unwrap_or("");
+    if kind != expected_kind {
+        return Err(format!("这不是有效的 SayIt {}文件", if expected_kind == "full" { "全部数据备份" } else { "配置" }));
+    }
+    let version = data
+        .get("formatVersion")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    if version > max_version {
         return Err(format!(
             "备份文件版本（{}）高于当前应用支持的版本（{}），请升级 SayIt 后再导入。",
-            v, FORMAT_VERSION
+            version, max_version
         ));
     }
-    Ok(())
+    Ok(version)
 }
 
-/// 应用配置部分（设置 + prompt 预设 + 分应用规则），两档共用。
-fn apply_config_part(storage: &Storage, data: &Value, settings_exclude: &[&str]) -> Result<(), String> {
-    if let Some(obj) = data.get("appSettings").and_then(|v| v.as_object()) {
-        storage
-            .import_app_settings(obj, settings_exclude)
-            .map_err(|e| format!("写入设置失败: {}", e))?;
-    }
-    if let Some(arr) = data.get("promptPresets") {
-        if arr.is_array() {
-            storage.set("promptPresets", arr).map_err(|e| format!("写入 Prompt 预设失败: {}", e))?;
-        }
-    }
-    if let Some(arr) = data.get("appPromptRules") {
-        if arr.is_array() {
-            storage.set("appPromptRules", arr).map_err(|e| format!("写入应用规则失败: {}", e))?;
-        }
-    }
-    Ok(())
+fn is_selected_config(data: &Value) -> bool {
+    data.get("scope").and_then(Value::as_str) == Some("selected")
+        && data.get("formatVersion").and_then(Value::as_i64)
+            == Some(SELECTED_CONFIG_FORMAT_VERSION)
+}
+
+/// 应用完整配置部分（设置 + Prompt 预设 + 分应用规则），两档共用。
+fn apply_config_part(
+    storage: &Storage,
+    data: &Value,
+    settings_exclude: &[&str],
+) -> Result<(), String> {
+    let empty_settings = Map::new();
+    let app_settings = data
+        .get("appSettings")
+        .and_then(Value::as_object)
+        .unwrap_or(&empty_settings);
+    let prompt_presets = data
+        .get("promptPresets")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice);
+    let app_prompt_rules = data
+        .get("appPromptRules")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice);
+
+    storage
+        .apply_config_transaction(
+            app_settings,
+            settings_exclude,
+            prompt_presets,
+            app_prompt_rules,
+        )
+        .map_err(|error| format!("写入配置失败: {}", error))
 }
 
 /// 重写单条历史记录的音频路径：把目录段换成本机 audio 目录，文件名不变。
@@ -128,6 +340,325 @@ fn rewrite_audio_path(rec: &Value, adir: &Path) -> Value {
         }
     }
     rec
+}
+
+fn next_import_id(prefix: &str, used_ids: &mut HashSet<String>, sequence: &mut usize) -> String {
+    loop {
+        let candidate = format!(
+            "{}_{}_{}",
+            prefix,
+            chrono::Utc::now().timestamp_millis(),
+            *sequence
+        );
+        *sequence += 1;
+        if used_ids.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+}
+
+fn unique_import_name(base: &str, used_names: &mut HashSet<String>) -> String {
+    if used_names.insert(base.to_lowercase()) {
+        return base.to_string();
+    }
+    let mut index = 1usize;
+    loop {
+        let candidate = if index == 1 {
+            format!("{}（导入）", base)
+        } else {
+            format!("{}（导入 {}）", base, index)
+        };
+        if used_names.insert(candidate.to_lowercase()) {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
+fn build_selected_import_plan(storage: &Storage, data: &Value) -> Result<SelectedImportPlan, String> {
+    let items = data
+        .get("items")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "配置文件缺少 items，可能已损坏".to_string())?;
+    let mut app_settings = Map::new();
+    let mut prompt_presets = None;
+    let mut sections = Vec::new();
+    let mut warnings = Vec::new();
+    let mut total_added = 0usize;
+    let mut total_updated = 0usize;
+    let mut total_skipped = 0usize;
+    let mut sequence = 0usize;
+
+    if let Some(group_value) = items.get("hotwordGroups") {
+        let imported_groups = group_value
+            .as_array()
+            .ok_or_else(|| "热词组格式不正确".to_string())?;
+        let mut local_groups = storage
+            .get("customHotwordThemes", None)
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let mut active_map = storage
+            .get("customThemeActive", None)
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        let mut used_ids = local_groups
+            .iter()
+            .filter_map(|group| group.get("id").and_then(Value::as_str))
+            .map(ToString::to_string)
+            .collect::<HashSet<_>>();
+        let mut added = 0usize;
+        let mut updated = 0usize;
+        let mut skipped = 0usize;
+
+        for imported in imported_groups {
+            let Some(obj) = imported.as_object() else {
+                skipped += 1;
+                continue;
+            };
+            let name = obj
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or("");
+            if name.is_empty() {
+                skipped += 1;
+                continue;
+            }
+            let words = normalized_strings(obj.get("words"));
+            let normalized_name = name.to_lowercase();
+            let existing_index = local_groups.iter().position(|group| {
+                group
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|current| current.trim().to_lowercase() == normalized_name)
+            });
+
+            if let Some(index) = existing_index {
+                let existing_words = normalized_strings(local_groups[index].get("words"));
+                let mut merged_words = existing_words.clone();
+                let mut seen = existing_words.into_iter().collect::<HashSet<_>>();
+                for word in words {
+                    if seen.insert(word.clone()) {
+                        merged_words.push(word);
+                    }
+                }
+                if merged_words.len()
+                    == normalized_strings(local_groups[index].get("words")).len()
+                {
+                    skipped += 1;
+                } else if let Some(local_obj) = local_groups[index].as_object_mut() {
+                    local_obj.insert("words".to_string(), json!(merged_words));
+                    updated += 1;
+                }
+            } else {
+                let id = next_import_id("theme_import", &mut used_ids, &mut sequence);
+                let enabled = obj
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                local_groups.push(json!({ "id": id, "name": name, "words": words }));
+                active_map.insert(id, Value::Bool(enabled));
+                added += 1;
+            }
+        }
+
+        let mut active_words = HashSet::new();
+        for group in &local_groups {
+            let Some(id) = group.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            if active_map.get(id).and_then(Value::as_bool) != Some(true) {
+                continue;
+            }
+            active_words.extend(normalized_strings(group.get("words")));
+        }
+        if active_words.len() > MAX_HOTWORDS {
+            warnings.push(format!(
+                "启用的自定义热词将达到 {} 个，超过 {} 个后实际生效数量会受限制。",
+                active_words.len(),
+                MAX_HOTWORDS
+            ));
+        }
+
+        app_settings.insert("customHotwordThemes".to_string(), Value::Array(local_groups));
+        app_settings.insert("customThemeActive".to_string(), Value::Object(active_map));
+        sections.push(ConfigImportSectionPreview {
+            kind: "hotwords".to_string(),
+            label: "热词组".to_string(),
+            total: imported_groups.len(),
+            added,
+            updated,
+            skipped,
+        });
+        total_added += added;
+        total_updated += updated;
+        total_skipped += skipped;
+    }
+
+    if let Some(rules_value) = items.get("textReplacements") {
+        let imported_rules = rules_value
+            .as_array()
+            .ok_or_else(|| "文本替换格式不正确".to_string())?;
+        let mut local_rules = storage
+            .get("textReplacements", None)
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let mut used_ids = local_rules
+            .iter()
+            .filter_map(|rule| rule.get("id").and_then(Value::as_str))
+            .map(ToString::to_string)
+            .collect::<HashSet<_>>();
+        let mut added = 0usize;
+        let mut updated = 0usize;
+        let mut skipped = 0usize;
+
+        for imported in imported_rules {
+            let Some(obj) = imported.as_object() else {
+                skipped += 1;
+                continue;
+            };
+            let from = obj
+                .get("from")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or("");
+            if from.is_empty() {
+                skipped += 1;
+                continue;
+            }
+            let to = obj.get("to").and_then(Value::as_str).unwrap_or("");
+            let existing_index = local_rules.iter().position(|rule| {
+                rule.get("from").and_then(Value::as_str) == Some(from)
+            });
+
+            if let Some(index) = existing_index {
+                let current_to = local_rules[index]
+                    .get("to")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if current_to == to {
+                    skipped += 1;
+                } else if let Some(local_obj) = local_rules[index].as_object_mut() {
+                    local_obj.insert("to".to_string(), Value::String(to.to_string()));
+                    updated += 1;
+                }
+            } else {
+                let id = next_import_id("replacement_import", &mut used_ids, &mut sequence);
+                local_rules.push(json!({
+                    "id": id,
+                    "from": from,
+                    "to": to,
+                    "enabled": obj.get("enabled").and_then(Value::as_bool).unwrap_or(true),
+                }));
+                added += 1;
+            }
+        }
+
+        app_settings.insert("textReplacements".to_string(), Value::Array(local_rules));
+        sections.push(ConfigImportSectionPreview {
+            kind: "textReplacements".to_string(),
+            label: "文本替换".to_string(),
+            total: imported_rules.len(),
+            added,
+            updated,
+            skipped,
+        });
+        total_added += added;
+        total_updated += updated;
+        total_skipped += skipped;
+    }
+
+    if let Some(presets_value) = items.get("promptPresets") {
+        let imported_presets = presets_value
+            .as_array()
+            .ok_or_else(|| "润色模式格式不正确".to_string())?;
+        let mut local_presets = storage
+            .get("promptPresets", None)
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let mut used_ids = local_presets
+            .iter()
+            .filter_map(|preset| preset.get("id").and_then(Value::as_str))
+            .map(ToString::to_string)
+            .collect::<HashSet<_>>();
+        let mut used_names = local_presets
+            .iter()
+            .filter_map(|preset| preset.get("name").and_then(Value::as_str))
+            .map(|name| name.trim().to_lowercase())
+            .collect::<HashSet<_>>();
+        let mut added = 0usize;
+        let mut skipped = 0usize;
+
+        for imported in imported_presets {
+            let Some(obj) = imported.as_object() else {
+                skipped += 1;
+                continue;
+            };
+            let name = obj
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or("");
+            let system_prompt = obj
+                .get("systemPrompt")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or("");
+            if name.is_empty() || system_prompt.is_empty() {
+                skipped += 1;
+                continue;
+            }
+            let exact_duplicate = local_presets.iter().any(|preset| {
+                preset
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|current| current.trim().eq_ignore_ascii_case(name))
+                    && preset.get("systemPrompt").and_then(Value::as_str) == Some(system_prompt)
+            });
+            if exact_duplicate {
+                skipped += 1;
+                continue;
+            }
+            let imported_name = unique_import_name(name, &mut used_names);
+            let id = next_import_id("preset_import", &mut used_ids, &mut sequence);
+            local_presets.push(json!({
+                "id": id,
+                "name": imported_name,
+                "systemPrompt": system_prompt,
+            }));
+            added += 1;
+        }
+
+        prompt_presets = Some(local_presets);
+        sections.push(ConfigImportSectionPreview {
+            kind: "promptPresets".to_string(),
+            label: "润色模式".to_string(),
+            total: imported_presets.len(),
+            added,
+            updated: 0,
+            skipped,
+        });
+        total_added += added;
+        total_skipped += skipped;
+    }
+
+    if sections.is_empty() {
+        return Err("配置文件中没有可导入的内容".to_string());
+    }
+
+    Ok(SelectedImportPlan {
+        app_settings,
+        prompt_presets,
+        sections,
+        warnings,
+        added: total_added,
+        updated: total_updated,
+        skipped: total_skipped,
+    })
 }
 
 // ─── 导出 ───
@@ -199,12 +730,19 @@ pub fn get_backup_directory() -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn export_config(storage: State<'_, Storage>) -> Result<String, String> {
+pub async fn export_config(
+    selection: ConfigExportSelection,
+    storage: State<'_, Storage>,
+) -> Result<String, String> {
     let out_path = timestamped_backup_path("sayit-config", "json");
     if let Some(parent) = out_path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("创建备份目录失败: {}", e))?;
     }
-    let payload = build_config_value(storage.inner());
+    let payload = match selection.mode.as_str() {
+        "full" => build_config_value(storage.inner()),
+        "selected" => build_selected_config_value(storage.inner(), &selection)?,
+        _ => return Err("不支持的配置导出方式".to_string()),
+    };
     let content = serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?;
     fs::write(&out_path, content).map_err(|e| format!("写入文件失败: {}", e))?;
     let path = out_path.to_string_lossy().to_string();
@@ -402,15 +940,230 @@ pub async fn export_full(
 
 // ─── 导入 ───
 
-#[tauri::command]
-pub async fn import_config(in_path: String, storage: State<'_, Storage>) -> Result<(), String> {
-    let content = fs::read_to_string(&in_path).map_err(|e| format!("读取文件失败: {}", e))?;
-    let data: Value = serde_json::from_str(&content)
+fn content_fingerprint(content: &str) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in content.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn read_config_file(in_path: &str) -> Result<(Value, String), String> {
+    let content = fs::read_to_string(in_path).map_err(|e| format!("读取文件失败: {}", e))?;
+    let data = serde_json::from_str(&content)
         .map_err(|e| format!("解析失败（文件可能损坏或格式不正确）: {}", e))?;
-    check_version(&data)?;
-    // 配置导入排除 stats，避免覆盖本机使用统计
-    apply_config_part(storage.inner(), &data, CONFIG_EXCLUDE)?;
+    Ok((data, content_fingerprint(&content)))
+}
+
+fn config_import_token(
+    storage: &Storage,
+    data: &Value,
+    file_fingerprint: &str,
+) -> Result<String, String> {
+    if !is_selected_config(data) {
+        return Ok(file_fingerprint.to_string());
+    }
+
+    let context = json!({
+        "file": file_fingerprint,
+        "customHotwordThemes": storage.get("customHotwordThemes", None),
+        "customThemeActive": storage.get("customThemeActive", None),
+        "textReplacements": storage.get("textReplacements", None),
+        "promptPresets": storage.get("promptPresets", None),
+    });
+    let serialized = serde_json::to_string(&context)
+        .map_err(|error| format!("生成导入校验信息失败: {}", error))?;
+    Ok(content_fingerprint(&serialized))
+}
+
+fn validate_config_collection(key: &str, items: &[Value]) -> Result<(), String> {
+    let mut ids = HashSet::new();
+    for (index, item) in items.iter().enumerate() {
+        let object = item
+            .as_object()
+            .ok_or_else(|| format!("配置文件中的 {} 第 {} 项格式不正确", key, index + 1))?;
+        let id = object
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("配置文件中的 {} 第 {} 项缺少 id", key, index + 1))?;
+        if !ids.insert(id.to_string()) {
+            return Err(format!("配置文件中的 {} 存在重复 id：{}", key, id));
+        }
+
+        let required_fields: &[&str] = match key {
+            "promptPresets" => &["name", "systemPrompt"],
+            "appPromptRules" => &["appId", "name"],
+            _ => &[],
+        };
+        for field in required_fields {
+            let valid = object
+                .get(*field)
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.trim().is_empty());
+            if !valid {
+                return Err(format!(
+                    "配置文件中的 {} 第 {} 项缺少 {}",
+                    key,
+                    index + 1,
+                    field
+                ));
+            }
+        }
+    }
     Ok(())
+}
+
+fn full_config_preview_sections(data: &Value) -> Result<Vec<ConfigImportSectionPreview>, String> {
+    let mut sections = Vec::new();
+
+    if let Some(value) = data.get("appSettings") {
+        let settings = value
+            .as_object()
+            .ok_or_else(|| "配置文件中的 appSettings 格式不正确".to_string())?;
+        if !settings.is_empty() {
+            sections.push(ConfigImportSectionPreview {
+                kind: "appSettings".to_string(),
+                label: "应用设置".to_string(),
+                total: settings.len(),
+                added: 0,
+                updated: settings.len(),
+                skipped: 0,
+            });
+        }
+    }
+
+    for (key, kind, label) in [
+        ("promptPresets", "promptPresets", "润色模式"),
+        ("appPromptRules", "appPromptRules", "应用 Prompt 规则"),
+    ] {
+        if let Some(value) = data.get(key) {
+            let items = value
+                .as_array()
+                .ok_or_else(|| format!("配置文件中的 {} 格式不正确", key))?;
+            validate_config_collection(key, items)?;
+            sections.push(ConfigImportSectionPreview {
+                kind: kind.to_string(),
+                label: label.to_string(),
+                total: items.len(),
+                added: 0,
+                updated: items.len(),
+                skipped: 0,
+            });
+        }
+    }
+
+    if sections.is_empty() {
+        return Err("配置文件中没有可导入的完整配置".to_string());
+    }
+    Ok(sections)
+}
+
+#[tauri::command]
+pub async fn inspect_config_import(
+    in_path: String,
+    storage: State<'_, Storage>,
+) -> Result<ConfigImportPreview, String> {
+    let (data, file_fingerprint) = read_config_file(&in_path)?;
+    let version = check_kind_and_version(
+        &data,
+        "config",
+        SELECTED_CONFIG_FORMAT_VERSION,
+    )?;
+
+    if is_selected_config(&data) {
+        let plan = build_selected_import_plan(storage.inner(), &data)?;
+        let import_token = config_import_token(storage.inner(), &data, &file_fingerprint)?;
+        return Ok(ConfigImportPreview {
+            scope: "selected".to_string(),
+            format_version: version,
+            import_token,
+            sections: plan.sections,
+            warnings: plan.warnings,
+            requires_restart: true,
+        });
+    }
+
+    if data.get("scope").is_some() || version > FORMAT_VERSION {
+        return Err("不支持的配置文件范围或版本".to_string());
+    }
+
+    let sections = full_config_preview_sections(&data)?;
+    Ok(ConfigImportPreview {
+        scope: "full".to_string(),
+        format_version: version,
+        import_token: file_fingerprint,
+        sections,
+        warnings: vec![
+            "完整配置会覆盖文件中包含的设置、供应商配置与密钥、热词和 Prompt。"
+                .to_string(),
+        ],
+        requires_restart: true,
+    })
+}
+
+#[tauri::command]
+pub async fn import_config(
+    in_path: String,
+    expected_import_token: String,
+    storage: State<'_, Storage>,
+) -> Result<ConfigImportResult, String> {
+    let (data, file_fingerprint) = read_config_file(&in_path)?;
+    let version = check_kind_and_version(
+        &data,
+        "config",
+        SELECTED_CONFIG_FORMAT_VERSION,
+    )?;
+
+    if is_selected_config(&data) {
+        let actual_token = config_import_token(storage.inner(), &data, &file_fingerprint)?;
+        if actual_token != expected_import_token {
+            return Err("配置文件或本地配置已发生变化，请重新选择文件并确认".to_string());
+        }
+
+        let plan = build_selected_import_plan(storage.inner(), &data)?;
+        let changed_sections = plan
+            .sections
+            .iter()
+            .filter(|section| section.added + section.updated > 0)
+            .map(|section| section.label.clone())
+            .collect::<Vec<_>>();
+        storage
+            .apply_config_transaction(
+                &plan.app_settings,
+                CONFIG_EXCLUDE,
+                plan.prompt_presets.as_deref(),
+                None,
+            )
+            .map_err(|error| format!("写入配置失败: {}", error))?;
+        return Ok(ConfigImportResult {
+            changed_sections,
+            added: plan.added,
+            updated: plan.updated,
+            skipped: plan.skipped,
+            requires_restart: true,
+        });
+    }
+
+    if data.get("scope").is_some() || version > FORMAT_VERSION {
+        return Err("不支持的配置文件范围或版本".to_string());
+    }
+    full_config_preview_sections(&data)?;
+    if file_fingerprint != expected_import_token {
+        return Err("配置文件已发生变化，请重新选择文件并确认".to_string());
+    }
+
+    // 完整配置导入排除 stats，避免覆盖本机使用统计。
+    apply_config_part(storage.inner(), &data, CONFIG_EXCLUDE)?;
+    Ok(ConfigImportResult {
+        changed_sections: vec!["完整配置".to_string()],
+        added: 0,
+        updated: 1,
+        skipped: 0,
+        requires_restart: true,
+    })
 }
 
 #[tauri::command]
@@ -427,7 +1180,7 @@ pub async fn import_full(in_path: String, storage: State<'_, Storage>) -> Result
         entry.read_to_string(&mut json_str).map_err(|e| e.to_string())?;
     }
     let data: Value = serde_json::from_str(&json_str).map_err(|e| format!("解析 backup.json 失败: {}", e))?;
-    check_version(&data)?;
+    check_kind_and_version(&data, "full", FORMAT_VERSION)?;
 
     // 2. 释放音频文件到本机 audio 目录
     let adir = audio_dir();

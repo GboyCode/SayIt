@@ -395,6 +395,27 @@ export async function savePromptPreset(preset: PromptPreset): Promise<void> {
   await api().storeSet('promptPresets', custom)
 }
 
+/**
+ * 拖拽调整**自定义**润色模式的顺序（下标是在"自定义"这一段里的下标）。
+ *
+ * 内置模式的顺序固定（getPromptPresets 里内置永远排在前面），所以这里只在
+ * "用户自建"这一段里换位；`promptPresets` 这个数组同时还存着对内置模式的覆盖，
+ * 换位时必须原样保留它们，否则会把用户改过的内置模式弄丢。
+ */
+export async function moveCustomPromptPreset(from: number, to: number): Promise<void> {
+  const builtinIds = new Set(BUILTIN_PRESETS.map((p) => p.id))
+  const custom = ((await api().storeGet('promptPresets')) as PromptPreset[]) || []
+  const overrides = custom.filter((p) => builtinIds.has(p.id))
+  const userCreated = custom.filter((p) => !builtinIds.has(p.id))
+
+  if (from === to || from < 0 || to < 0 || from >= userCreated.length || to >= userCreated.length) return
+
+  const [moved] = userCreated.splice(from, 1)
+  userCreated.splice(to, 0, moved)
+
+  await api().storeSet('promptPresets', [...overrides, ...userCreated])
+}
+
 export async function deletePromptPreset(id: string): Promise<void> {
   const builtinIds = new Set(BUILTIN_PRESETS.map((p) => p.id))
   if (builtinIds.has(id)) return

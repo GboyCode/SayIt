@@ -13,63 +13,110 @@ interface AiResult { text: string; elapsed_ms: number }
 export class LocalProvider extends BufferedProvider {
   readonly mode = 'local' as const
 
-  protected async onConnect(callbacks: TranscriptionCallbacks): Promise<void> {
-    // 预加载本地模型
-    try {
-      const modelId = await getSetting('localAsr.modelId', 'sensevoice-small') as string
-      if (modelId) {
-        await invoke<string>('preload_local_model', { modelId })
-      }
-      callbacks.onReady?.({ asr: true, llm: false })
-    } catch {
-      callbacks.onReady?.({ asr: true, llm: false })
+  /**
+   * 本地模式的"就绪"= 选中的模型已完整下载到本地。
+   *
+   * 以前这里无论如何都报 `asr: true`（连预加载失败的 catch 里也报），于是模型被删光了
+   * 按快捷键照样开始录音，录完才在识别阶段报错 —— 而设置页明明写着"按下快捷键不会有
+   * 反应"，说到没做到。现在如实上报，未就绪由 RecorderOrchestrator 统一拦下并提示。
+   *
+   * 判断口径与左下角引擎指示（stores/modeStatus）保持一致：都看 list_downloaded_models
+   * 里该模型是否 complete，避免同屏两处结论不同。
+   */
+  protected async onConnect(callbacks: TranscriptionCallbacks): Promise<boolean> {
+    const modelId = await getSetting('localAsr.modelId', 'sensevoice-small-gguf') as string
+    if (!modelId) {
+      addRuntimeEvent('warn', 'local', '未选择本地模型，视为未就绪')
+      callbacks.onReady?.({ asr: false, llm: false })
+      return false
     }
+
+    let downloaded = false
+    try {
+      const models = await invoke<{ id: string; complete: boolean }[]>('list_downloaded_models')
+      downloaded = models.some((m) => m.id === modelId && m.complete)
+    } catch (err) {
+      // 读不到列表时不敢断言就绪：宁可拦下并提示，也别录完才失败
+      addRuntimeEvent('warn', 'local', '读不到本地模型列表，视为未就绪', { error: String(err) })
+      callbacks.onReady?.({ asr: false, llm: false })
+      return false
+    }
+
+    if (!downloaded) {
+      addRuntimeEvent('warn', 'local', '选中的本地模型尚未下载，视为未就绪', { modelId })
+      callbacks.onReady?.({ asr: false, llm: false })
+      return false
+    }
+
+    // 已下载：预加载失败（如文件损坏、显卡后端异常）不代表不能用，
+    // 真正的失败会在识别阶段带着具体原因报出来，这里仍按就绪处理。
+    try {
+      const accelerator = await getSetting('localAsr.accelerator', 'auto') as string
+      await invoke<string>('preload_local_model', { modelId, accelerator })
+    } catch (err) {
+      addRuntimeEvent('warn', 'local', '本地模型预加载失败（仍按就绪处理）', { error: String(err) })
+    }
+    callbacks.onReady?.({ asr: true, llm: false })
+    return true
   }
 
-  protected async processAudio(audioB64: string, durationSec: number): Promise<void> {
+  protected async processAudio(audioB64: string, durationSec: number, runId: number): Promise<void> {
+    if (!this.isRunCurrent(runId)) return
+    const startOpts = this.startOpts
     const startTime = performance.now()
 
-    // 调用本地 ASR
-    addRuntimeEvent('info', 'local', '开始本地 ASR', { durationSec })
+    addRuntimeEvent('info', 'local', '开始本地 ASR', { durationSec, runId })
     let asrText = ''
     let asrMs = 0
 
     try {
+      const modelId = await getSetting('localAsr.modelId', 'sensevoice-small-gguf')
+      if (!this.isRunCurrent(runId)) return
+      const language = await getSetting('localAsr.language', 'auto')
+      if (!this.isRunCurrent(runId)) return
+      const accelerator = await getSetting('localAsr.accelerator', 'auto')
+      if (!this.isRunCurrent(runId)) return
+
       const result = await invoke<{ text: string; elapsed_ms: number }>('local_transcribe', {
         audioB64,
-        modelId: await getSetting('localAsr.modelId', 'sensevoice-small'),
-        language: await getSetting('localAsr.language', 'auto'),
-        hotwords: this.startOpts?.hotwords ?? [],
+        modelId,
+        language,
+        accelerator,
       })
+      if (!this.isRunCurrent(runId)) return
       asrText = result.text
       asrMs = result.elapsed_ms
     } catch (err) {
+      if (!this.isRunCurrent(runId)) return
       addRuntimeEvent('error', 'local', '本地 ASR 失败', { error: String(err) })
       this.callbacks.onError?.(String(err))
       this.callbacks.onDone?.()
       return
     }
 
+    if (!this.isRunCurrent(runId)) return
     this.callbacks.onASR?.({ text: asrText, asrMs, durationSec })
 
     if (!asrText.trim()) {
+      if (!this.isRunCurrent(runId)) return
       this.callbacks.onFinal?.({ asrText: '', llmText: '', asrMs, llmMs: 0, durationSec })
       this.callbacks.onDone?.()
       return
     }
 
-    // 可选 AI 校对
     let llmText = asrText
     let llmMs = 0
 
     const aiEnabled = await getSetting('aiEnabled', false)
-    const disableAi = this.startOpts?.disableAi ?? false
+    if (!this.isRunCurrent(runId)) return
+    const disableAi = startOpts?.disableAi ?? false
 
     if (aiEnabled && !disableAi) {
       const aiProvider = await getSetting('cloudAi.provider', 'openai_compat') as string
       const aiApiUrl = await getSetting('cloudAi.apiUrl', '') as string
       const aiApiKey = await getSetting('cloudAi.apiKey', '') as string
       const aiModel = await getSetting('cloudAi.model', '') as string
+      if (!this.isRunCurrent(runId)) return
 
       if (aiApiUrl && (aiApiKey || aiProvider === 'ollama')) {
         try {
@@ -77,19 +124,22 @@ export class LocalProvider extends BufferedProvider {
             request: {
               text: asrText,
               ai_config: { provider: aiProvider, api_url: aiApiUrl, api_key: aiApiKey, model: aiModel },
-              system_prompt: this.startOpts?.systemPrompt || null,
+              system_prompt: startOpts?.systemPrompt || null,
             },
           })
+          if (!this.isRunCurrent(runId)) return
           llmText = aiResult.text || asrText
           llmMs = aiResult.elapsed_ms
         } catch (err) {
+          if (!this.isRunCurrent(runId)) return
           addRuntimeEvent('warn', 'local', 'AI 校对失败，使用 ASR 原文', { error: String(err) })
         }
       }
     }
 
+    if (!this.isRunCurrent(runId)) return
     const totalMs = Math.round(performance.now() - startTime)
-    addRuntimeEvent('info', 'local', '处理完成', { durationSec, asrMs, llmMs, totalMs })
+    addRuntimeEvent('info', 'local', '处理完成', { durationSec, asrMs, llmMs, totalMs, runId })
 
     this.callbacks.onFinal?.({ asrText, llmText, asrMs, llmMs, durationSec })
     this.callbacks.onDone?.()

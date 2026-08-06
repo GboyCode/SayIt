@@ -1,25 +1,33 @@
 import { useEffect, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { AlertTriangle, Check, Download, FolderOpen, Loader2, Upload } from 'lucide-react'
+import { Check, Download, FolderOpen, Loader2, Upload } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Tooltip } from '@/components/ui/tooltip'
 import {
+  ConfigExportDialog,
+  ConfigImportDialog,
+  FullImportConfirmDialog,
+  ImportDoneDialog,
+} from './ConfigTransferDialogs'
+import {
   exportConfigFile,
   exportFullFile,
+  inspectConfigImport,
   pickImportFile,
   runImport,
   restartApp,
   onBackupExportProgress,
   type BackupExportProgress,
+  type ConfigExportSelection,
+  type ConfigImportPreview,
 } from '@/services/backup'
 
 type ImportKind = 'config' | 'full'
 
-const IMPORT_OVERWRITES: Record<ImportKind, string> = {
-  config: '设置、供应商配置与密钥、热词、Prompt',
-  full: '全部数据（设置、历史记录与录音）',
-}
+type ImportConfirmation =
+  | { kind: 'config'; path: string; preview: ConfigImportPreview }
+  | { kind: 'full'; path: string }
 
 type BusyAction = 'exportConfig' | 'exportFull' | 'importConfig' | 'importFull' | null
 
@@ -112,8 +120,9 @@ export default function BackupSection() {
   const [configPath, setConfigPath] = useState('')
   const [fullPath, setFullPath] = useState('')
   const [fullProgress, setFullProgress] = useState<BackupExportProgress | null>(null)
-  // 导入确认（应用内弹窗，替代原生系统对话框）
-  const [importConfirm, setImportConfirm] = useState<{ kind: ImportKind; path: string } | null>(null)
+  const [configExportOpen, setConfigExportOpen] = useState(false)
+  // 导入确认（配置先预检并展示变更；全部数据保持覆盖确认）
+  const [importConfirm, setImportConfirm] = useState<ImportConfirmation | null>(null)
   // 导入成功后展示提示并自动重启
   const [importDone, setImportDone] = useState(false)
   // 导出/导入的错误提示，改为应用内内联横幅
@@ -138,11 +147,12 @@ export default function BackupSection() {
     void invoke('reveal_file_in_folder', { filePath })
   }
 
-  const handleExportConfig = async () => {
+  const handleExportConfig = async (selection: ConfigExportSelection) => {
+    setConfigExportOpen(false)
     setBusyAction('exportConfig')
     setActionError('')
     try {
-      const result = await exportConfigFile()
+      const result = await exportConfigFile(selection)
       if (result.filePath) setConfigPath(result.filePath)
     } catch (error) {
       setActionError(`导出失败：${String(error)}`)
@@ -165,13 +175,19 @@ export default function BackupSection() {
     }
   }
 
-  // 第一步：选文件（系统原生对话框），选好后弹出应用内确认弹窗
+  // 第一步：选文件。配置文件先自动识别并计算变更预览，全部数据沿用覆盖确认。
   const handleImport = async (kind: ImportKind) => {
     setBusyAction(kind === 'config' ? 'importConfig' : 'importFull')
     setActionError('')
     try {
       const path = await pickImportFile(kind)
-      if (path) setImportConfirm({ kind, path })
+      if (!path) return
+      if (kind === 'config') {
+        const preview = await inspectConfigImport(path)
+        setImportConfirm({ kind, path, preview })
+      } else {
+        setImportConfirm({ kind, path })
+      }
     } catch (error) {
       setActionError(`导入失败：${String(error)}`)
     } finally {
@@ -183,11 +199,14 @@ export default function BackupSection() {
   const confirmImport = async () => {
     if (!importConfirm) return
     const { kind, path } = importConfirm
+    const importToken = importConfirm.kind === 'config'
+      ? importConfirm.preview.importToken
+      : undefined
     setImportConfirm(null)
     setBusyAction(kind === 'config' ? 'importConfig' : 'importFull')
     setActionError('')
     try {
-      await runImport(kind, path)
+      await runImport(kind, path, importToken)
       setImportDone(true)
       // 略作停留让用户看到提示，再自动重启使更改生效
       setTimeout(() => { void restartApp() }, 1500)
@@ -202,17 +221,17 @@ export default function BackupSection() {
       <CardContent className="p-6">
         <h2 className="text-lg font-semibold">备份与迁移</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          用于换机、重装或定期备份。导入会覆盖现有数据，请先确认。
+          配置可按需分享或备份；全部数据适合换机迁移。导入前会先显示确认信息。
         </p>
 
         <div className="mt-5">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <p className="text-sm font-medium">配置</p>
-              <p className="mt-0.5 text-xs text-muted-foreground">仅设置、密钥、热词与提示词，文件小、便于日常备份</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">可选择导出完整设置，或单独导出热词、文本替换和润色模式</p>
             </div>
             <div className="flex shrink-0 gap-2">
-              <Button variant="outline" size="sm" className="gap-1.5" onClick={() => void handleExportConfig()} disabled={isBusy}>
+              <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setConfigExportOpen(true)} disabled={isBusy}>
                 {busyAction === 'exportConfig' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
                 {busyAction === 'exportConfig' ? '正在导出' : '导出'}
               </Button>
@@ -263,43 +282,31 @@ export default function BackupSection() {
         )}
       </CardContent>
 
-      {/* 导入确认（应用内弹窗，样式与其余确认框一致） */}
-      {importConfirm && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
-          onClick={() => setImportConfirm(null)}
-        >
-          <div className="w-96 rounded-xl border bg-card p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500" />
-              <h3 className="text-base font-semibold">确认导入</h3>
-            </div>
-            <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-              导入将用备份覆盖当前的{IMPORT_OVERWRITES[importConfirm.kind]}，此操作无法撤销。导入完成后应用会自动重启。确定继续吗？
-            </p>
-            <div className="mt-5 flex justify-end gap-2">
-              <Button size="sm" variant="outline" onClick={() => setImportConfirm(null)}>取消</Button>
-              <Button size="sm" variant="destructive" onClick={() => void confirmImport()}>覆盖导入</Button>
-            </div>
-          </div>
-        </div>
+      {configExportOpen && (
+        <ConfigExportDialog
+          onClose={() => setConfigExportOpen(false)}
+          onExport={(selection) => { void handleExportConfig(selection) }}
+        />
       )}
 
-      {/* 导入成功提示，稍后自动重启 */}
-      {importDone && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="w-80 rounded-xl border bg-card p-6 shadow-xl">
-            <div className="flex items-center gap-2">
-              <Check className="h-4 w-4 shrink-0 text-success" />
-              <h3 className="text-base font-semibold">导入成功</h3>
-            </div>
-            <p className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              应用即将重启以使更改生效…
-            </p>
-          </div>
-        </div>
+      {importConfirm?.kind === 'config' && (
+        <ConfigImportDialog
+          filePath={importConfirm.path}
+          preview={importConfirm.preview}
+          onClose={() => setImportConfirm(null)}
+          onConfirm={() => { void confirmImport() }}
+        />
       )}
+
+      {importConfirm?.kind === 'full' && (
+        <FullImportConfirmDialog
+          filePath={importConfirm.path}
+          onClose={() => setImportConfirm(null)}
+          onConfirm={() => { void confirmImport() }}
+        />
+      )}
+
+      {importDone && <ImportDoneDialog />}
     </Card>
   )
 }

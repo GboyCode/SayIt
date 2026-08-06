@@ -1,5 +1,6 @@
 import { RecorderOrchestrator } from './recorder/RecorderOrchestrator'
 import type { RecorderState } from './recorder/types'
+import type { PromptPreset } from './store'
 
 let orchestrator = new RecorderOrchestrator()
 
@@ -41,6 +42,16 @@ export function setAiEnabledCache(next: boolean) {
 /** 轻量：仅同步当前润色模式到录音器缓存，无 IPC，避免快速切换时卡顿 */
 export function setActivePresetCache(id: string) {
   orchestrator.setActivePresetCache(id)
+}
+
+/** 轻量：同步最新润色模式列表，保证新建/编辑后的预设可被下一次录音解析 */
+export function setPromptPresetsCache(presets: PromptPreset[]) {
+  orchestrator.setPromptPresetsCache(presets)
+}
+
+/** 轻量：同步下一次录音使用的热词快照，无需切换语音引擎或全量刷新设置 */
+export function setHotwordsCache(words: string[]) {
+  orchestrator.setHotwordsCache(words)
 }
 
 /** 轻量：仅同步「流式实时显示」开关到录音器缓存，无 IPC，切换后立即生效 */

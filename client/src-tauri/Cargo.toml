@@ -1,6 +1,6 @@
 [package]
 name = "sayit"
-version = "0.1.3"
+version = "0.1.4"
 authors = ["Liu Qianglong", "Claude"]
 edition = "2021"
 
@@ -39,7 +39,18 @@ flate2 = "1"
 tar = "0.4"
 bzip2 = "0.4"
 tokio = { version = "1", features = ["rt"] }
-sherpa-onnx = { version = "1.13.3", default-features = false, features = ["static"] }
+silero-vad-crs = { version = "=0.4.0", features = ["auto"] }
+# GGUF / ggml 本地 ASR 引擎（transcribe.cpp 的官方 Rust 绑定，MIT）。
+# dynamic-backends：各计算后端编成可 dlopen 的模块（隐含 shared，libtranscribe
+# 本身也是 DLL），运行时按 CPU 指令集挑最优的 ggml-cpu-* 模块。
+# vulkan：一个 API 覆盖 NVIDIA / AMD / Intel / 核显，没有就自动回落 CPU。
+#   构建需要 Vulkan SDK（编 SPIR-V shader）：装完要新开终端，VULKAN_SDK 不会进已运行的 shell。
+# 不带 CUDA：官方 CUDA 包 226 MB，Vulkan 已覆盖同样的硬件。
+# 注意：首次构建会用 CMake 从源码编整棵 C++ 树（约 20 分钟），之后走缓存。
+transcribe-cpp = { version = "0.1.3", default-features = false, features = [
+  "dynamic-backends",
+  "vulkan",
+] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
@@ -49,6 +60,8 @@ windows = { version = "0.58", features = [
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_Accessibility",
   "Win32_System_Threading",
+  # GetProcessMemoryInfo：报告本地模型加载后的真实内存占用（诊断页 + 调优实测）
+  "Win32_System_ProcessStatus",
   "Win32_System_DataExchange",
   "Win32_System_Memory",
   "Win32_System_SystemInformation",
@@ -59,3 +72,11 @@ windows = { version = "0.58", features = [
 ] }
 # 与 tauri/wry 内部同版本，用于挂 WebView2 的 PermissionRequested 处理器（把麦克风置为持久授权）
 webview2-com = "0.38"
+
+# Release 体积/性能优化。panic 保持 unwind：Tauri 与 catch_unwind 依赖它，
+# 换成 abort 会让引擎 panic 直接杀进程。
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "unwind"

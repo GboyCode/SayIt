@@ -8,9 +8,22 @@ import { getSetting, setSetting } from '@/services/store'
 
 export default function HotwordPromptInjectToggle() {
   const [enabled, setEnabled] = useState(false)
+  // 读到已保存值之前，开关先隐藏、且不放动画：避免先画出默认值再跳到已保存值（闪一下）。
+  // 用 finally 兜底，读取失败也让开关出现（呈默认值），不至于一直隐藏。
+  const [ready, setReady] = useState(false)
+  // animate 与 ready 分开：ready 决定何时显示，animate 决定何时允许过渡。
+  // 若在揭开/赋值的同一帧就把 transition 加回来，按 CSS 规范浏览器会认为
+  // 「有过渡且值变了」，于是把「默认值→已保存值」真的动画一遍（看起来就是闪一下）。
+  // 所以揭开那一帧仍不带过渡，隔两帧待值稳定后才开过渡。
+  const [animate, setAnimate] = useState(false)
 
   useEffect(() => {
-    getSetting('injectHotwordsToPrompt', false).then((v) => setEnabled(Boolean(v)))
+    getSetting('injectHotwordsToPrompt', false)
+      .then((v) => setEnabled(Boolean(v)))
+      .finally(() => {
+        setReady(true)
+        requestAnimationFrame(() => requestAnimationFrame(() => setAnimate(true)))
+      })
   }, [])
 
   const toggle = () => {
@@ -29,7 +42,7 @@ export default function HotwordPromptInjectToggle() {
               把热词表注入 AI 提示词，进一步提升这些热词的识别准确率。需先开启「AI 整理」。
             </p>
           </div>
-          <Switch checked={enabled} onChange={toggle} />
+          <Switch checked={enabled} onChange={toggle} noAnimation={!animate} hidden={!ready} />
         </div>
       </CardContent>
     </Card>

@@ -172,18 +172,51 @@ export default function AppearancePage() {
   const [overlayShowDuration, setOverlayShowDuration] = useState(true)
   const [overlayWidth, setOverlayWidth] = useState<OverlayWidthPreset>('medium')
   const [streamingDisplay, setStreamingDisplay] = useState(false)
+  // 读到已保存值之前，控件先隐藏、且不带过渡：避免「默认值 → 已保存值」闪一下。
+  // 注意过渡也必须一起关掉 —— visibility:hidden 只是看不见，CSS 过渡照样会跑；
+  // 隐藏期间选中项仍是默认值，揭开的同一刻颜色会从旧值过渡到新值，看起来就是
+  // 「默认项高亮淡出、已保存项淡入」（悬浮窗长度从「中」闪到「短」正是如此）。
+  // 隐藏一律用内联 style，不用 Tailwind 的 invisible 类：类要靠扫描源码产出，
+  // 一旦跑的是旧的 CSS 产物这层保护就整条失效（曾因此反复排查很久）。
+  const [ready, setReady] = useState(false)
+  // animate 与 ready 必须分开：
+  // 按 CSS 过渡规范，浏览器看的是「变化之后」的样式里有没有 transition。若在揭开、
+  // 赋值的同一帧把 transition 加上，浏览器就会认为「有过渡且颜色变了」，于是把
+  // 「默认项高亮淡出、已保存项淡入」真的动画一遍 —— 那就是反复没修掉的那个「闪」。
+  // 因此：揭开的那一帧仍然不带过渡，等再下一帧才允许过渡（此时颜色已无变化）。
+  const [animate, setAnimate] = useState(false)
 
   useEffect(() => {
-    getSetting('overlayWaveTheme', 'black-rainbow').then((value) => {
-      const v = value as OverlayWaveTheme
-      if (v === 'black-white' || v === 'black-blue' || v === 'black-rainbow') setOverlayWaveTheme(v)
-    })
-    getSetting('overlayShowDuration', true).then((value) => setOverlayShowDuration(Boolean(value)))
-    getSetting('overlayWidth', 'medium').then((value) => {
-      const v = value as OverlayWidthPreset
-      if (v === 'short' || v === 'medium' || v === 'long') setOverlayWidth(v)
-    })
-    getSetting('streamingDisplayEnabled', false).then((value) => setStreamingDisplay(Boolean(value)))
+    // 先把所有值取回，再在同一个同步块里一次性落值 + 置 ready：React 会把这批更新
+    // 合成一次渲染，因此不存在「已显示但值还没到」的中间态（那正是闪一下的成因）。
+    //
+    // 两个坑都在这里躲掉了：
+    //  1. 每项自带 catch 兜底 —— Promise.all 是 fail-fast，只要有一项 reject 就会
+    //     立刻往下走，那时其它项还没回来，ready 会在值到位前就被置上（并留下一个
+    //     未处理的 rejection）。
+    //  2. 不用 requestAnimationFrame —— 那会把 setReady 丢到与赋值不同的批次里，
+    //     同样可能先提交出一帧「已显示但值是默认值」。
+    let cancelled = false
+    void (async () => {
+      const [showDuration, streaming, waveTheme, width] = await Promise.all([
+        getSetting('overlayShowDuration', true).catch(() => true),
+        getSetting('streamingDisplayEnabled', false).catch(() => false),
+        getSetting('overlayWaveTheme', 'black-rainbow').catch(() => 'black-rainbow'),
+        getSetting('overlayWidth', 'medium').catch(() => 'medium'),
+      ])
+      if (cancelled) return
+      setOverlayShowDuration(Boolean(showDuration))
+      setStreamingDisplay(Boolean(streaming))
+      const t = waveTheme as OverlayWaveTheme
+      if (t === 'black-white' || t === 'black-blue' || t === 'black-rainbow') setOverlayWaveTheme(t)
+      const w = width as OverlayWidthPreset
+      if (w === 'short' || w === 'medium' || w === 'long') setOverlayWidth(w)
+      setReady(true)
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (!cancelled) setAnimate(true)
+      }))
+    })()
+    return () => { cancelled = true }
   }, [])
 
   const handleThemeChange = async (themeId: string) => {
@@ -257,16 +290,19 @@ export default function AppearancePage() {
           <CardContent className="p-6">
             <h2 className="mb-4 text-lg font-semibold">悬浮窗样式</h2>
 
-            <div className="space-y-4">
+            {/* 整块一起等值到位再显示。除了选择器，**悬浮窗预览**那颗胶囊的长度也跟着
+                overlayWidth 变（它有可见边框），只盖住选择器的话，仍会看到预览从「中」
+                的长度一下缩到「短」——那正是之前反复没修掉的那个「闪」。 */}
+            <div className="space-y-4" style={ready ? undefined : { visibility: 'hidden' }}>
               <div>
                 <p className="mb-2 text-sm text-muted-foreground">波形主题</p>
-                <div className="grid gap-2 sm:grid-cols-3">
+                <div className="grid gap-2 sm:grid-cols-3" style={ready ? undefined : { visibility: 'hidden' }}>
                   {OVERLAY_OPTIONS.map((option) => (
                     <button
                       key={option.theme}
                       type="button"
                       onClick={() => void handleOverlayThemeChange(option.theme)}
-                      className={`flex items-center justify-between rounded-md border px-3 py-2 text-sm transition-colors ${
+                      className={`flex items-center justify-between rounded-md border px-3 py-2 text-sm ${animate ? 'transition-colors' : ''} ${
                         overlayWaveTheme === option.theme
                           ? 'border-primary bg-primary/5'
                           : 'border-border hover:bg-accent'
@@ -289,13 +325,13 @@ export default function AppearancePage() {
 
                 <div className="mt-4">
                   <p className="mb-2 text-sm text-muted-foreground">悬浮窗长度</p>
-                  <div className="grid gap-2 sm:grid-cols-3">
+                  <div className="grid gap-2 sm:grid-cols-3" style={ready ? undefined : { visibility: 'hidden' }}>
                     {WIDTH_OPTIONS.map((option) => (
                       <button
                         key={option.value}
                         type="button"
                         onClick={() => void handleOverlayWidthChange(option.value)}
-                        className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors ${
+                        className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm ${animate ? 'transition-colors' : ''} ${
                           overlayWidth === option.value
                             ? 'border-primary bg-primary/5'
                             : 'border-border hover:bg-accent'
@@ -315,7 +351,7 @@ export default function AppearancePage() {
                     <p className="text-sm font-medium">显示按住时长</p>
                     <p className="text-xs text-muted-foreground">关闭后仅显示波形</p>
                   </div>
-                  <Switch checked={overlayShowDuration} onChange={handleToggleDuration} />
+                  <Switch checked={overlayShowDuration} onChange={handleToggleDuration} noAnimation={!animate} hidden={!ready} />
                 </div>
 
                 <div className="mt-4 flex items-center justify-between">
@@ -345,7 +381,7 @@ export default function AppearancePage() {
                       <span className="text-muted-foreground/70">，千问需填业务空间 ID）</span>
                     </p>
                   </div>
-                  <Switch checked={streamingDisplay} onChange={handleToggleStreamingDisplay} />
+                  <Switch checked={streamingDisplay} onChange={handleToggleStreamingDisplay} noAnimation={!animate} hidden={!ready} />
                 </div>
 
                 <div className="mt-4 flex justify-center">

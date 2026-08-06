@@ -187,10 +187,23 @@ fn is_likely_editable(ctx: &context::AppContext) -> bool {
 }
 
 pub fn is_likely_editable_pub(ctx: &context::AppContext) -> bool {
-    if ctx.has_caret { return true; }
-
     let fc = ctx.focus_class.to_lowercase();
     let wc = ctx.window_class.to_lowercase();
+    let proc = ctx.process_name.to_lowercase();
+
+    // Windows 桌面也属于 explorer.exe，但 Progman / WorkerW 下的图标列表不是文本
+    // 输入目标。必须在 caret/进程兜底之前明确拒绝，否则 SendInput 只会报告“按键已
+    // 入队”，前端会误以为粘贴成功而不展示兜底卡片。
+    let explorer_desktop_classes = ["progman", "workerw", "shelldll_defview", "syslistview32"];
+    if proc.contains("explorer")
+        && explorer_desktop_classes
+            .iter()
+            .any(|class_name| fc == *class_name || wc == *class_name)
+    {
+        return false;
+    }
+
+    if ctx.has_caret { return true; }
 
     // Native Win32 editable controls — always considered editable
     let native_editable_classes = [
@@ -262,7 +275,6 @@ pub fn is_likely_editable_pub(ctx: &context::AppContext) -> bool {
         // fall through to process-based heuristic (don't hard-reject).
     }
 
-    let proc = ctx.process_name.to_lowercase();
     let editable_procs = [
         "notepad", "winword", "excel", "powerpnt", "outlook",
         "code", "devenv", "idea64",
@@ -272,7 +284,6 @@ pub fn is_likely_editable_pub(ctx: &context::AppContext) -> bool {
         "chrome", "msedge", "firefox", "opera", "brave",
         "teams", "wechat", "dingtalk", "slack",
         "windowsterminal", "cmd", "powershell",
-        "explorer",
         "mobaxterm", "putty", "securecrt", "xshell",
     ];
     for p in &editable_procs {

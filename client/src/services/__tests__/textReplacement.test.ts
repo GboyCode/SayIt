@@ -90,3 +90,39 @@ describe('parseBatchReplacements', () => {
     expect(parseBatchReplacements(',只有替换')).toEqual([])
   })
 })
+
+describe('applyReplacements 的顺序语义', () => {
+  const rule = (id: string, from: string, to: string) => ({ id, from, to, enabled: true })
+
+  it('顺序即执行顺序：前一条的结果会参与后一条的匹配（级联）', () => {
+    // A: 甲 → 乙，B: 乙 → 丙。A 在前时会一路级联成"丙"
+    const cascade = applyReplacements('甲', [rule('a', '甲', '乙'), rule('b', '乙', '丙')])
+    expect(cascade).toBe('丙')
+
+    // 换成 B 在前，"乙 → 丙"先跑（此时还没有"乙"），结果停在"乙"
+    const noCascade = applyReplacements('甲', [rule('b', '乙', '丙'), rule('a', '甲', '乙')])
+    expect(noCascade).toBe('乙')
+  })
+
+  it('两条规则匹配同一段文本时，靠前的先生效', () => {
+    const first = applyReplacements('安卓说话', [
+      rule('a', '安卓说话', '按住说话'),
+      rule('b', '安卓', 'Android'),
+    ])
+    expect(first).toBe('按住说话')
+
+    const second = applyReplacements('安卓说话', [
+      rule('b', '安卓', 'Android'),
+      rule('a', '安卓说话', '按住说话'),
+    ])
+    expect(second).toBe('Android说话')
+  })
+
+  it('禁用的规则不参与，也不影响其余规则的顺序', () => {
+    const result = applyReplacements('甲', [
+      { ...rule('a', '甲', '乙'), enabled: false },
+      rule('b', '甲', '丙'),
+    ])
+    expect(result).toBe('丙')
+  })
+})

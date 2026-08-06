@@ -101,6 +101,13 @@ export function getOverlayHealth(showId: number) {
   return invoke<OverlayHealthSnapshot>('get_overlay_health', { showId })
 }
 
+export type EscapeActionMode = 'off' | 'cancel_recording' | 'cancel_processing' | 'dismiss_fallback'
+
+/** 只在悬浮窗需要响应全局 Esc 时开启；Rust 侧带超时保险，避免异常后永久吞键。 */
+export function setEscapeActionMode(mode: EscapeActionMode, token = 0) {
+  return invoke<void>('set_escape_action_mode', { mode, token })
+}
+
 // ─── Paste / Context ───
 
 export function pasteText(text: string, hwnd?: string, focusHwnd?: string, restoreClipboard?: boolean) {
@@ -239,14 +246,24 @@ export function testShortcut(accelerator: string) {
   return invoke<boolean>('test_shortcut', { accelerator })
 }
 
-/** 开始鼠标侧键录制捕获：底层鼠标钩子会吞掉下一个侧键并通过 mouse-shortcut-captured 回报。 */
-export function beginMouseShortcutCapture() {
-  return invoke('begin_mouse_shortcut_capture').catch(() => {})
+/** 查询 PTT DOM code 对应按键当前是否真实物理按下（顺序与输入一致）。 */
+export function getPTTPhysicalKeyStates(codes: string[]) {
+  return invoke<boolean[]>('get_ptt_physical_key_states', { codes })
 }
 
-/** 结束鼠标侧键录制捕获（录制结束/取消时调用）。 */
-export function endMouseShortcutCapture() {
-  return invoke('end_mouse_shortcut_capture').catch(() => {})
+/**
+ * 开始快捷键录制捕获（设置页点开录制时调用）。Rust 侧会：
+ * - 底层鼠标钩子吞掉下一个侧键并通过 mouse-shortcut-captured 回报；
+ * - 键盘钩子在录制期间放行 PTT/免提单键，不触发录音；
+ * - 注销全部 global_shortcut，避免已绑定的组合键被系统抢走、录不进来。
+ */
+export function beginShortcutCapture() {
+  return invoke('begin_shortcut_capture').catch(() => { })
+}
+
+/** 结束快捷键录制捕获（录制结束/取消时调用），并恢复 Rust 侧的热键注册。 */
+export function endShortcutCapture() {
+  return invoke('end_shortcut_capture').catch(() => { })
 }
 
 // ─── System ───
@@ -367,6 +384,11 @@ export function onPTTTimeoutWarning(cb: (data?: unknown) => void) {
 
 export function onToggleHandsFree(cb: (data?: unknown) => void) {
   const unlisten = listen<unknown>('toggle-hands-free', (event) => cb(event.payload))
+  return () => { unlisten.then((fn) => fn()) }
+}
+
+export function onEscapeAction(cb: (data: { mode: EscapeActionMode; token: number }) => void) {
+  const unlisten = listen<{ mode: EscapeActionMode; token: number }>('escape-action', (event) => cb(event.payload))
   return () => { unlisten.then((fn) => fn()) }
 }
 

@@ -384,27 +384,50 @@ impl Storage {
         Ok(Value::Array(items))
     }
 
-    fn replace_collection(&self, key: &str, items: &[Value]) -> SqlResult<()> {
-        let table = collection_table(key).ok_or(rusqlite::Error::InvalidParameterName("unknown collection".into()))?;
-        let db = self.db.lock().unwrap();
+    fn replace_collection_on(db: &Connection, key: &str, items: &[Value]) -> SqlResult<()> {
+        let table = collection_table(key).ok_or(rusqlite::Error::InvalidParameterName(
+            "unknown collection".into(),
+        ))?;
 
         db.execute(&format!("DELETE FROM {}", table), [])?;
 
         for (index, item) in items.iter().enumerate() {
             let obj = item.as_object();
-            let id = obj.and_then(|o| o.get("id")).and_then(|v| v.as_str())
-                .unwrap_or("unknown").to_string();
+            let id = obj
+                .and_then(|o| o.get("id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
             let raw_json = serde_json::to_string(item).unwrap_or_else(|_| "{}".to_string());
 
             match key {
                 "history" => {
-                    let timestamp = obj.and_then(|o| o.get("timestamp")).and_then(|v| v.as_i64()).unwrap_or(0);
-                    let favorite = obj.and_then(|o| o.get("favorite")).and_then(|v| v.as_bool()).unwrap_or(false);
-                    let char_count = obj.and_then(|o| o.get("charCount")).and_then(|v| v.as_i64()).unwrap_or(0);
-                    let duration_sec = obj.and_then(|o| o.get("durationSec")).and_then(|v| v.as_f64()).unwrap_or(0.0);
-                    let is_empty = obj.and_then(|o| o.get("isEmpty")).and_then(|v| v.as_bool()).unwrap_or(false);
-                    let app_id = obj.and_then(|o| o.get("appId")).and_then(|v| v.as_str());
-                    let app_name = obj.and_then(|o| o.get("appName")).and_then(|v| v.as_str());
+                    let timestamp = obj
+                        .and_then(|o| o.get("timestamp"))
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                    let favorite = obj
+                        .and_then(|o| o.get("favorite"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let char_count = obj
+                        .and_then(|o| o.get("charCount"))
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                    let duration_sec = obj
+                        .and_then(|o| o.get("durationSec"))
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
+                    let is_empty = obj
+                        .and_then(|o| o.get("isEmpty"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let app_id = obj
+                        .and_then(|o| o.get("appId"))
+                        .and_then(|v| v.as_str());
+                    let app_name = obj
+                        .and_then(|o| o.get("appName"))
+                        .and_then(|v| v.as_str());
                     db.execute(
                         "INSERT INTO history_records (id, list_order, timestamp, favorite, char_count, duration_sec, is_empty, app_id, app_name, raw_json) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
                         params![id, index as i64, timestamp, favorite as i32, char_count, duration_sec, is_empty as i32, app_id, app_name, raw_json],
@@ -412,20 +435,34 @@ impl Storage {
                 }
                 _ => {
                     // Generic collection insert (manual_corrections, feedback_queue, prompt_presets, app_prompt_rules)
-                    let name = obj.and_then(|o| o.get("name")).and_then(|v| v.as_str());
+                    let name = obj
+                        .and_then(|o| o.get("name"))
+                        .and_then(|v| v.as_str());
                     match table {
                         "manual_corrections" => {
-                            let created_at = obj.and_then(|o| o.get("createdAt")).and_then(|v| v.as_i64()).unwrap_or(0);
-                            let history_id = obj.and_then(|o| o.get("historyId")).and_then(|v| v.as_str());
+                            let created_at = obj
+                                .and_then(|o| o.get("createdAt"))
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0);
+                            let history_id = obj
+                                .and_then(|o| o.get("historyId"))
+                                .and_then(|v| v.as_str());
                             db.execute(
                                 "INSERT INTO manual_corrections (id, list_order, created_at, history_id, raw_json) VALUES (?1,?2,?3,?4,?5)",
                                 params![id, index as i64, created_at, history_id, raw_json],
                             )?;
                         }
                         "feedback_queue" => {
-                            let created_at = obj.and_then(|o| o.get("createdAt")).and_then(|v| v.as_i64()).unwrap_or(0);
-                            let history_id = obj.and_then(|o| o.get("historyId")).and_then(|v| v.as_str());
-                            let status = obj.and_then(|o| o.get("status")).and_then(|v| v.as_str());
+                            let created_at = obj
+                                .and_then(|o| o.get("createdAt"))
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0);
+                            let history_id = obj
+                                .and_then(|o| o.get("historyId"))
+                                .and_then(|v| v.as_str());
+                            let status = obj
+                                .and_then(|o| o.get("status"))
+                                .and_then(|v| v.as_str());
                             db.execute(
                                 "INSERT INTO feedback_queue (id, list_order, created_at, history_id, status, raw_json) VALUES (?1,?2,?3,?4,?5,?6)",
                                 params![id, index as i64, created_at, history_id, status, raw_json],
@@ -438,9 +475,17 @@ impl Storage {
                             )?;
                         }
                         "app_prompt_rules" => {
-                            let app_id = obj.and_then(|o| o.get("appId")).and_then(|v| v.as_str());
-                            let enabled = obj.and_then(|o| o.get("enabled")).and_then(|v| v.as_bool()).unwrap_or(true);
-                            let priority = obj.and_then(|o| o.get("priority")).and_then(|v| v.as_i64()).unwrap_or(0);
+                            let app_id = obj
+                                .and_then(|o| o.get("appId"))
+                                .and_then(|v| v.as_str());
+                            let enabled = obj
+                                .and_then(|o| o.get("enabled"))
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(true);
+                            let priority = obj
+                                .and_then(|o| o.get("priority"))
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0);
                             db.execute(
                                 "INSERT INTO app_prompt_rules (id, list_order, app_id, name, enabled, priority, raw_json) VALUES (?1,?2,?3,?4,?5,?6,?7)",
                                 params![id, index as i64, app_id, name, enabled as i32, priority, raw_json],
@@ -452,6 +497,11 @@ impl Storage {
             }
         }
         Ok(())
+    }
+
+    fn replace_collection(&self, key: &str, items: &[Value]) -> SqlResult<()> {
+        let db = self.db.lock().unwrap();
+        Self::replace_collection_on(&db, key, items)
     }
 
     // ─── Stats helpers ───
@@ -736,26 +786,37 @@ impl Storage {
         Value::Object(map)
     }
 
-    /// 导入 app_settings：逐 key upsert（覆盖同名，不删除备份中未出现的 key）。
-    /// exclude 中的 key 会被跳过。
-    pub fn import_app_settings(
+    /// 原子应用一组配置：设置 key 与可选集合要么全部成功，要么全部回滚。
+    pub fn apply_config_transaction(
         &self,
-        obj: &serde_json::Map<String, Value>,
+        app_settings: &serde_json::Map<String, Value>,
         exclude: &[&str],
+        prompt_presets: Option<&[Value]>,
+        app_prompt_rules: Option<&[Value]>,
     ) -> SqlResult<()> {
-        let db = self.db.lock().unwrap();
+        let mut db = self.db.lock().unwrap();
+        let tx = db.transaction()?;
         let now = chrono::Utc::now().timestamp_millis();
-        for (key, val) in obj {
+
+        for (key, value) in app_settings {
             if exclude.contains(&key.as_str()) {
                 continue;
             }
-            let json_str = serde_json::to_string(val).unwrap_or_else(|_| "null".to_string());
-            db.execute(
+            let json_str = serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
+            tx.execute(
                 "INSERT INTO app_settings (key, value_json, updated_at) VALUES (?1, ?2, ?3)
                  ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
                 params![key, json_str, now],
             )?;
         }
-        Ok(())
+
+        if let Some(items) = prompt_presets {
+            Self::replace_collection_on(&tx, "promptPresets", items)?;
+        }
+        if let Some(items) = app_prompt_rules {
+            Self::replace_collection_on(&tx, "appPromptRules", items)?;
+        }
+
+        tx.commit()
     }
 }

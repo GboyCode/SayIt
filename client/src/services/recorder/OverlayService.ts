@@ -2,6 +2,7 @@ import * as bridge from '../bridge'
 import { getSetting } from '../store'
 import { clampSec } from '../timeModel'
 import {
+  formatRecordingLimit,
   OVERLAY_WIDTH_PRESETS,
   type OverlayCommonPayload,
   type OverlayWaveTheme,
@@ -30,6 +31,7 @@ export class OverlayService {
   private fallbackHideId: ReturnType<typeof setTimeout> | null = null
   /** Persistent warning text — included in every overlay update until cleared */
   private activeWarning = ''
+  private timeoutWarningHideId: ReturnType<typeof setTimeout> | null = null
   /** 流式实时识别文本 — 录音期间随中间结果更新，会被并入每次 listening 更新一起下发 */
   private streamingText = ''
   /** 本次录音是否开启流式实时显示：为真则从录音一开始就显示气泡（占位），中途不再缩放窗口 */
@@ -93,7 +95,19 @@ export class OverlayService {
     return OVERLAY_WIDTH_PRESETS[this.widthPreset].barCount
   }
 
+  private setEscapeMode(mode: bridge.EscapeActionMode, token = 0) {
+    void bridge.setEscapeActionMode(mode, token).catch(() => { /* 原生钩子不可用时不影响悬浮窗 */ })
+  }
+
+  /** 文本即将进入不可逆的系统粘贴阶段；先关闭全局 Esc 取消，避免“已取消”后仍完成粘贴。 */
+  async disableEscapeAction(): Promise<void> {
+    try {
+      await bridge.setEscapeActionMode('off', 0)
+    } catch { /* 原生钩子不可用时不影响文本插入 */ }
+  }
+
   showWaiting() {
+    this.setEscapeMode('off', 0)
     this.clearFallbackHideTimer()
     void bridge.presentOverlay({
       state: 'waiting',
@@ -102,8 +116,10 @@ export class OverlayService {
     })
   }
 
-  startListeningTicker() {
+  startListeningTicker(token = 0) {
     this.stopListeningTicker()
+    // 真实录音代次才开启全局 Esc；PTT Lab 等 token=0 的预览绝不吞系统按键。
+    this.setEscapeMode(token > 0 ? 'cancel_recording' : 'off', token)
     this.playReadySound()
     this.tickerId = setInterval(() => {
       void bridge.updateOverlay({
@@ -156,7 +172,9 @@ export class OverlayService {
     })
   }
 
-  showThinking(elapsedSec: number) {
+  showThinking(elapsedSec: number, token = 0) {
+    // PTT Lab 也复用 thinking 动画，但没有真实录音代次；token=0 时只显示，绝不吞全局 Esc。
+    this.setEscapeMode(token > 0 ? 'cancel_processing' : 'off', token)
     void bridge.updateOverlay({
       state: 'thinking',
       elapsedSec: clampSec(elapsedSec),
@@ -164,16 +182,37 @@ export class OverlayService {
     })
   }
 
-  /** Show a warning toast on the overlay (e.g. "单次记录最长300s") — persists until recording ends */
+  /**
+   * 即将到达单次上限的提示。**一闪即走**，之后由计时区的倒计时持续告知剩余时间。
+   *
+   * 以前这条是常驻到录音结束的，加上 Overlay 里"有警告就不显示计时"的条件，
+   * 导致最后一整分钟只剩一句「单次记录最长300s」，既不知道已录多久、也不知道还剩多久。
+   */
   showTimeoutWarning() {
-    this.activeWarning = '单次记录最长300s'
+    const text = `单次最长 ${formatRecordingLimit()}`
+    this.activeWarning = text
     void bridge.updateOverlay({
       state: 'listening',
-      warning: this.activeWarning,
+      warning: text,
       warningTone: 'warn',
       elapsedSec: clampSec(this.getElapsedSec()),
       ...this.getCommonPayload(),
     })
+
+    if (this.timeoutWarningHideId) clearTimeout(this.timeoutWarningHideId)
+    this.timeoutWarningHideId = setTimeout(() => {
+      this.timeoutWarningHideId = null
+      // 期间若被更高优先级的警告（如麦克风被静音）取代，就不要抢回来
+      if (this.activeWarning !== text) return
+      this.activeWarning = ''
+      void bridge.updateOverlay({
+        state: 'listening',
+        warning: '',
+        warningTone: 'warn',
+        elapsedSec: clampSec(this.getElapsedSec()),
+        ...this.getCommonPayload(),
+      })
+    }, 4000)
   }
 
   /** Show low volume warning on the overlay（有声音但偏低：请靠近麦克风，琥珀色） */
@@ -224,13 +263,27 @@ export class OverlayService {
     })
   }
 
+  /**
+   * 是否有常驻（sticky）警告正在挡住临时警告的显示/清除。
+   * 排查"低音量提示不消失/不出现"这类问题时很有用：那类症状多半就是被它挡着。
+   */
+  hasStickyWarning() {
+    return !!this.activeWarning
+  }
+
   /** Reset all warnings including persistent ones (called on recording stop/reset) */
   resetWarnings() {
+    if (this.timeoutWarningHideId) {
+      clearTimeout(this.timeoutWarningHideId)
+      this.timeoutWarningHideId = null
+    }
     this.activeWarning = ''
   }
 
-  showFallback(text: string, reason: string) {
+  showFallback(text: string, reason: string, token = 0) {
     console.log('[OverlayService] showFallback called, text:', text.slice(0, 30), 'reason:', reason)
+    // token=0 的 PTT Lab 卡片没有 Orchestrator 代次，不能开启一个无人消费的全局 Esc。
+    this.setEscapeMode(token > 0 ? 'dismiss_fallback' : 'off', token)
     void bridge.presentOverlay({
       state: 'fallback',
       fallbackText: text,
@@ -240,8 +293,7 @@ export class OverlayService {
     this.clearFallbackHideTimer()
     this.fallbackHideId = setTimeout(() => {
       console.log('[OverlayService] fallback auto-hide timer fired')
-      void bridge.hideOverlay()
-      this.clearFallbackHideTimer()
+      this.hide()
     }, 10000)
   }
 
@@ -253,11 +305,14 @@ export class OverlayService {
   }
 
   hide() {
+    this.clearFallbackHideTimer()
+    this.setEscapeMode('off', 0)
     void bridge.hideOverlay()
   }
 
   /** 快捷键切换润色模式后，用悬浮窗短暂提示当前模式名，约 1.6s 后自动隐藏。 */
   showPresetSwitched(name: string) {
+    this.setEscapeMode('off', 0)
     void bridge.presentOverlay({
       state: 'toast',
       toastText: `已切换到「${name}」`,
@@ -265,15 +320,12 @@ export class OverlayService {
       ...this.getCommonPayload(),
     })
     this.clearFallbackHideTimer()
-    this.fallbackHideId = setTimeout(() => {
-      void bridge.hideOverlay()
-      this.clearFallbackHideTimer()
-    }, 1600)
+    this.fallbackHideId = setTimeout(() => this.hide(), 1600)
   }
 
-  /** 识别结果为空（未检测到有效声音）时的提示。停留约 2.5s 再自动隐藏，
-   *  避免悬浮窗一闪而逝，让用户明白“这次没听到有效声音”而不是一头雾水。 */
+  /** 识别结果为空（未检测到有效声音）时的提示。 */
   showNoSpeech() {
+    this.setEscapeMode('off', 0)
     void bridge.presentOverlay({
       state: 'toast',
       toastText: '未检测到有效声音',
@@ -281,30 +333,37 @@ export class OverlayService {
       ...this.getCommonPayload(),
     })
     this.clearFallbackHideTimer()
-    this.fallbackHideId = setTimeout(() => {
-      void bridge.hideOverlay()
-      this.clearFallbackHideTimer()
-    }, 1500)
+    this.fallbackHideId = setTimeout(() => this.hide(), 1500)
+  }
+
+  /** 用户主动取消处理后的短提示。 */
+  showCanceled() {
+    this.setEscapeMode('off', 0)
+    void bridge.presentOverlay({
+      state: 'toast',
+      toastText: '已取消',
+      toastTone: 'info',
+      ...this.getCommonPayload(),
+    })
+    this.clearFallbackHideTimer()
+    this.fallbackHideId = setTimeout(() => this.hide(), 900)
   }
 
   /** 显示错误信息，几秒后自动隐藏 */
   showError(message: string) {
+    this.setEscapeMode('off', 0)
     void bridge.presentOverlay({
       state: 'error',
       errorMessage: message,
       ...this.getCommonPayload(),
     })
     this.clearFallbackHideTimer()
-    this.fallbackHideId = setTimeout(() => {
-      void bridge.hideOverlay()
-      this.clearFallbackHideTimer()
-    }, 4000)
+    this.fallbackHideId = setTimeout(() => this.hide(), 4000)
   }
 
   dispose() {
     this.stopListeningTicker()
-    this.clearFallbackHideTimer()
     this.resetStreamingText()
-    void bridge.hideOverlay()
+    this.hide()
   }
 }

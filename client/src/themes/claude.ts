@@ -30,6 +30,7 @@ const claude: ThemeDefinition = {
     '--accent-foreground': '25 8% 20%',
     '--destructive': '0 72% 51%',
     '--destructive-foreground': '0 0% 100%',
+    '--destructive-strong': '0 74% 44%',    // 米白底 5.9:1
     '--border': '37 18% 84%',            // #ddd9d1 暖边框
     '--input': '37 18% 84%',
     '--ring': '22 85% 38%',
@@ -54,13 +55,16 @@ const claude: ThemeDefinition = {
     '--input-focus-ring': '22 85% 38%',
     '--input-placeholder': '25 6% 62%',
 
-    // 状态色
+    // 状态色（-strong 为米白底上达标的文字色，色相向暖侧靠，与主题一致）
     '--success': '142 76% 36%',
     '--success-foreground': '0 0% 100%',
+    '--success-strong': '150 60% 27%',
     '--warning': '38 92% 50%',
     '--warning-foreground': '0 0% 100%',
+    '--warning-strong': '26 90% 33%',
     '--info': '199 89% 48%',
     '--info-foreground': '0 0% 100%',
+    '--info-strong': '203 80% 32%',
   },
 
   // Claude 主题特色扩展

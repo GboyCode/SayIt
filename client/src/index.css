@@ -3,6 +3,7 @@
 @tailwind utilities;
 
 @layer base {
+
   /*
    * CSS 变量 fallback（JS 主题系统未加载前的默认值）
    * 运行时由 src/themes/ 的 applyTheme() 覆盖
@@ -23,6 +24,7 @@
     --accent-foreground: 240 5.9% 10%;
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 98%;
+    --destructive-strong: 0 74% 46%;
     --border: 240 5.9% 90%;
     --input: 240 5.9% 90%;
     --ring: 240 5.9% 10%;
@@ -47,13 +49,17 @@
     --input-focus-ring: 240 5.9% 10%;
     --input-placeholder: 240 4% 65%;
 
-    /* 状态色 */
+    /* 状态色。-strong 是画在页面底色上的文字色（白底 ≥4.5:1），
+       不带后缀的是色块本体（圆点 / 进度条 / 10% 淡底）。见 src/themes/types.ts */
     --success: 142 76% 36%;
     --success-foreground: 0 0% 100%;
+    --success-strong: 142 72% 29%;
     --warning: 38 92% 50%;
     --warning-foreground: 0 0% 100%;
+    --warning-strong: 32 95% 34%;
     --info: 199 89% 48%;
     --info-foreground: 0 0% 100%;
+    --info-strong: 199 89% 33%;
 
     /* Overlay 专用变量（独立黑底窗口） */
     --overlay-bg: #0b0b0c;
@@ -98,6 +104,7 @@
 
 /* 自定义滚动条样式 */
 @layer utilities {
+
   /* Webkit 浏览器（Chrome, Safari, Edge） */
   .custom-scrollbar::-webkit-scrollbar {
     width: 6px;
@@ -126,21 +133,46 @@
 
 /* Overlay waiting dot pulse */
 @keyframes dot-pulse {
-  0%, 100% { opacity: 0.2; transform: scale(1); }
-  50% { opacity: 0.8; transform: scale(1.8); }
+
+  0%,
+  100% {
+    opacity: 0.2;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 0.8;
+    transform: scale(1.8);
+  }
 }
 
 /* 流式字幕的文字光标：只改透明度、不缩放不移动，柔和的打字机竖线 */
 @keyframes caret-blink {
-  0%, 40% { opacity: 0.9; }
-  70%, 100% { opacity: 0.25; }
+
+  0%,
+  40% {
+    opacity: 0.9;
+  }
+
+  70%,
+  100% {
+    opacity: 0.25;
+  }
 }
 
 /* Overlay waiting pulse animation */
 @keyframes pulse-slide {
-  0% { transform: translateX(-100%); }
-  50% { transform: translateX(200%); }
-  100% { transform: translateX(-100%); }
+  0% {
+    transform: translateX(-100%);
+  }
+
+  50% {
+    transform: translateX(200%);
+  }
+
+  100% {
+    transform: translateX(-100%);
+  }
 }
 
 /* 进度条动画 */
@@ -148,9 +180,11 @@
   0% {
     transform: translateX(-100%);
   }
+
   50% {
     transform: translateX(250%);
   }
+
   100% {
     transform: translateX(-100%);
   }
@@ -161,6 +195,7 @@
   0% {
     transform: scaleX(0);
   }
+
   100% {
     transform: scaleX(1);
   }
@@ -168,24 +203,48 @@
 
 /* 入场动画 */
 @keyframes fade-in {
-  from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @keyframes fade-in-scale {
-  from { opacity: 0; transform: scale(0.96); }
-  to { opacity: 1; transform: scale(1); }
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 /* 展开/折叠动画 */
 @keyframes expand {
-  from { grid-template-rows: 0fr; }
-  to { grid-template-rows: 1fr; }
+  from {
+    grid-template-rows: 0fr;
+  }
+
+  to {
+    grid-template-rows: 1fr;
+  }
 }
 
 @keyframes collapse {
-  from { grid-template-rows: 1fr; }
-  to { grid-template-rows: 0fr; }
+  from {
+    grid-template-rows: 1fr;
+  }
+
+  to {
+    grid-template-rows: 0fr;
+  }
 }
 
 /* 工具类 */
@@ -199,12 +258,18 @@
   }
 
   /* 交错入场延迟 */
-  .delay-75 { animation-delay: 75ms; }
-  .delay-150 { animation-delay: 150ms; }
+  .delay-75 {
+    animation-delay: 75ms;
+  }
+
+  .delay-150 {
+    animation-delay: 150ms;
+  }
 }
 
 /* prefers-reduced-motion：尊重用户系统设置 */
 @media (prefers-reduced-motion: reduce) {
+
   *,
   *::before,
   *::after {

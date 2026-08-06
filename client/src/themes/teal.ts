@@ -31,6 +31,7 @@ const teal: ThemeDefinition = {
     '--accent-foreground': '220 13% 18%',
     '--destructive': '0 72% 51%',
     '--destructive-foreground': '0 0% 100%',
+    '--destructive-strong': '0 74% 44%',
     '--border': '36 22% 85%',             // #ddd8cc 暖米边框
     '--input': '36 22% 85%',
     '--ring': '182 80% 26%',
@@ -55,13 +56,16 @@ const teal: ThemeDefinition = {
     '--input-focus-ring': '182 80% 26%',
     '--input-placeholder': '220 6% 58%',
 
-    // 状态色
+    // 状态色（-strong 为浅底上达标的文字色，见 types.ts）
     '--success': '160 60% 38%',            // 与青绿协调的绿
     '--success-foreground': '0 0% 100%',
+    '--success-strong': '162 60% 27%',
     '--warning': '38 85% 50%',
     '--warning-foreground': '0 0% 100%',
+    '--warning-strong': '32 90% 33%',
     '--info': '195 80% 44%',
     '--info-foreground': '0 0% 100%',
+    '--info-strong': '197 80% 30%',
   },
 }
 

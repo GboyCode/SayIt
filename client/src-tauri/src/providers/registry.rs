@@ -92,7 +92,6 @@ pub async fn cloud_transcribe(request: CloudTranscribeRequest) -> Result<AsrResu
             )
             .await
         }
-        // TODO: "aliyun" => 阿里云 Paraformer（需要文件 URL + 异步轮询，暂未实现）
         other => Err(format!("ASR 供应商 \"{}\" 尚未实现", other)),
     }
 }

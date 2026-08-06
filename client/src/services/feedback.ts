@@ -70,7 +70,9 @@ async function collectContext(
   const workMode = getWorkMode()
   const aiEnabled = await getSetting('aiEnabled', false) as boolean
   const aiProvider = await getSetting('cloudAi.provider', '') as string
-  const aiModel = await getSetting(`cloudAi.${aiProvider}.model`, '') as string
+  // 运行时生效的模型只认扁平键。原来这里读的是 `cloudAi.<provider>.model`，那是
+  // AI 服务页自己的存储命名空间；页面改成服务列表后那个键不再更新，会报出过期的模型名。
+  const aiModel = await getSetting('cloudAi.model', '') as string
   const activePreset = await getActivePreset()
   const aiPromptAppend = await getSetting('aiPromptAppend', '') as string
 
@@ -131,30 +133,30 @@ export async function submitFeedback(feedbackText: string, options?: { includeTr
     feedback_text: trimmed,
     transcript: lastRecord
       ? {
-          asr_text: (lastRecord.asrText || '').slice(0, 5000),
-          ai_text: (lastRecord.llmText || '').slice(0, 5000),
-          duration_sec: lastRecord.durationSec || 0,
-          // 该次会话的排错信息
-          app_name: lastRecord.appName || undefined,
-          app_id: lastRecord.appId || undefined,
-          window_title: lastRecord.windowTitle || undefined,
-          process_name: lastRecord.processName || undefined,
-          window_class: lastRecord.windowClass || undefined,
-          asr_ms: lastRecord.asrMs || undefined,
-          llm_ms: lastRecord.llmMs || undefined,
-          audio_duration_sec: lastRecord.audioDurationSec || undefined,
-          char_count: lastRecord.charCount || undefined,
-          is_empty: lastRecord.isEmpty || undefined,
-          asr_provider: lastRecord.asrProvider || undefined,
-          ai_provider: lastRecord.aiProvider || undefined,
-          ai_model: lastRecord.aiModel || undefined,
-          prompt_summary: lastRecord.promptSummary || undefined,
-          auto_applied_hotwords:
-            lastRecord.autoAppliedHotwords && lastRecord.autoAppliedHotwords.length > 0
-              ? lastRecord.autoAppliedHotwords
-              : undefined,
-          record_timestamp: lastRecord.timestamp || undefined,
-        }
+        asr_text: (lastRecord.asrText || '').slice(0, 5000),
+        ai_text: (lastRecord.llmText || '').slice(0, 5000),
+        duration_sec: lastRecord.durationSec || 0,
+        // 该次会话的排错信息
+        app_name: lastRecord.appName || undefined,
+        app_id: lastRecord.appId || undefined,
+        window_title: lastRecord.windowTitle || undefined,
+        process_name: lastRecord.processName || undefined,
+        window_class: lastRecord.windowClass || undefined,
+        asr_ms: lastRecord.asrMs || undefined,
+        llm_ms: lastRecord.llmMs || undefined,
+        audio_duration_sec: lastRecord.audioDurationSec || undefined,
+        char_count: lastRecord.charCount || undefined,
+        is_empty: lastRecord.isEmpty || undefined,
+        asr_provider: lastRecord.asrProvider || undefined,
+        ai_provider: lastRecord.aiProvider || undefined,
+        ai_model: lastRecord.aiModel || undefined,
+        prompt_summary: lastRecord.promptSummary || undefined,
+        auto_applied_hotwords:
+          lastRecord.autoAppliedHotwords && lastRecord.autoAppliedHotwords.length > 0
+            ? lastRecord.autoAppliedHotwords
+            : undefined,
+        record_timestamp: lastRecord.timestamp || undefined,
+      }
       : null,
     context,
   }

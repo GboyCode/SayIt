@@ -5,6 +5,46 @@ use super::prompt::wrap_user_text;
 use super::types::{AiProviderConfig, AiResult, TestResult};
 use std::time::Instant;
 
+static HTTP_CLIENT: once_cell::sync::Lazy<reqwest::Client> =
+    once_cell::sync::Lazy::new(reqwest::Client::new);
+
+/// 按供应商关闭校对场景不需要的思考模式。
+fn configure_thinking(body: &mut serde_json::Value, config: &AiProviderConfig) {
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+
+    // 通义千问 Qwen3 使用独立的开关。
+    if config.provider == "qwen" {
+        object.insert(
+            "enable_thinking".to_string(),
+            serde_json::Value::Bool(false),
+        );
+    }
+
+    // DeepSeek、小米 MiMo 和智谱 GLM 使用 thinking.type=disabled。
+    // 智谱通过官方域名识别，避免给其他 OpenAI 兼容服务注入未知字段。
+    if config.provider == "deepseek"
+        || config.provider == "mimo"
+        || is_zhipu_api_url(&config.api_url)
+    {
+        object.insert(
+            "thinking".to_string(),
+            serde_json::json!({"type": "disabled"}),
+        );
+    }
+}
+
+fn is_zhipu_api_url(api_url: &str) -> bool {
+    reqwest::Url::parse(api_url.trim())
+        .ok()
+        .and_then(|url| {
+            url.host_str()
+                .map(|host| host.eq_ignore_ascii_case("open.bigmodel.cn"))
+        })
+        .unwrap_or(false)
+}
+
 /// 调用 OpenAI 兼容接口进行文本校对
 pub async fn polish(
     text: &str,
@@ -33,28 +73,11 @@ pub async fn polish(
             { "role": "user", "content": user_content },
         ]
     });
+    configure_thinking(&mut body, config);
 
-    // 通义千问 Qwen3 默认开启思考模式，校对场景不需要
-    if config.provider == "qwen" {
-        body.as_object_mut().unwrap().insert(
-            "enable_thinking".to_string(),
-            serde_json::Value::Bool(false),
-        );
-    }
-
-    // DeepSeek / 小米 MiMo 默认开启思考，校对场景关闭以大幅降低延迟。
-    // 注意：小米原生端点用 thinking.type=disabled（官方文档），对 enable_thinking 无效。
-    if config.provider == "deepseek" || config.provider == "mimo" {
-        body.as_object_mut().unwrap().insert(
-            "thinking".to_string(),
-            serde_json::json!({"type": "disabled"}),
-        );
-    }
-
-    let client = reqwest::Client::new();
     let start = Instant::now();
 
-    let mut req = client
+    let mut req = HTTP_CLIENT
         .post(&url)
         .header("Authorization", format!("Bearer {}", config.api_key))
         .header("Content-Type", "application/json");
@@ -111,25 +134,11 @@ pub async fn test_connection(config: &AiProviderConfig) -> TestResult {
             { "role": "user", "content": user_prompt }
         ]
     });
+    configure_thinking(&mut body, config);
 
-    if config.provider == "qwen" {
-        body.as_object_mut().unwrap().insert(
-            "enable_thinking".to_string(),
-            serde_json::Value::Bool(false),
-        );
-    }
-
-    if config.provider == "deepseek" || config.provider == "mimo" {
-        body.as_object_mut().unwrap().insert(
-            "thinking".to_string(),
-            serde_json::json!({"type": "disabled"}),
-        );
-    }
-
-    let client = reqwest::Client::new();
     let start = Instant::now();
 
-    let mut req = client
+    let mut req = HTTP_CLIENT
         .post(&url)
         .header("Authorization", format!("Bearer {}", config.api_key))
         .header("Content-Type", "application/json");
@@ -216,8 +225,16 @@ fn describe_reqwest_error(e: &reqwest::Error) -> String {
 /// 规范化 base URL
 fn normalize_base_url(url: &str) -> String {
     let trimmed = url.trim().trim_end_matches('/');
-    // 已经以 /v1 或 /v3 等版本路径结尾
-    if trimmed.ends_with("/v1") || trimmed.ends_with("/v3") {
+    let has_version_suffix = trimmed
+        .rsplit('/')
+        .next()
+        .and_then(|segment| segment.strip_prefix('v'))
+        .is_some_and(|version| {
+            !version.is_empty() && version.chars().all(|c| c.is_ascii_digit())
+        });
+
+    // 已经以 /v1、/v3、/v4 等版本路径结尾时直接使用
+    if has_version_suffix {
         trimmed.to_string()
     } else if trimmed.ends_with("/api") {
         // 豆包等：https://ark.cn-beijing.volces.com/api → 加 /v3

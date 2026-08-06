@@ -8,6 +8,7 @@ import { getRuntimeEvents, type RuntimeEvent } from '@/services/debugLog'
 import { getWorkMode } from '@/services/transcription'
 import { FolderOpen, RefreshCw, CheckCircle2, XCircle, MinusCircle, CircleSlash, Info, HelpCircle, ChevronDown } from 'lucide-react'
 import { Tooltip } from '@/components/ui/tooltip'
+import { providerLabel } from './aiProviderCatalog'
 import DiagnosticsReportPanel from './DiagnosticsReportPanel'
 
 type HealthStatus = 'ok' | 'error' | 'unknown' | 'disabled'
@@ -18,6 +19,20 @@ interface HealthItem {
   detail: string
 }
 
+// 本地 GGUF 引擎的诊断信息（Rust 命令 gguf_asr_diagnostics）
+interface GgufDevice {
+  kind: string
+  name: string
+  memory_mb: number
+}
+
+interface GgufDiagnostics {
+  devices: GgufDevice[]
+  current_backend: string | null
+  native_version: string
+  process_memory_mb: number
+}
+
 // ASR 供应商 → 显示名映射
 const ASR_DISPLAY: Record<string, string> = {
   doubao_v2: '豆包 ASR（Doubao-Seed-ASR-2.0）',
@@ -26,15 +41,6 @@ const ASR_DISPLAY: Record<string, string> = {
   qwen_omni_35_flash: '千问 3.5 Omni Flash（qwen3.5-omni-flash-realtime）',
   qwen_omni_flash: '千问 Omni Flash（qwen3-omni-flash-realtime）',
   qwen_omni_turbo: '千问 Omni Turbo（qwen-omni-turbo-realtime）',
-}
-
-// AI 供应商 → 显示名映射
-const AI_DISPLAY: Record<string, string> = {
-  openai_compat: 'OpenAI 兼容',
-  deepseek: 'DeepSeek',
-  doubao: '豆包（火山方舟）',
-  qwen: '通义千问',
-  ollama: 'Ollama（本地）',
 }
 
 // 常见问题（自助排查）
@@ -82,8 +88,8 @@ export default function DiagnosticsPage() {
   const [showFileLog, setShowFileLog] = useState(true)
   const [openFaq, setOpenFaq] = useState<number | null>(0)
 
-  // AI 校对处于「未开启」状态时，给出温和提示（依赖 AI 的功能不会生效）
-  const aiProofreadDisabled = health.some((item) => item.label === 'AI 校对' && item.status === 'disabled')
+  // AI 整理处于「未开启」状态时，给出温和提示（依赖 AI 的功能不会生效）
+  const aiProofreadDisabled = health.some((item) => item.label === 'AI 整理' && item.status === 'disabled')
 
   useEffect(() => {
     void doHealthCheck()
@@ -144,6 +150,24 @@ export default function DiagnosticsPage() {
     } else if (workMode === 'local') {
       const modelId = await getSetting('localAsr.modelId', '') as string
       items.push({ label: 'ASR', status: modelId ? 'ok' : 'error', detail: modelId || '未选择模型' })
+      // 本地引擎实况：实际绑定的后端（确认 GPU 用上了没）+ 进程内存（模型常驻的真实占用）
+      try {
+        const d = await invoke<GgufDiagnostics>('gguf_asr_diagnostics')
+        items.push({
+          label: '本地引擎',
+          status: 'ok',
+          detail: `${d.current_backend ?? '模型未加载（空闲已卸载或尚未使用）'} · 进程内存 ${d.process_memory_mb} MB · transcribe.cpp ${d.native_version}`,
+        })
+        items.push({
+          label: '计算设备',
+          status: d.devices.length > 0 ? 'ok' : 'error',
+          detail: d.devices.length > 0
+            ? d.devices.map((dev) => `${dev.name}（${dev.kind}${dev.memory_mb > 0 ? `，${(dev.memory_mb / 1024).toFixed(0)} GB` : ''}）`).join('、')
+            : '没有注册任何计算后端',
+        })
+      } catch (err) {
+        items.push({ label: '本地引擎', status: 'error', detail: String(err) })
+      }
     } else {
       items.push({ label: 'ASR', status: 'ok', detail: '由服务器提供' })
     }
@@ -153,27 +177,29 @@ export default function DiagnosticsPage() {
     // 固定显示「由服务器提供」，导致用户关掉 AI 整理后诊断页看不出未开启。
     const aiEnabled = await getSetting('aiEnabled', false) as boolean
     if (!aiEnabled) {
-      items.push({ label: 'AI 校对', status: 'disabled', detail: '未开启（极速模式）' })
+      items.push({ label: 'AI 整理', status: 'disabled', detail: '未开启（极速模式）' })
     } else if (workMode === 'server') {
-      items.push({ label: 'AI 校对', status: 'ok', detail: '由服务器提供' })
+      items.push({ label: 'AI 整理', status: 'ok', detail: '由服务器提供' })
     } else {
       const aiProvider = await getSetting('cloudAi.provider', '') as string
       const aiApiKey = await getSetting('cloudAi.apiKey', '') as string
       const aiApiUrl = await getSetting('cloudAi.apiUrl', '') as string
       const aiModel = await getSetting('cloudAi.model', '') as string
-      const displayName = AI_DISPLAY[aiProvider] || aiProvider
+      // 供应商显示名只有一份真相（aiProviderCatalog）。这里原先另有一张 AI_DISPLAY 表，
+      // 少了小米 MiMo、Ollama 的写法也和设置页不一致。
+      const displayName = aiProvider ? providerLabel(aiProvider) : ''
 
       if (!aiProvider || (!aiApiKey && aiProvider !== 'ollama') || !aiApiUrl) {
-        items.push({ label: 'AI 校对', status: 'error', detail: '未完整配置' })
+        items.push({ label: 'AI 整理', status: 'error', detail: '未完整配置' })
       } else {
         // 实际测试连通性
         try {
           const result = await invoke<{ ok: boolean; message: string }>('test_ai_connection', {
             config: { provider: aiProvider, api_url: aiApiUrl, api_key: aiApiKey, model: aiModel },
           })
-          items.push({ label: 'AI 校对', status: result.ok ? 'ok' : 'error', detail: result.ok ? `${displayName}（${aiModel}）` : `${displayName} — ${result.message}` })
+          items.push({ label: 'AI 整理', status: result.ok ? 'ok' : 'error', detail: result.ok ? `${displayName}（${aiModel}）` : `${displayName} — ${result.message}` })
         } catch (err) {
-          items.push({ label: 'AI 校对', status: 'error', detail: `${displayName} — ${String(err)}` })
+          items.push({ label: 'AI 整理', status: 'error', detail: `${displayName} — ${String(err)}` })
         }
       }
     }
@@ -251,7 +277,7 @@ export default function DiagnosticsPage() {
             {aiProofreadDisabled && (
               <div className="mt-3 flex items-start gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
                 <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                <span>AI 校对未开启，润色模式等依赖 AI 的功能不会生效。可在主页右上角，或主页侧边栏「AI 整理」页中开启。</span>
+                <span>AI 整理未开启，润色模式等依赖 AI 的功能不会生效。可在主页右上角，或主页侧边栏「AI 整理」页中开启。</span>
               </div>
             )}
           </CardContent>
@@ -300,8 +326,8 @@ export default function DiagnosticsPage() {
                     key={tab.value}
                     onClick={() => setLogFilter(tab.value)}
                     className={`rounded-md px-2.5 py-1 text-xs transition-colors ${logFilter === tab.value
-                        ? 'bg-primary/10 text-primary'
-                        : 'text-muted-foreground hover:text-foreground'
+                      ? 'bg-primary/10 text-primary'
+                      : 'text-muted-foreground hover:text-foreground'
                       }`}
                   >
                     {tab.label}{tab.count > 0 ? ` (${tab.count})` : ''}

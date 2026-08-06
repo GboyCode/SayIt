@@ -327,15 +327,23 @@ export async function saveTextPostProcessOptions(opts: TextPostProcessOptions): 
 
 export interface ApplyTransformsOptions {
   /**
-   * 文本是纯 ASR 结果、可参与智能分段（极速模式）。
-   * 为 true 且用户开启自动分段时，先做智能分段再执行其它处理。
+   * 这段文本是不是**未经 AI 整理的纯 ASR 结果**。
+   *
+   * 「格式规范」（智能分段 / 数字规范化 / 去句末标点 / 标点转空格）是我们在没有 AI 时
+   * 兜底做的排版。一旦 AI 整理介入，格式就该由 AI 的规则统一负责——两边都做会打架
+   * （比如 AI 已经排好版，我们又去掉了它的句末句号）。所以这四项只在 rawAsr 时生效。
+   *
+   * 文本替换不受此开关影响，任何时候都执行：它是用户点名要替换的固定词
+   * （改公司名、术语纠正等），和"谁来排版"无关，AI 也未必会照做。
+   *
+   * 默认 true：调用方没说明时按纯 ASR 处理（更安全，不会漏掉该做的规范化）。
    */
-  segmentable?: boolean
+  rawAsr?: boolean
 }
 
 /**
- * 统一入口：智能分段 → 数字规范化 → 用户替换规则 → 去句末标点 → 标点转空格。
- * 替代原先直接调用 segmentAsrText + applyTextReplacements 的位置（是其超集）。
+ * 统一入口。顺序：智能分段 → 数字规范化 → 用户替换规则 → 去句末标点 → 标点转空格。
+ * 其中除「用户替换规则」外都属于「格式规范」，仅在 rawAsr（无 AI 整理）时执行。
  */
 export async function applyTextTransforms(
   text: string,
@@ -343,11 +351,13 @@ export async function applyTextTransforms(
 ): Promise<string> {
   if (!text) return text
   const opts = await getTextPostProcessOptions()
+  // AI 整理过的文本，格式交给 AI；我们只保留文本替换。
+  const ownFormat = options.rawAsr ?? true
   let result = text
-  if (options.segmentable && opts.autoSegment) result = segmentAsrText(result)
-  if (opts.normalizeNumbers) result = convertChineseNumbers(result)
+  if (ownFormat && opts.autoSegment) result = segmentAsrText(result)
+  if (ownFormat && opts.normalizeNumbers) result = convertChineseNumbers(result)
   result = await applyTextReplacements(result)
-  if (opts.stripTrailingPunctuation) result = stripTrailingPunctuation(result)
-  if (opts.punctuationToSpace) result = replacePunctuationWithSpace(result)
+  if (ownFormat && opts.stripTrailingPunctuation) result = stripTrailingPunctuation(result)
+  if (ownFormat && opts.punctuationToSpace) result = replacePunctuationWithSpace(result)
   return result
 }

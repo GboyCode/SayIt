@@ -4,6 +4,11 @@ use crate::keyboard::KeyboardHookManager;
 use crate::storage::Storage;
 
 #[tauri::command]
+pub fn set_escape_action_mode(mode: String, token: u64) -> Result<(), String> {
+    crate::keyboard::set_escape_action_mode(&mode, token)
+}
+
+#[tauri::command]
 pub fn shortcuts_changed(
     app: AppHandle,
     storage: State<Storage>,
@@ -85,6 +90,11 @@ pub fn register_all_global_shortcuts(app: &AppHandle, storage: &Storage) {
 /// 无法发现用底层键盘钩子（如本应用自身、部分输入法/工具）占用的键——
 /// 这是 Windows API 的固有限制。
 #[tauri::command]
+pub fn get_ptt_physical_key_states(codes: Vec<String>) -> Vec<bool> {
+    crate::keyboard::ptt_physical_key_states(&codes)
+}
+
+#[tauri::command]
 pub fn test_shortcut(
     app: AppHandle,
     storage: State<Storage>,
@@ -119,18 +129,24 @@ pub fn test_shortcut(
     Ok(available)
 }
 
-/// 打开鼠标侧键"录制捕获"模式：设置页开始录制快捷键时调用。开启后底层鼠标钩子会
-/// 把下一个侧键按下吞掉（避免 webview 把它当"后退"导航）并通过 `mouse-shortcut-captured`
-/// 事件回报给前端用于绑定。
+/// 打开"录制捕获"模式：设置页开始录制快捷键时调用。开启后：
+/// - 底层鼠标钩子把下一个侧键按下吞掉（避免 webview 把它当"后退"导航）并通过
+///   `mouse-shortcut-captured` 事件回报给前端用于绑定；
+/// - 键盘钩子放行 PTT/免提单键，不再触发录音（否则按到已绑定的键会直接开始口述）；
+/// - 注销全部 global_shortcut。RegisterHotKey 注册的组合键会被系统直接吞掉、送不到
+///   webview，不注销的话按已绑定的组合键只会触发它自己，永远录不进新设置。
 #[tauri::command]
-pub fn begin_mouse_shortcut_capture() {
-    crate::keyboard::set_mouse_shortcut_capture(true);
+pub fn begin_shortcut_capture(app: AppHandle) {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    crate::keyboard::set_shortcut_capture(true);
+    let _ = app.global_shortcut().unregister_all();
 }
 
-/// 关闭鼠标侧键录制捕获模式：录制结束/取消时调用。
+/// 关闭录制捕获模式（录制结束/取消时调用），并恢复全部 global_shortcut 注册。
 #[tauri::command]
-pub fn end_mouse_shortcut_capture() {
-    crate::keyboard::set_mouse_shortcut_capture(false);
+pub fn end_shortcut_capture(app: AppHandle, storage: State<Storage>) {
+    crate::keyboard::set_shortcut_capture(false);
+    register_all_global_shortcuts(&app, storage.inner());
 }
 
 /// PTT Lab: start/stop a dedicated keyboard hook for the lab test key (right Ctrl).

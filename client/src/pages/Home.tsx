@@ -5,6 +5,7 @@ import { getStats, type Stats, getSetting } from '@/services/store'
 import { SHORTCUTS_CHANGED_EVENT } from '@/services/bridge'
 import FeedbackSection from '@/components/FeedbackSection'
 import NoticeBanner from '@/components/NoticeBanner'
+import { displayShortcut } from '@/lib/shortcutKeys'
 
 export default function Home() {
   const [stats, setStats] = useState<Stats>({ totalDurationSec: 0, totalChars: 0 })
@@ -26,8 +27,8 @@ export default function Home() {
     if (totalMinutes >= 60) {
       const hours = Math.floor(totalMinutes / 60)
       const minutes = totalMinutes % 60
-      return { 
-        value: `${hours}`, 
+      return {
+        value: `${hours}`,
         extraValue: minutes > 0 ? `${minutes}` : null,
         unit: '小时',
         extraUnit: minutes > 0 ? '分钟' : null
@@ -54,28 +55,7 @@ export default function Home() {
       : 0
   const savedTime = formatTime(Math.round(stats.totalChars / 50) * 60)
 
-  const formatKey = (key: string) => {
-    const keyMap: Record<string, string> = {
-      'AltLeft': '左 Alt',
-      'AltRight': '右 Alt',
-      'ControlLeft': '左 Ctrl',
-      'ControlRight': '右 Ctrl',
-      'ShiftLeft': '左 Shift',
-      'ShiftRight': '右 Shift',
-      'MetaLeft': '左 Win',
-      'MetaRight': '右 Win',
-      'Space': '空格',
-      'CapsLock': 'Caps Lock',
-      'Alt': 'Alt',
-      'Control': 'Ctrl',
-      'Shift': 'Shift',
-    }
-    // 处理组合键如 "Alt+L"
-    if (key.includes('+')) {
-      return key.split('+').map((k) => keyMap[k] || k).join(' + ')
-    }
-    return keyMap[key] || key
-  }
+  const handsFreeKeyLabel = displayShortcut(handsFreeKey).join(' + ')
 
   const cards = [
     { icon: Clock, label: '总口述时间', ...totalTime },
@@ -90,7 +70,7 @@ export default function Home() {
     <div className="max-w-4xl mx-auto">
       <h1 className="mb-4 text-2xl font-bold">随口说，出色写</h1>
       <p className="mb-8 text-sm text-muted-foreground">
-        按下 <span className="px-1.5 py-0.5 text-muted-foreground bg-secondary border border-border rounded">{formatKey(handsFreeKey)}</span> 开始口述，再按一次结束并插入文本。
+        按下 <span className="px-1.5 py-0.5 text-muted-foreground bg-secondary border border-border rounded">{handsFreeKeyLabel}</span> 开始口述，再按一次结束并插入文本。
       </p>
 
       <NoticeBanner />
@@ -98,7 +78,7 @@ export default function Home() {
       {isNewUser && (
         <div className="mb-6 rounded-xl border border-border bg-muted/30 px-5 py-5 text-center">
           <p className="text-sm text-muted-foreground">
-            👋 在任意应用中按下 <span className="px-1.5 py-0.5 text-muted-foreground bg-secondary border border-border rounded text-xs">{formatKey(handsFreeKey)}</span> 即可开始口述，再按一次自动输入文本
+            👋 在任意应用中按下 <span className="px-1.5 py-0.5 text-muted-foreground bg-secondary border border-border rounded text-xs">{handsFreeKeyLabel}</span> 即可开始口述，再按一次自动输入文本
           </p>
         </div>
       )}

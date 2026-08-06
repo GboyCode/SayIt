@@ -59,14 +59,15 @@ export function classifyMicLevel(rms: number, framePeak: number): MicLevel {
   return 'voiced'
 }
 
-/** 判断 PTT 设置是否为修饰键 */
+/** 判断 PTT 设置中是否包含修饰键（旧单键与物理组合格式都支持） */
 export function isModifierPTTSetting(pttSetting?: string): boolean {
-  return pttSetting === 'AltLeft'
-    || pttSetting === 'AltRight'
-    || pttSetting === 'ControlLeft'
-    || pttSetting === 'ControlRight'
-    || pttSetting === 'ShiftLeft'
-    || pttSetting === 'ShiftRight'
+  if (!pttSetting) return false
+  return pttSetting.split('+').some((code) => (
+    code.startsWith('Alt')
+    || code.startsWith('Control')
+    || code.startsWith('Shift')
+    || code.startsWith('Meta')
+  ))
 }
 
 const PROCESSING_TIMEOUT_BASE_MS = 15_000

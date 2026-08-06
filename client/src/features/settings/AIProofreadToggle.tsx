@@ -12,16 +12,24 @@ export default function AIProofreadToggle() {
   return (
     <Card>
       <CardContent className="p-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-semibold">AI 整理</h2>
+        {/* min-w-0 + gap：最小窗口下说明文字要能挤，不能把开关顶出卡片 */}
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <h2 id="ai-proofread-heading" className="text-lg font-semibold">AI 整理</h2>
             <p className="mt-1 text-xs text-muted-foreground">
               {aiEnabled
                 ? '开启后，会自动整理口述内容，修正错字、整理语序'
                 : '关闭后，将原样输出语音识别的文字，不做修改'}
             </p>
           </div>
-          <Switch checked={aiEnabled} onChange={() => { void toggleAiEnabled() }} />
+          {/* 开关原来既没有 label 也没有 aria-label，相邻的标题也没关联——读屏念到的是
+              一个没有名字的「切换按钮」 */}
+          <Switch
+            checked={aiEnabled}
+            onChange={() => { void toggleAiEnabled() }}
+            labelledBy="ai-proofread-heading"
+            className="shrink-0"
+          />
         </div>
       </CardContent>
     </Card>

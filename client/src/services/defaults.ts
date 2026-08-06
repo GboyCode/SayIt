@@ -15,12 +15,15 @@ export const DEFAULTS: Record<string, unknown> = {
   workMode: 'server', // 可选: 'server' | 'cloud_api' | 'local'
 
   // ── 快捷键 ──
-  shortcutPTT: 'ShiftRight', // 按住说话。可选: 'AltLeft' | 'AltRight' | 'ControlLeft' | 'ControlRight' | 'ShiftLeft' | 'ShiftRight' | 'Space' | 'CapsLock' 等单键
+  shortcutPTT: 'ShiftRight', // 按住说话。旧单键保持 DOM code；组合键使用物理 code 格式，如 'ControlLeft+MetaLeft' 或 'ControlLeft+KeyK'
   shortcutHandsFree: 'AltRight', // 免提模式。默认右 Alt 单键。也支持组合键格式如 'Control+Shift+S'
 
   // ── 麦克风 ──
   selectedMic: '', // 设备 ID，空字符串 = 系统默认
   muteSystemAudioWhileRecording: false, // 按住说话期间静音系统其他声音（防外放被麦克风回采）。默认关闭
+  // 浏览器降噪。默认开（底噪大的机器需要）；降噪按"人听得舒服"优化，
+  // 可能削掉 ASR 要的细节，麦克风环境干净时可以关掉对比准确度。
+  micNoiseSuppression: true,
 
   // ── 文本插入 ──
   protectClipboard: true, // 插入文本后自动还原剪贴板为插入前内容，避免占用用户剪贴板。默认开启
@@ -30,10 +33,19 @@ export const DEFAULTS: Record<string, unknown> = {
   aiPromptAppend: '', // 全局附加 prompt
 
   // ── AI 供应商 ──
-  'cloudAi.provider': 'deepseek', // 可选: 'deepseek' | 'openai_compat' | 'doubao' | 'qwen' | 'ollama'
+  // 下面这四个是**运行时生效的那一份**，录音链路、历史重跑、诊断页、反馈上报都只认它们。
+  // 它们由「AI 服务」页在启用/保存时整份写入，不要在别处单独改其中一个
+  // （历史 bug：切了模型但地址和密钥还是上一家的）。
+  'cloudAi.provider': 'deepseek', // 可选: 'deepseek' | 'openai_compat' | 'doubao' | 'qwen' | 'mimo' | 'ollama'
   'cloudAi.apiUrl': '',
   'cloudAi.apiKey': '',
   'cloudAi.model': '',
+  // 「AI 服务」列表本身：一条 = 供应商 + 地址 + 密钥 + 模型，只有设置页读写。
+  'cloudAi.profiles': [],
+  'cloudAi.activeProfileId': '',
+  // 老的「每供应商一组配置」（cloudAi.<provider>.*）只摊平迁移一次。
+  // 没有这个标记，用户删光列表后下次进页面又会被"救回来"。老键一律不删，方便降级。
+  'cloudAi.profilesMigrated': false,
 
   // ── ASR（云 API）──
   'cloudAsr.provider': 'doubao_v2', // 可选: 'doubao_v2' | 'qwen' | 'qwen_realtime' | 'qwen_omni' | 'qwen_omni_turbo' | 'mimo'
@@ -42,13 +54,29 @@ export const DEFAULTS: Record<string, unknown> = {
   'cloudAsr.omniSystemPrompt': '', // 千问 Omni 模式的 system prompt
 
   // ── ASR（本地）──
-  'localAsr.modelId': 'sensevoice-small', // 可选: 'sensevoice-small' | 'paraformer-zh' | 'whisper-tiny'
+  // 可选值就是 catalog.rs 里那几个 id：'sensevoice-small-gguf'（默认，最快）
+  // | 'funasr-nano-2512-gguf' | 'qwen3-asr-0.6b-gguf'
+  // | 'qwen3-asr-1.7b-q4-gguf' | 'qwen3-asr-1.7b-gguf'（最准）
+  'localAsr.modelId': 'sensevoice-small-gguf',
   'localAsr.language': 'auto', // 可选: 'auto' | 'zh' | 'en' | 'ja' | 'ko'
-  'localAsr.downloadSource': 'modelscope', // 可选: 'modelscope' | 'huggingface'
+  // GGUF 权重目前只发在 HuggingFace（handy-computer 组织下），国内走镜像更稳。
+  // 值要和 catalog 里 DownloadSource.source 的名字完全一致，否则会回落到第一个源。
+  'localAsr.downloadSource': 'HuggingFace Mirror', // 可选: 'HuggingFace Mirror' | 'HuggingFace'
   'localAsr.model': '',
+  // GGUF 引擎的计算后端偏好。'auto' = 有 GPU 用 GPU、没有自动用 CPU。
+  // 没装 GPU 加速包的机器永远是 CPU，这个值不影响功能，只影响速度。
+  'localAsr.accelerator': 'auto', // 可选: 'auto' | 'cpu' | 'gpu'
+  // 本地模型空闲多少分钟后卸载（实测释放 350 MB ~ 2.6 GB 内存）。0 = 从不卸载。
+  // 默认常驻，保证下一次识别无需重新付“加载 + 预热”的等待；内存紧张的用户可在
+  // 本地模式设置中选择空闲 10 / 30 / 60 分钟后自动释放。
+  'localAsr.unloadIdleMinutes': 0,
 
   // ── 服务器 ──
-  'server.language': 'auto', // 可选: 'auto' | 'Chinese' | 'English' | 'Cantonese'
+  // 可选: 'auto' | 'zh' | 'en'。随每次识别发给服务端，由 asr.py 的 _resolve_language
+  // 映射成 Chinese / English；'auto' = 交给模型自检。
+  // （注释原来写的是 'Chinese' | 'English' | 'Cantonese'，那是服务端内部的取值，
+  //   客户端从来没写过这几个字符串。）
+  'server.language': 'auto',
 
   // ── 悬浮窗 ──
   overlayWaveTheme: 'black-rainbow', // 可选: 'black-rainbow' | 'black-blue' | 'black-white'

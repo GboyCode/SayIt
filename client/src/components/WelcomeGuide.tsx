@@ -6,7 +6,11 @@ import { getWorkMode } from '@/services/transcription'
 import { healthCheck } from '@/services/api'
 import { setPttSuppressed } from '@/services/recorder'
 import * as bridge from '@/services/bridge'
-import { isSingleKeySetting, getSingleKeyDisplay } from '@/lib/shortcutKeys'
+import {
+  displayShortcut,
+  getSingleKeyDisplay,
+  isSingleKeySetting,
+} from '@/lib/shortcutKeys'
 import { refreshPTTSetting } from '@/services/webviewKeyboardFallback'
 import appIcon from '@/assets/icon-128.png'
 
@@ -42,13 +46,12 @@ function KeyboardHint({ activeKey, pressed }: { activeKey: string; pressed?: boo
             return (
               <div
                 key={key.code}
-                className={`flex items-center justify-center rounded-md transition-all ${
-                  isPressed
-                    ? 'bg-foreground text-background font-bold shadow-lg ring-2 ring-foreground/30 scale-110'
-                    : isActive
-                      ? 'bg-primary text-primary-foreground font-semibold shadow-sm ring-2 ring-primary/30'
-                      : 'border border-border/60 bg-muted/30 text-muted-foreground'
-                }`}
+                className={`flex items-center justify-center rounded-md transition-all ${isPressed
+                  ? 'bg-foreground text-background font-bold shadow-lg ring-2 ring-foreground/30 scale-110'
+                  : isActive
+                    ? 'bg-primary text-primary-foreground font-semibold shadow-sm ring-2 ring-primary/30'
+                    : 'border border-border/60 bg-muted/30 text-muted-foreground'
+                  }`}
                 style={{
                   width: isActive ? (key.w || 30) + 4 : key.w || 30,
                   height: isActive ? 32 : 28,
@@ -94,7 +97,7 @@ export default function WelcomeGuide({ onComplete }: WelcomeGuideProps) {
     getSetting('shortcutHandsFree', 'AltRight').then((k) => {
       const key = k as string
       setHfKey(key)
-      setHfLabel(getSingleKeyDisplay(key))
+      setHfLabel(displayShortcut(key).join(' + '))
       hfKeyRef.current = key
     })
     const mode = getWorkMode()
@@ -273,13 +276,12 @@ export default function WelcomeGuide({ onComplete }: WelcomeGuideProps) {
             {/* 大号按键展示 */}
             <div className="my-6">
               <div
-                className={`inline-flex items-center justify-center rounded-xl border-2 px-8 py-4 text-lg font-bold transition-all ${
-                  keyPressed
-                    ? 'border-foreground bg-foreground text-background scale-105 shadow-xl'
-                    : keyConfirmed
-                      ? 'border-emerald-500 bg-emerald-500/10 text-emerald-600'
-                      : 'border-primary/40 bg-primary/5 text-primary animate-pulse'
-                }`}
+                className={`inline-flex items-center justify-center rounded-xl border-2 px-8 py-4 text-lg font-bold transition-all ${keyPressed
+                  ? 'border-foreground bg-foreground text-background scale-105 shadow-xl'
+                  : keyConfirmed
+                    ? 'border-emerald-500 bg-emerald-500/10 text-emerald-600'
+                    : 'border-primary/40 bg-primary/5 text-primary animate-pulse'
+                  }`}
               >
                 {keyPressed ? `${hfLabel} ⬇` : keyConfirmed ? `✓ ${hfLabel}` : hfLabel}
               </div>
@@ -323,11 +325,10 @@ export default function WelcomeGuide({ onComplete }: WelcomeGuideProps) {
                 </div>
                 <button
                   onClick={() => setListeningKey(true)}
-                  className={`rounded-lg border px-3 py-1.5 text-sm font-semibold transition-all ${
-                    listeningKey
-                      ? 'border-primary bg-primary/10 text-primary animate-pulse'
-                      : 'border-border bg-muted/50 text-foreground hover:border-primary/50'
-                  }`}
+                  className={`rounded-lg border px-3 py-1.5 text-sm font-semibold transition-all ${listeningKey
+                    ? 'border-primary bg-primary/10 text-primary animate-pulse'
+                    : 'border-border bg-muted/50 text-foreground hover:border-primary/50'
+                    }`}
                 >
                   {listeningKey ? '按下新按键...' : hfLabel}
                 </button>
@@ -414,9 +415,8 @@ export default function WelcomeGuide({ onComplete }: WelcomeGuideProps) {
             {Array.from({ length: totalSteps }, (_, i) => (
               <div
                 key={i}
-                className={`h-1.5 rounded-full transition-all ${
-                  i === step ? 'w-6 bg-primary' : 'w-1.5 bg-muted-foreground/20'
-                }`}
+                className={`h-1.5 rounded-full transition-all ${i === step ? 'w-6 bg-primary' : 'w-1.5 bg-muted-foreground/20'
+                  }`}
               />
             ))}
           </div>

@@ -42,12 +42,26 @@ export interface ThemeVars {
   '--input-placeholder': string
 
   // 状态色
+  //
+  // 每种状态有三个变量，用途不同，别混用：
+  //   --xxx              色块本体（圆点、进度条填充、10% 淡底）
+  //   --xxx-foreground   压在色块本体上的文字
+  //   --xxx-strong       直接画在页面/卡片底色上的**文字**颜色
+  //
+  // 为什么要有 -strong：--success/--warning/--info 这类中等明度的彩色在浅色主题的
+  // 白底上对比度只有 2~3.3:1，远低于正文 4.5:1 的要求（`text-warning` 那句
+  // 「模型尚未下载」曾经是全卡最不可读的一行）。-strong 是同色相压暗/提亮到达标
+  // 的版本，只用于文字与描边。
   '--success': string
   '--success-foreground': string
+  '--success-strong': string
   '--warning': string
   '--warning-foreground': string
+  '--warning-strong': string
   '--info': string
   '--info-foreground': string
+  '--info-strong': string
+  '--destructive-strong': string
 }
 
 /** 主题扩展变量 — 主题独有的特色变量（可选） */

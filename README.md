@@ -131,7 +131,7 @@ cd backend && uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 - **全局语音输入** — 在任何应用中按下快捷键即可口述，文字自动插入光标位置
 - **AI 智能润色** — 口语自动转书面语，去口癖、纠错、分段，Prompt 完全可自定义
-- **多种语音识别** — 豆包 ASR、千问 ASR，以及本地离线识别（SenseVoice、Qwen3-ASR，基于 sherpa-onnx）
+- **多种语音识别** — 豆包 ASR、千问 ASR，以及本地离线识别（SenseVoice、Fun-ASR Nano、Qwen3-ASR 共 5 档 GGUF 模型，可用显卡加速）
 - **热词增强** — 自定义专业术语词表；豆包、千问、服务器模式和本地 Qwen3-ASR 会参与 ASR 识别偏置，本地 SenseVoice 则通过 AI 整理/文本处理做后处理纠错
 - **悬浮窗反馈** — 录音状态、波形动画、处理进度实时可见
 - **历史记录** — 所有转录结果本地保存，支持搜索和收藏
@@ -169,7 +169,7 @@ SayIt/
 | 桌面客户端　　 | Tauri v2、React、TypeScript、Tailwind CSS　　　　　　|
 | 客户端系统集成 | Rust（全局键盘钩子、剪贴板、SQLite）　　　　　　　　 |
 | 后端服务　　　 | Python、FastAPI、WebSocket　　　　　　　　　　　　　 |
-| 语音识别　　　 | Qwen3-ASR + vLLM / 豆包 ASR / 千问 ASR / sherpa-onnx |
+| 语音识别　　　 | Qwen3-ASR + vLLM / 豆包 ASR / 千问 ASR / ggml (GGUF) |
 | AI 润色　　　　| DeepSeek / 通义千问 / Azure OpenAI / Ollama　　　　　|
 | 部署　　　　　 | Docker Compose、NVIDIA Container Toolkit　　　　　　 |
 | 开发　　　　　 | 整个项目使用 Claude Opus 开发　　　　　　　　　　　　|
@@ -184,7 +184,19 @@ npm install
 npm run tauri dev
 ```
 
-前置要求：Node.js 18+、Rust 1.75+
+前置要求：Node.js 18+、Rust 1.75+、CMake 3.20+、Vulkan SDK
+
+本地离线识别基于 transcribe.cpp（GGUF/ggml）：构建时要用 CMake 编译原生库，并用
+Vulkan SDK 的 `glslc` 编译 SPIR-V 着色器，缺任一项都会中断构建。首次构建会从源码
+编译整棵 C++ 树（约 20 分钟），之后走缓存。
+
+两个容易卡住的点：
+
+- 装完 CMake / Vulkan SDK 请**新开一个终端**。PATH 和 `VULKAN_SDK` 的改动不会进入
+  已经在运行的 shell（包括编辑器内置终端），否则会报 `is cmake not installed?` 或
+  `Could NOT find Vulkan`，而环境变量看起来明明是对的。
+- 中文等非英文 Windows 需设 `CL=/utf-8`。否则 MSVC 按系统代码页读取 UTF-8 源文件，
+  会在只是注释里有非 ASCII 字符的地方报出一串看不懂的语法错误。
 
 ### 服务端
 

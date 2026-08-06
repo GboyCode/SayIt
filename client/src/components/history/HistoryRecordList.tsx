@@ -1,5 +1,5 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Trash2, ChevronDown, ChevronUp, VolumeX, Star, Play, Pause, RotateCcw, Loader2, Download, Check, Copy, X, FolderOpen, Pencil } from 'lucide-react'
+import { Trash2, VolumeX, Star, Play, Pause, RotateCcw, Loader2, Download, Check, Copy, X, FolderOpen, Pencil } from 'lucide-react'
 import { Tooltip } from '@/components/ui/tooltip'
 import { Card, CardContent } from '@/components/ui/card'
 import { type HistoryRecord } from '@/services/store'
@@ -7,6 +7,22 @@ import * as bridge from '@/services/bridge'
 import { pickVoiceDurationSec } from '@/services/timeModel'
 import { loadAudioAsDataUrl } from '@/services/audioFileService'
 import { invoke } from '@tauri-apps/api/core'
+
+/**
+ * 历史记录里同一时刻只允许播放一条录音。
+ * 记录当前正在播放的 <audio>，播放新的一条时先暂停上一条——只 pause、不重置进度，
+ * 所以之后可从原位置续播；被暂停那条会触发它自己的 onpause，按钮状态随之复位。
+ */
+let activeHistoryAudio: HTMLAudioElement | null = null
+function claimHistoryPlayback(audio: HTMLAudioElement) {
+  if (activeHistoryAudio && activeHistoryAudio !== audio) {
+    activeHistoryAudio.pause()
+  }
+  activeHistoryAudio = audio
+}
+function releaseHistoryPlayback(audio: HTMLAudioElement) {
+  if (activeHistoryAudio === audio) activeHistoryAudio = null
+}
 
 /** 云 API 内部 key → 用户友好的模型 ID */
 const ASR_PROVIDER_DISPLAY: Record<string, string> = {
@@ -75,6 +91,11 @@ function highlightText(text: string, keyword: string) {
   return parts
 }
 
+/** 悬停多久才展开：路过不触发，避免列表在指针底下抽动 */
+const HOVER_OPEN_MS = 160
+/** 离开多久才收起：手抖或经过缝隙不会闪 */
+const HOVER_CLOSE_MS = 180
+
 function HistoryItem({
   record,
   onDelete,
@@ -90,7 +111,19 @@ function HistoryItem({
   onEdit?: (nextText: string) => Promise<void> | void
   highlight?: string
 }) {
-  const [expanded, setExpanded] = useState(false)
+  // 详情区改为**鼠标悬停展开**，不再需要那个"展开详情"箭头。
+  //
+  // 只靠 hover 会有两个坑，这里都处理了：
+  //  1. 路过就展开、离开就收起 → 列表在指针底下抽动，容易点错。
+  //     所以进入要**停留** HOVER_OPEN_MS 才展开，离开也**延迟** HOVER_CLOSE_MS 才收，
+  //     手抖、经过缝隙都不会闪。
+  //  2. 展开区里是可操作的控件（编辑、播放、倍速），鼠标移开就收起会打断操作。
+  //     所以正在编辑 / 正在播放 / 卡片内有键盘焦点时一律保持展开（粘滞）。
+  //     focus-within 那条同时也是键盘用户的入口 —— Tab 进来就会展开。
+  const [hoverOpen, setHoverOpen] = useState(false)
+  const [focusWithin, setFocusWithin] = useState(false)
+  const openTimerRef = useRef<number | undefined>(undefined)
+  const closeTimerRef = useRef<number | undefined>(undefined)
   const [editing, setEditing] = useState(false)
   const [editText, setEditText] = useState('')
   const [audioPlaying, setAudioPlaying] = useState(false)
@@ -121,6 +154,7 @@ function HistoryItem({
     return () => {
       cancelAnimationFrame(rafRef.current)
       if (audioRef.current) {
+        releaseHistoryPlayback(audioRef.current)
         audioRef.current.pause()
         audioRef.current = null
       }
@@ -185,11 +219,15 @@ function HistoryItem({
       // 导致进度条卡住。timeupdate 是媒体事件，不受 rAF 节流影响，保证进度稳定推进。
       audio.ontimeupdate = () => setCurrentTime(audio.currentTime)
       audio.onended = () => {
+        releaseHistoryPlayback(audio)
         setAudioPlaying(false)
         setCurrentTime(0)
       }
       audio.onpause = () => setAudioPlaying(false)
-      audio.onplay = () => setAudioPlaying(true)
+      audio.onplay = () => {
+        claimHistoryPlayback(audio)
+        setAudioPlaying(true)
+      }
       await audio.play()
     } catch {
       // ignore playback errors
@@ -301,289 +339,321 @@ function HistoryItem({
     return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
   }
 
+  useEffect(() => () => {
+    window.clearTimeout(openTimerRef.current)
+    window.clearTimeout(closeTimerRef.current)
+  }, [])
+
   const progress = duration > 0 ? Math.min(currentTime / duration, 1) : 0
 
+  // 粘滞：这些情况下即使鼠标移开也不收起
+  const sticky = editing || audioPlaying || focusWithin
+  const open = hoverOpen || sticky
+
+  const handlePointerEnter = () => {
+    window.clearTimeout(closeTimerRef.current)
+    if (hoverOpen) return
+    openTimerRef.current = window.setTimeout(() => setHoverOpen(true), HOVER_OPEN_MS)
+  }
+
+  const handlePointerLeave = () => {
+    window.clearTimeout(openTimerRef.current)
+    closeTimerRef.current = window.setTimeout(() => setHoverOpen(false), HOVER_CLOSE_MS)
+  }
+
   return (
-    <div className="group rounded-md transition-colors hover:bg-accent/50">
+    <div
+      className="group rounded-md transition-colors hover:bg-accent/50"
+      // 关掉滚动锚定：Chromium 默认会在行高变化时自动调 scrollTop 去"稳住"某个锚点元素，
+      // 锚点若落在展开行下方，补偿的结果就是内容（含你正悬停的这行）往上蹿 ——
+      // 表现为"有时往上、有时往下，挤来挤去"。关掉之后展开一律向下推，行为可预期。
+      style={{ overflowAnchor: 'none' }}
+      onMouseEnter={handlePointerEnter}
+      onMouseLeave={handlePointerLeave}
+      // React 的 onFocus/onBlur 会冒泡，等价于 :focus-within
+      onFocus={() => setFocusWithin(true)}
+      onBlur={() => setFocusWithin(false)}
+    >
       <div className="flex items-start gap-2 px-2 py-2">
         <span className="w-12 shrink-0 pt-0.5 text-xs text-muted-foreground">
           {formatTime(record.timestamp)}
         </span>
 
-        <div className="min-w-0 flex-1">
-          {editing ? (
-            <div onClick={(e) => e.stopPropagation()}>
-              <textarea
-                value={editText}
-                onChange={(e) => { setEditText(e.target.value); editTextRef.current = e.target.value }}
-                autoFocus
-                rows={Math.min(Math.max(editText.split('\n').length, 2), 12)}
-                className="w-full resize-y rounded-md border border-input-border bg-input-bg px-2.5 py-1.5 text-sm leading-relaxed focus:border-input-focus-border focus:outline-none"
-                onBlur={() => { void commitEdit() }}
-                onKeyDown={(e) => {
-                  // Esc 取消（不保存）；Ctrl/Cmd+Enter 立即保存（失焦触发提交）
-                  if (e.key === 'Escape') { e.preventDefault(); cancelEdit() }
-                  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); (e.target as HTMLTextAreaElement).blur() }
-                }}
-              />
-              <span className="mt-1 inline-block text-[11px] text-muted-foreground/50">改完点击其它地方即自动保存 · Esc 取消</span>
-            </div>
-          ) : isEmpty ? (
-            <div className="flex items-center gap-2">
-              <VolumeX className="h-3.5 w-3.5 text-muted-foreground/40" />
-              <p className="text-sm italic text-muted-foreground/60">无有效声音</p>
-            </div>
-          ) : (
-            <div
-              className="cursor-pointer text-sm leading-relaxed text-foreground/75 select-text transition-colors hover:text-foreground"
-              onClick={() => {
-                const selection = window.getSelection()
-                if (selection && selection.toString().trim()) return
-                void bridge.copyText(text).then(() => {
-                  setCopied(true)
-                  setTimeout(() => setCopied(false), 1500)
-                })
-              }}
-            >
-              {(() => {
-                // 编辑过的记录：在正文末尾内联一个小铅笔图标（hover 提示「已编辑」），不占额外行、不混入正文文本
-                const editedMark = record.manualEditedAt ? (
-                  <Tooltip content="已编辑">
-                    <Pencil className="ml-1 inline-block h-3 w-3 translate-y-[1px] text-muted-foreground/40" />
-                  </Tooltip>
-                ) : null
-                if (text.includes('\n')) {
-                  const paras = text.split(/\n{2,}/)
-                  return paras.map((para, idx) => (
-                    <p key={idx} className={idx > 0 ? 'mt-1.5' : undefined}>
-                      {highlightText(para, highlight)}
-                      {idx === paras.length - 1 && editedMark}
-                    </p>
-                  ))
-                }
-                return <p>{highlightText(text, highlight)}{editedMark}</p>
-              })()}
-            </div>
-          )}
-
-          <div
-            className="grid transition-[grid-template-rows] duration-200 ease-out"
-            style={{ gridTemplateRows: expanded ? '1fr' : '0fr' }}
-          >
-            <div className="overflow-hidden">
-              {(expanded || true) && (
-                <div className="mt-2 space-y-2 text-xs">
-                  {!isEmpty && record.asrText && (
-                    <div className="text-muted-foreground">
-                      <span className="font-medium">ASR 原文：</span>
-                      <span className="whitespace-pre-line">{highlightText(record.asrText, highlight)}</span>
-                    </div>
-                  )}
-                  <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
-                    {record.workMode && (
-                      <>
-                        <span className="rounded border border-border px-1.5 py-0.5 text-xs">
-                          {record.workMode === 'server' ? '服务器' : record.workMode === 'cloud_api' ? '云 API' : '本地'}
-                        </span>
-                        {record.asrProvider && (
-                          <span className="text-xs">ASR: {ASR_PROVIDER_DISPLAY[record.asrProvider] || record.asrProvider}</span>
-                        )}
-                        {record.aiProvider && record.aiProvider !== 'server' && record.llmMs > 0 && (
-                          <span className="text-xs">
-                            AI: {record.aiProvider}{record.aiModel ? ` (${record.aiModel})` : ''}
-                          </span>
-                        )}
-                        <span className="text-border">|</span>
-                      </>
-                    )}
-                    <span>语音长度 {voiceDurationSec.toFixed(1)}s</span>
-                    <span className="text-border">|</span>
-                    <span>识别 {((record.asrMs + record.llmMs) / 1000).toFixed(1)}s (ASR {record.asrMs}ms + LLM {record.llmMs}ms)</span>
-                    {record.audioFilePath && (
-                      <Tooltip content={audioPlaying ? '暂停播放' : '播放录音'}>
-                        <button
-                          type="button"
-                          onClick={() => { void handleTogglePlayback() }}
-                          disabled={audioLoading}
-                          className="relative top-[0.5px] flex h-7 w-7 items-center justify-center rounded p-1.5 hover:bg-accent disabled:opacity-50"
-                          aria-label={audioPlaying ? '暂停播放' : '播放录音'}
-                        >
-                          {audioLoading ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                          ) : audioPlaying ? (
-                            <Pause className="h-3.5 w-3.5 text-primary" />
-                          ) : (
-                            <Play className="h-3.5 w-3.5 text-muted-foreground" />
-                          )}
-                        </button>
-                      </Tooltip>
-                    )}
-                    {record.audioFilePath && (
-                      <Tooltip content={downloadStatus === 'ok' ? `已保存到 ${downloadPath}` : downloadStatus === 'fail' ? `下载失败: ${downloadPath}` : '下载音频'}>
-                        <button
-                          type="button"
-                          onClick={() => { void handleDownloadAudio() }}
-                          disabled={downloading}
-                          className="relative top-[0.5px] flex h-7 w-7 items-center justify-center rounded p-1.5 hover:bg-accent disabled:opacity-50"
-                          aria-label="下载音频"
-                        >
-                          {downloading ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                          ) : downloadStatus === 'ok' ? (
-                            <Check className="h-3.5 w-3.5 text-success" />
-                          ) : downloadStatus === 'fail' ? (
-                            <X className="h-3.5 w-3.5 text-destructive" />
-                          ) : (
-                            <Download className="h-3.5 w-3.5 text-muted-foreground" />
-                          )}
-                        </button>
-                      </Tooltip>
-                    )}
-                    {record.audioFilePath && onReprocess && (
-                      <Tooltip content="重新识别">
-                        <button
-                          type="button"
-                          onClick={() => { void handleReprocess() }}
-                          disabled={reprocessing}
-                          className="relative top-[0.5px] flex h-7 w-7 items-center justify-center rounded p-1.5 hover:bg-accent disabled:opacity-50"
-                          aria-label="重新识别"
-                        >
-                          {reprocessing ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                          ) : (
-                            <RotateCcw className="h-3.5 w-3.5 text-muted-foreground" />
-                          )}
-                        </button>
-                      </Tooltip>
-                    )}
-                  </div>
-                  {downloadStatus === 'ok' && downloadPath && (
-                    <div className="mt-1 flex items-center gap-2 text-xs text-success break-all">
-                      <span className="min-w-0 truncate">已保存到 {downloadPath}</span>
-                      <button
-                        onClick={() => void invoke('reveal_file_in_folder', { filePath: downloadPath })}
-                        className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                        aria-label="打开文件所在目录"
-                      >
-                        <FolderOpen className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  )}
-                  {downloadStatus === 'fail' && downloadPath && (
-                    <div className="mt-1 text-xs text-destructive break-all">
-                      下载失败: {downloadPath}
-                    </div>
-                  )}
-                  {/* 音频进度条 + 倍速 */}
-                  {audioReady && (
-                    <div className="mt-2 flex items-center gap-2">
-                      <span className="w-[72px] shrink-0 text-[11px] tabular-nums text-muted-foreground">
-                        {formatElapsed(currentTime)} / {formatElapsed(duration)}
-                      </span>
-                      <div className="relative h-3 min-w-0 flex-1 overflow-visible">
-                        <div className="absolute left-0 right-0 top-1/2 h-px -translate-y-1/2 bg-border" />
-                        <div className="absolute left-0 top-1/2 h-px -translate-y-1/2 bg-foreground" style={{ width: `${progress * 100}%` }} />
-                        <div
-                          className="absolute top-1/2 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-foreground bg-card shadow-sm"
-                          style={{ left: `${progress * 100}%` }}
-                        />
-                        <input
-                          type="range"
-                          min={0}
-                          max={Math.max(duration, 0.1)}
-                          step={0.1}
-                          value={Math.min(currentTime, duration || 0)}
-                          onChange={(e) => handleSeek(Number(e.target.value))}
-                          className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                        />
-                      </div>
-                      <div className="flex shrink-0 gap-0.5">
-                        {[0.75, 1, 1.5, 2, 2.5].map((rate) => (
-                          <button
-                            key={rate}
-                            type="button"
-                            onClick={() => handleRateChange(rate)}
-                            className={`rounded px-1.5 py-0.5 text-[11px] transition-colors ${playbackRate === rate
-                              ? 'bg-foreground text-background font-medium'
-                              : 'text-muted-foreground hover:bg-accent'
-                              }`}
-                          >
-                            {rate}x
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div className="flex shrink-0 gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-          {!isEmpty && (
-            <Tooltip content={copied ? '已复制' : '复制文本'} forceVisible={copied}>
-              <button
+        <div className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto] gap-x-2">
+          <div className="min-w-0">
+            {editing ? (
+              <div onClick={(e) => e.stopPropagation()}>
+                <textarea
+                  value={editText}
+                  onChange={(e) => { setEditText(e.target.value); editTextRef.current = e.target.value }}
+                  autoFocus
+                  rows={Math.min(Math.max(editText.split('\n').length, 2), 12)}
+                  className="w-full resize-y rounded-md border border-input-border bg-input-bg px-2.5 py-1.5 text-sm leading-relaxed focus:border-input-focus-border focus:outline-none"
+                  onBlur={() => { void commitEdit() }}
+                  onKeyDown={(e) => {
+                    // Esc 取消（不保存）；Ctrl/Cmd+Enter 立即保存（失焦触发提交）
+                    if (e.key === 'Escape') { e.preventDefault(); cancelEdit() }
+                    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); (e.target as HTMLTextAreaElement).blur() }
+                  }}
+                />
+                <span className="mt-1 inline-block text-[11px] text-muted-foreground/50">改完点击其它地方即自动保存 · Esc 取消</span>
+              </div>
+            ) : isEmpty ? (
+              <div className="flex items-center gap-2">
+                <VolumeX className="h-3.5 w-3.5 text-muted-foreground/40" />
+                <p className="text-sm italic text-muted-foreground/60">无有效声音</p>
+              </div>
+            ) : (
+              <div
+                className="cursor-pointer text-sm leading-relaxed text-foreground/75 select-text transition-colors hover:text-foreground"
                 onClick={() => {
+                  const selection = window.getSelection()
+                  if (selection && selection.toString().trim()) return
                   void bridge.copyText(text).then(() => {
                     setCopied(true)
                     setTimeout(() => setCopied(false), 1500)
                   })
                 }}
-                className="inline-flex items-center rounded p-1 transition-colors hover:bg-accent"
-                aria-label="复制"
               >
-                {copied ? (
-                  <Check className="h-3.5 w-3.5 text-success" />
-                ) : (
-                  <Copy className="h-3.5 w-3.5 text-muted-foreground" />
-                )}
-              </button>
-            </Tooltip>
-          )}
+                {(() => {
+                  // 编辑过的记录：在正文末尾内联一个小铅笔图标（hover 提示「已编辑」），不占额外行、不混入正文文本
+                  const editedMark = record.manualEditedAt ? (
+                    <Tooltip content="已编辑">
+                      <Pencil className="ml-1 inline-block h-3 w-3 translate-y-[1px] text-muted-foreground/40" />
+                    </Tooltip>
+                  ) : null
+                  if (text.includes('\n')) {
+                    const paras = text.split(/\n{2,}/)
+                    return paras.map((para, idx) => (
+                      <p key={idx} className={idx > 0 ? 'mt-1.5' : undefined}>
+                        {highlightText(para, highlight)}
+                        {idx === paras.length - 1 && editedMark}
+                      </p>
+                    ))
+                  }
+                  return <p>{highlightText(text, highlight)}{editedMark}</p>
+                })()}
+              </div>
+            )}
+          </div>
 
-          {!isEmpty && onEdit && !editing && (
-            <Tooltip content="编辑文本">
-              <button
-                onClick={startEdit}
-                className="inline-flex items-center rounded p-1 transition-colors hover:bg-accent"
-                aria-label="编辑"
-              >
-                <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
-              </button>
-            </Tooltip>
-          )}
+          <div className={`flex h-fit shrink-0 self-start gap-0.5 transition-opacity group-hover:opacity-100 ${open ? 'opacity-100' : 'opacity-0'}`}>
+            {!isEmpty && (
+              <Tooltip content={copied ? '已复制' : '复制文本'} forceVisible={copied}>
+                <button
+                  onClick={() => {
+                    void bridge.copyText(text).then(() => {
+                      setCopied(true)
+                      setTimeout(() => setCopied(false), 1500)
+                    })
+                  }}
+                  className="inline-flex items-center rounded p-1 transition-colors hover:bg-accent"
+                  aria-label="复制"
+                >
+                  {copied ? (
+                    <Check className="h-3.5 w-3.5 text-success" />
+                  ) : (
+                    <Copy className="h-3.5 w-3.5 text-muted-foreground" />
+                  )}
+                </button>
+              </Tooltip>
+            )}
 
-          {onToggleFavorite && (
-            <Tooltip content={record.favorite ? '取消收藏' : '收藏'}>
+            {onToggleFavorite && (
+              <Tooltip content={record.favorite ? '取消收藏' : '收藏'}>
+                <button
+                  onClick={() => onToggleFavorite(!record.favorite)}
+                  className="rounded p-1 hover:bg-accent"
+                  aria-label={record.favorite ? '取消收藏' : '收藏'}
+                >
+                  <Star className={`h-3.5 w-3.5 ${record.favorite ? 'fill-amber-400 text-amber-500' : 'text-muted-foreground'}`} />
+                </button>
+              </Tooltip>
+            )}
+
+            <Tooltip content="删除记录">
               <button
-                onClick={() => onToggleFavorite(!record.favorite)}
+                onClick={onDelete}
                 className="rounded p-1 hover:bg-accent"
-                aria-label={record.favorite ? '取消收藏' : '收藏'}
+                aria-label="删除"
               >
-                <Star className={`h-3.5 w-3.5 ${record.favorite ? 'fill-amber-400 text-amber-500' : 'text-muted-foreground'}`} />
+                <Trash2 className="h-3.5 w-3.5 text-destructive" />
               </button>
             </Tooltip>
-          )}
+          </div>
 
-          <Tooltip content={expanded ? '收起详情' : '展开详情'}>
-            <button
-              onClick={() => setExpanded(!expanded)}
-              className="rounded p-1 hover:bg-accent"
-              aria-label="详情"
-            >
-              {expanded ? <ChevronUp className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />}
-            </button>
-          </Tooltip>
-          <Tooltip content="删除记录">
-            <button
-              onClick={onDelete}
-              className="rounded p-1 hover:bg-accent"
-              aria-label="删除"
-            >
-              <Trash2 className="h-3.5 w-3.5 text-destructive" />
-            </button>
-          </Tooltip>
+          {/* 展开动画沿用原来点「展开详情」时的那一套（grid 0fr→1fr，200ms ease-out）——
+              这套本来就没人抱怨。中途试过实测高度 + 自定义曲线 + 内容淡入位移，
+              叠得越多反而越碎，已经撤掉。这里只把触发方式换成 hover。 */}
+          <div
+            className="col-span-2 grid grid-cols-subgrid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none"
+            style={{ gridTemplateRows: open ? '1fr' : '0fr' }}
+            aria-hidden={!open}
+          >
+            <div className="col-span-2 grid grid-cols-subgrid overflow-hidden">
+              <div className="col-span-2 mt-2 grid grid-cols-subgrid gap-y-2 text-xs">
+                {!isEmpty && record.asrText && (
+                  <div className="text-muted-foreground">
+                    <span className="font-medium">ASR 原文：</span>
+                    <span className="whitespace-pre-line">{highlightText(record.asrText, highlight)}</span>
+                  </div>
+                )}
+                <div className="col-span-2 flex flex-wrap items-center gap-2 text-muted-foreground">
+                  {record.workMode && (
+                    <>
+                      <span className="rounded border border-border px-1.5 py-0.5 text-xs">
+                        {record.workMode === 'server' ? '服务器' : record.workMode === 'cloud_api' ? '云 API' : '本地'}
+                      </span>
+                      {record.asrProvider && (
+                        <span className="text-xs">ASR: {ASR_PROVIDER_DISPLAY[record.asrProvider] || record.asrProvider}</span>
+                      )}
+                      {record.aiProvider && record.aiProvider !== 'server' && record.llmMs > 0 && (
+                        <span className="text-xs">
+                          AI: {record.aiProvider}{record.aiModel ? ` (${record.aiModel})` : ''}
+                        </span>
+                      )}
+                      <span className="text-border">|</span>
+                    </>
+                  )}
+                  <span>语音长度 {voiceDurationSec.toFixed(1)}s</span>
+                  <span className="text-border">|</span>
+                  <span>识别 {((record.asrMs + record.llmMs) / 1000).toFixed(1)}s (ASR {record.asrMs}ms + LLM {record.llmMs}ms)</span>
+
+                  {/* 四个操作按钮单独收成一组：它们原来和左边的文字共用外层的 gap-2(8px)，
+                      按钮之间也就被撑到 8px，比右上角那排（gap-0.5）散得多。
+                      这里组内用 gap-0.5 与上排统一，组与文字之间仍由外层的 gap-2 分隔。 */}
+                  <div className="flex items-center gap-0.5">
+                  {!isEmpty && onEdit && !editing && (
+                    <Tooltip content="编辑文本">
+                      <button
+                        type="button"
+                        onClick={startEdit}
+                        className="relative top-[0.5px] flex h-7 w-7 items-center justify-center rounded p-1.5 hover:bg-accent"
+                        aria-label="编辑"
+                      >
+                        <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
+                      </button>
+                    </Tooltip>
+                  )}
+                  {record.audioFilePath && (
+                    <Tooltip content={audioPlaying ? '暂停播放' : '播放录音'}>
+                      <button
+                        type="button"
+                        onClick={() => { void handleTogglePlayback() }}
+                        disabled={audioLoading}
+                        className="relative top-[0.5px] flex h-7 w-7 items-center justify-center rounded p-1.5 hover:bg-accent disabled:opacity-50"
+                        aria-label={audioPlaying ? '暂停播放' : '播放录音'}
+                      >
+                        {audioLoading ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                        ) : audioPlaying ? (
+                          <Pause className="h-3.5 w-3.5 text-primary" />
+                        ) : (
+                          <Play className="h-3.5 w-3.5 text-muted-foreground" />
+                        )}
+                      </button>
+                    </Tooltip>
+                  )}
+                  {record.audioFilePath && (
+                    <Tooltip content={downloadStatus === 'ok' ? `已保存到 ${downloadPath}` : downloadStatus === 'fail' ? `下载失败: ${downloadPath}` : '下载音频'}>
+                      <button
+                        type="button"
+                        onClick={() => { void handleDownloadAudio() }}
+                        disabled={downloading}
+                        className="relative top-[0.5px] flex h-7 w-7 items-center justify-center rounded p-1.5 hover:bg-accent disabled:opacity-50"
+                        aria-label="下载音频"
+                      >
+                        {downloading ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                        ) : downloadStatus === 'ok' ? (
+                          <Check className="h-3.5 w-3.5 text-success" />
+                        ) : downloadStatus === 'fail' ? (
+                          <X className="h-3.5 w-3.5 text-destructive" />
+                        ) : (
+                          <Download className="h-3.5 w-3.5 text-muted-foreground" />
+                        )}
+                      </button>
+                    </Tooltip>
+                  )}
+                  {record.audioFilePath && onReprocess && (
+                    <Tooltip content="重新识别">
+                      <button
+                        type="button"
+                        onClick={() => { void handleReprocess() }}
+                        disabled={reprocessing}
+                        className="relative top-[0.5px] flex h-7 w-7 items-center justify-center rounded p-1.5 hover:bg-accent disabled:opacity-50"
+                        aria-label="重新识别"
+                      >
+                        {reprocessing ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                        ) : (
+                          <RotateCcw className="h-3.5 w-3.5 text-muted-foreground" />
+                        )}
+                      </button>
+                    </Tooltip>
+                  )}
+                  </div>
+                </div>
+                {downloadStatus === 'ok' && downloadPath && (
+                  <div className="col-span-2 mt-1 flex items-center gap-2 text-xs text-success break-all">
+                    <span className="min-w-0 truncate">已保存到 {downloadPath}</span>
+                    <button
+                      onClick={() => void invoke('reveal_file_in_folder', { filePath: downloadPath })}
+                      className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                      aria-label="打开文件所在目录"
+                    >
+                      <FolderOpen className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                )}
+                {downloadStatus === 'fail' && downloadPath && (
+                  <div className="col-span-2 mt-1 text-xs text-destructive break-all">
+                    下载失败: {downloadPath}
+                  </div>
+                )}
+                {/* 音频进度条 + 倍速 */}
+                {audioReady && (
+                  <div className="col-span-2 mt-2 flex items-center gap-2">
+                    <span className="w-[72px] shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                      {formatElapsed(currentTime)} / {formatElapsed(duration)}
+                    </span>
+                    <div className="relative h-3 min-w-0 flex-1 overflow-visible">
+                      <div className="absolute left-0 right-0 top-1/2 h-px -translate-y-1/2 bg-border" />
+                      <div className="absolute left-0 top-1/2 h-px -translate-y-1/2 bg-foreground" style={{ width: `${progress * 100}%` }} />
+                      <div
+                        className="absolute top-1/2 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-foreground bg-card shadow-sm"
+                        style={{ left: `${progress * 100}%` }}
+                      />
+                      <input
+                        type="range"
+                        min={0}
+                        max={Math.max(duration, 0.1)}
+                        step={0.1}
+                        value={Math.min(currentTime, duration || 0)}
+                        onChange={(e) => handleSeek(Number(e.target.value))}
+                        className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                      />
+                    </div>
+                    <div className="flex shrink-0 gap-0.5">
+                      {[0.75, 1, 1.5, 2, 2.5].map((rate) => (
+                        <button
+                          key={rate}
+                          type="button"
+                          onClick={() => handleRateChange(rate)}
+                          className={`rounded px-1.5 py-0.5 text-[11px] transition-colors ${playbackRate === rate
+                            ? 'bg-foreground text-background font-medium'
+                            : 'text-muted-foreground hover:bg-accent'
+                            }`}
+                        >
+                          {rate}x
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>

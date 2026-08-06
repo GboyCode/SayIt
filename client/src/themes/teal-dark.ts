@@ -30,6 +30,7 @@ const tealDark: ThemeDefinition = {
     '--accent-foreground': '170 5% 88%',
     '--destructive': '0 55% 55%',
     '--destructive-foreground': '0 0% 95%',
+    '--destructive-strong': '0 70% 68%',
     '--border': '180 4% 20%',
     '--input': '180 4% 20%',
     '--ring': '174 65% 47%',
@@ -54,13 +55,16 @@ const tealDark: ThemeDefinition = {
     '--input-focus-ring': '174 65% 47%',
     '--input-placeholder': '170 3% 40%',
 
-    // 状态色
+    // 状态色（暗底，-strong 略提亮，见 types.ts）
     '--success': '160 45% 52%',
     '--success-foreground': '0 0% 100%',
+    '--success-strong': '160 50% 62%',
     '--warning': '42 75% 58%',
     '--warning-foreground': '0 0% 10%',
+    '--warning-strong': '42 85% 66%',
     '--info': '190 55% 52%',
     '--info-foreground': '0 0% 100%',
+    '--info-strong': '190 65% 65%',
   },
 }
 

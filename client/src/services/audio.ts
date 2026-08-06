@@ -158,15 +158,21 @@ function createAudioContext() {
   if (!AudioContextCtor) {
     throw new Error('Current browser does not support AudioContext')
   }
-  try {
-    return new AudioContextCtor({ latencyHint: 'interactive', sinkId: { type: 'none' } } as unknown as AudioContextOptions)
-  } catch {
-    // ignore unsupported sinkId
-  }
-  try {
-    return new AudioContextCtor({ latencyHint: 'interactive' })
-  } catch {
-    // ignore constructor option failures
+  // 优先直接开 16 kHz 的 AudioContext：拿到的话浏览器会用自己的高质量重采样器，
+  // 我们下面那套手写线性插值就可以整段跳过。线性插值没有抗混叠低通，48k→16k
+  // 是 3 倍抽取，8~24 kHz 的能量会折回 0~8 kHz，直接损害识别准确度。
+  // 不是所有 WebView2/浏览器都接受 sampleRate 约束，所以拿不到就回退原路径。
+  for (const opts of [
+    { latencyHint: 'interactive', sampleRate: TARGET_SAMPLE_RATE, sinkId: { type: 'none' } },
+    { latencyHint: 'interactive', sampleRate: TARGET_SAMPLE_RATE },
+    { latencyHint: 'interactive', sinkId: { type: 'none' } },
+    { latencyHint: 'interactive' },
+  ] as unknown as AudioContextOptions[]) {
+    try {
+      return new AudioContextCtor(opts)
+    } catch {
+      // 该组合不被支持，试下一个
+    }
   }
   return new AudioContextCtor()
 }
@@ -476,6 +482,7 @@ export async function startCapture(
   onData: (buffer: ArrayBuffer) => void,
   onVolume?: (volume: number) => void,
   onFrame?: (pcm: Int16Array) => void,
+  noiseSuppression: boolean = true,
 ) {
   // Always tear down previous capture to prevent stale state leaks
   const hadPriorCtx = audioCtx !== null
@@ -510,8 +517,10 @@ export async function startCapture(
       channelCount: 1,
       echoCancellation: false,
       // 默认开启降噪：部分机器麦克风底噪大（低频电流声），关闭降噪会原样录入。
+      // 但浏览器降噪对 ASR 是个变量——它按"人听得舒服"优化，可能削掉模型要的细节，
+      // 所以做成开关，麦克风环境干净的用户可以关掉对比。
       // 回声消除/自动增益保持关闭，避免影响 ASR 音频。
-      noiseSuppression: true,
+      noiseSuppression,
       autoGainControl: false,
       ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
     },
@@ -540,9 +549,17 @@ export async function startCapture(
 
     audioCtx = createAudioContext()
     actualSampleRate = audioCtx.sampleRate || TARGET_SAMPLE_RATE
+    const nativeSixteenK = audioCtx.sampleRate === TARGET_SAMPLE_RATE
     console.log('[audio-diag] AudioContext created', {
       state: audioCtx.state,
       sampleRate: audioCtx.sampleRate,
+      nativeSixteenK,
+    })
+    // 记一条到运行时日志：这是判断"有没有走上高质量重采样"的唯一依据，
+    // 排查识别准确度问题时先看这里。
+    addRuntimeEvent('info', 'audio', nativeSixteenK ? 'AudioContext 原生 16 kHz（跳过手写重采样）' : 'AudioContext 非 16 kHz，走手写线性插值重采样', {
+      contextSampleRate: audioCtx.sampleRate,
+      targetSampleRate: TARGET_SAMPLE_RATE,
     })
 
     sourceNode = audioCtx.createMediaStreamSource(mediaStream)

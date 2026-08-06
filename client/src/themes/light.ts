@@ -30,6 +30,7 @@ const light: ThemeDefinition = {
     '--accent-foreground': '240 5.9% 10%',
     '--destructive': '0 84.2% 60.2%',
     '--destructive-foreground': '0 0% 98%',
+    '--destructive-strong': '0 74% 46%',   // 白底 5.6:1
     '--border': '240 5.9% 90%',
     '--input': '240 5.9% 90%',
     '--ring': '240 5.9% 10%',
@@ -54,13 +55,16 @@ const light: ThemeDefinition = {
     '--input-focus-ring': '240 5.9% 10%',
     '--input-placeholder': '240 4% 65%',
 
-    // 状态色
+    // 状态色（-strong 为白底上达标的文字色，见 types.ts 的说明）
     '--success': '142 76% 36%',
     '--success-foreground': '0 0% 100%',
+    '--success-strong': '142 72% 29%',     // 白底 5.1:1
     '--warning': '38 92% 50%',
     '--warning-foreground': '0 0% 100%',
+    '--warning-strong': '32 95% 34%',      // 白底 5.0:1
     '--info': '199 89% 48%',
     '--info-foreground': '0 0% 100%',
+    '--info-strong': '199 89% 33%',        // 白底 5.4:1
   },
 }
 

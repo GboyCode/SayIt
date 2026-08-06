@@ -66,15 +66,18 @@ describe('buildStatsAppId', () => {
 })
 
 describe('isModifierPTTSetting', () => {
-  it('识别修饰键', () => {
+  it('识别单个修饰键和组合中的任意修饰键', () => {
     expect(isModifierPTTSetting('AltLeft')).toBe(true)
     expect(isModifierPTTSetting('ControlRight')).toBe(true)
     expect(isModifierPTTSetting('ShiftLeft')).toBe(true)
+    expect(isModifierPTTSetting('ControlLeft+KeyK')).toBe(true)
+    expect(isModifierPTTSetting('ControlLeft+MetaLeft')).toBe(true)
   })
 
   it('非修饰键返回 false', () => {
     expect(isModifierPTTSetting('Space')).toBe(false)
     expect(isModifierPTTSetting('F1')).toBe(false)
+    expect(isModifierPTTSetting('KeyK')).toBe(false)
     expect(isModifierPTTSetting(undefined)).toBe(false)
   })
 })

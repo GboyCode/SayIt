@@ -90,22 +90,36 @@ function normalizeUserStats(raw: unknown): UserStats {
   }
 }
 
+/** 新建的用户规则默认优先级：高于所有内置规则，"我自己加的应该说话最响"。 */
+export const CUSTOM_RULE_PRIORITY = 200
+
 export async function getAppPromptRules(): Promise<AppPromptRule[]> {
   const saved = await getSetting<unknown>(APP_PROMPT_RULES_KEY, [])
   const savedById = new Map<string, AppPromptRule>()
+  const savedOrder: AppPromptRule[] = []
 
   if (Array.isArray(saved)) {
     for (const item of saved) {
       const normalized = normalizeAppPromptRule(item)
       if (normalized) {
         savedById.set(normalized.id, normalized)
+        savedOrder.push(normalized)
       }
     }
   }
 
-  return BUILTIN_APP_RULES
+  // 内置规则以 BUILTIN_APP_RULES 为骨架（用户只能改其中几个字段，删不掉）
+  const builtinIds = new Set(BUILTIN_APP_RULES.map((rule) => rule.id))
+  const builtins = BUILTIN_APP_RULES
     .map((rule) => normalizeAppPromptRule(savedById.get(rule.id), rule) || { ...rule })
-    .sort((left, right) => right.priority - left.priority)
+
+  // 用户自建规则：存过、且不在内置清单里的。以前这里只返回内置骨架，
+  // 用户存进去的额外规则会被静默丢掉，所以界面上也就没法提供"新建"。
+  const customs = savedOrder
+    .filter((rule) => !builtinIds.has(rule.id))
+    .map((rule) => ({ ...rule, builtin: false }))
+
+  return [...builtins, ...customs].sort((left, right) => right.priority - left.priority)
 }
 
 export async function saveAppPromptRules(rules: AppPromptRule[]): Promise<void> {

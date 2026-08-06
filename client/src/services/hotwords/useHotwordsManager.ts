@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer } from 'react'
+import { setHotwordsCache } from '@/services/recorder'
 import { getSetting, setSetting } from '@/services/store'
 import {
   BUILTIN_SETS,
@@ -60,8 +61,9 @@ export function useHotwordsManager() {
     ])
   }, [])
 
-  const syncToBackend = useCallback(async (_words: string[]) => {
-    // 热词不再同步到后端全局文件，改为通过 WebSocket start 消息按会话传递
+  const syncToBackend = useCallback(async (words: string[]) => {
+    // 热词不再写入后端全局文件；直接刷新录音器快照，由下一次会话随 start 消息传递。
+    setHotwordsCache(words)
   }, [])
 
   const loadHotwords = useCallback(async () => {
@@ -133,6 +135,7 @@ export function useHotwordsManager() {
         customThemes: nextCustomThemes,
         customThemeActive: nextCustomThemeActive,
       })
+      setHotwordsCache(composed)
 
       const needPersistBuiltin = Object.keys(savedSetWords).length === 0 || Object.keys(savedSetActive).length === 0
       const needPersistCustom = normalizeCustomThemes(rawCustomThemes).length === 0
@@ -237,6 +240,45 @@ export function useHotwordsManager() {
     setSnapshot,
     syncToBackend,
     themeInputs,
+  ])
+
+  /**
+   * 拖拽调整自定义热词分类的顺序。
+   * 顺序不只是好看：合并后的热词表会按顺序截断到 MAX_HOTWORDS，且部分模型只吃前一小段，
+   * 所以越靠前的分类越容易真正生效。
+   */
+  const moveTheme = useCallback(async (from: number, to: number) => {
+    if (from === to || from < 0 || to < 0 || from >= customThemes.length || to >= customThemes.length) return
+
+    const nextThemes = [...customThemes]
+    const [moved] = nextThemes.splice(from, 1)
+    nextThemes.splice(to, 0, moved)
+
+    const currentAllSourceWords = collectAllSourceWords(builtinSetWords, customThemes)
+    const preservedWords = hotwords.filter((w) => !currentAllSourceWords.has(w))
+    const updated = composeHotwords(
+      preservedWords,
+      builtinSetWords,
+      builtinSetActive,
+      nextThemes,
+      customThemeActive,
+    )
+
+    setSnapshot({ customThemes: nextThemes, hotwords: updated })
+
+    await Promise.all([
+      persistCustomThemeStates(nextThemes, customThemeActive),
+      syncToBackend(updated),
+    ])
+  }, [
+    builtinSetActive,
+    builtinSetWords,
+    customThemeActive,
+    customThemes,
+    hotwords,
+    persistCustomThemeStates,
+    setSnapshot,
+    syncToBackend,
   ])
 
   const removeTheme = useCallback(async (themeId: string) => {
@@ -467,6 +509,7 @@ export function useHotwordsManager() {
     addTheme,
     addWordsToTheme,
     removeTheme,
+    moveTheme,
     toggleCustomTheme,
     removeWord,
     toggleBuiltinSet,

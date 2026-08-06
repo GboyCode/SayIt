@@ -1,17 +1,53 @@
 // 备份 / 恢复：配置（JSON）与全部数据（zip，含音频）的导入导出。
 //
-// 配置导出：直接写入默认备份目录。
-// 全量导出：直接写入默认备份目录，由 Rust 后台压缩，并通过事件汇报进度。
-// 导入：选文件 → 二次确认（会覆盖当前数据）→ 调 Rust 恢复 → 提示并重启。
-// 重启用自定义命令 restart_app（Tauri 内置 app.restart()），未依赖 process 插件。
+// 配置导出支持完整配置或热词组、文本替换、润色模式的自定义选择。
+// 配置导入先由 Rust 识别文件并生成变更预览，再由用户二次确认。
+// 全量导出与导入保持原有覆盖语义；导入完成后重启应用使运行时状态重载。
 
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-dialog'
+import type { TextReplacementRule } from './textReplacement'
 
 export interface ExportResult {
   canceled: boolean
   filePath: string | null
+}
+
+export type ConfigExportSelection =
+  | { mode: 'full' }
+  | {
+    mode: 'selected'
+    hotwordGroupIds: string[]
+    includeTextReplacements: boolean
+    textReplacements?: TextReplacementRule[]
+    promptPresetIds: string[]
+  }
+
+export interface ConfigImportSectionPreview {
+  kind: string
+  label: string
+  total: number
+  added: number
+  updated: number
+  skipped: number
+}
+
+export interface ConfigImportPreview {
+  scope: 'full' | 'selected'
+  formatVersion: number
+  importToken: string
+  sections: ConfigImportSectionPreview[]
+  warnings: string[]
+  requiresRestart: boolean
+}
+
+export interface ConfigImportResult {
+  changedSections: string[]
+  added: number
+  updated: number
+  skipped: number
+  requiresRestart: boolean
 }
 
 export interface BackupExportProgress {
@@ -37,9 +73,9 @@ export function onBackupExportProgress(
   return listen<BackupExportProgress>('backup-export-progress', (event) => handler(event.payload))
 }
 
-/** 导出配置（设置 / 供应商与密钥 / 热词 / Prompt）为 JSON。 */
-export async function exportConfigFile(): Promise<ExportResult> {
-  const path = await invoke<string>('export_config')
+/** 导出完整配置，或导出选中的热词组、文本替换和自定义润色模式。 */
+export async function exportConfigFile(selection: ConfigExportSelection): Promise<ExportResult> {
+  const path = await invoke<string>('export_config', { selection })
   return { canceled: false, filePath: path }
 }
 
@@ -59,9 +95,23 @@ export async function pickImportFile(kind: 'config' | 'full'): Promise<string | 
   return typeof picked === 'string' ? picked : null
 }
 
-/** 执行导入（会用备份覆盖当前数据）。确认与提示由调用方在应用内 UI 完成。 */
-export async function runImport(kind: 'config' | 'full', inPath: string): Promise<void> {
-  await invoke(kind === 'config' ? 'import_config' : 'import_full', { inPath })
+/** 检查配置文件并按当前本地数据计算新增、更新和跳过数量，不写入任何数据。 */
+export function inspectConfigImport(inPath: string): Promise<ConfigImportPreview> {
+  return invoke<ConfigImportPreview>('inspect_config_import', { inPath })
+}
+
+/** 执行已确认的导入；配置返回合并结果，全部数据保持原有流程。 */
+export async function runImport(
+  kind: 'config' | 'full',
+  inPath: string,
+  expectedImportToken?: string,
+): Promise<ConfigImportResult | null> {
+  if (kind === 'config') {
+    if (!expectedImportToken) throw new Error('缺少配置导入确认信息，请重新选择文件')
+    return invoke<ConfigImportResult>('import_config', { inPath, expectedImportToken })
+  }
+  await invoke('import_full', { inPath })
+  return null
 }
 
 /** 重启应用（Tauri 内置 app.restart()）。 */

@@ -21,6 +21,8 @@ module.exports = {
         destructive: {
           DEFAULT: "hsl(var(--destructive))",
           foreground: "hsl(var(--destructive-foreground))",
+          // strong = 直接画在页面底色上的文字色（对比度达标版），见 src/themes/types.ts
+          strong: "hsl(var(--destructive-strong))",
         },
         muted: {
           DEFAULT: "hsl(var(--muted))",
@@ -55,18 +57,24 @@ module.exports = {
         "input-focus-border": "hsl(var(--input-focus-border))",
         "input-focus-ring": "hsl(var(--input-focus-ring))",
         "input-placeholder": "hsl(var(--input-placeholder))",
-        // 状态色
+        // 状态色。三个变体的分工见 src/themes/types.ts：
+        //   DEFAULT    = 色块本体（圆点 / 进度条 / 10% 淡底）
+        //   foreground = 压在色块本体上的文字
+        //   strong     = 直接画在页面或卡片底色上的文字（对比度 ≥4.5:1）
         success: {
           DEFAULT: "hsl(var(--success))",
           foreground: "hsl(var(--success-foreground))",
+          strong: "hsl(var(--success-strong))",
         },
         warning: {
           DEFAULT: "hsl(var(--warning))",
           foreground: "hsl(var(--warning-foreground))",
+          strong: "hsl(var(--warning-strong))",
         },
         info: {
           DEFAULT: "hsl(var(--info))",
           foreground: "hsl(var(--info-foreground))",
+          strong: "hsl(var(--info-strong))",
         },
       },
       borderRadius: {

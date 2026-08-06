@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Plus, X, List } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
+import { useSortable, DragHandle, moveItem } from '@/components/ui/sortable'
 import {
   getTextReplacements,
   saveTextReplacements,
@@ -78,6 +79,13 @@ export default function TextReplacementSection() {
     setBatchText('')
   }, [batchText])
 
+  /** 拖拽排序。顺序即执行顺序（applyReplacements 按数组顺序逐条替换）。 */
+  const moveRule = useCallback((from: number, to: number) => {
+    setRules((prev) => moveItem(prev, from, to))
+  }, [])
+
+  const sortable = useSortable({ onMove: moveRule })
+
   const removeRule = useCallback((id: string) => {
     setRules((prev) => prev.filter((r) => r.id !== id))
   }, [])
@@ -106,9 +114,14 @@ export default function TextReplacementSection() {
       <div className="border-b border-border px-4 py-3">
         <h2 className="text-lg font-semibold">文本替换</h2>
         <p className="mt-0.5 text-xs text-muted-foreground">
-          识别后自动替换指定文本，例如「安卓说话 → 按住说话」
+          识别后自动替换指定文本，无论是否开启 AI 整理都始终生效，例如「安卓说话 → 按住说话」
           {rules.length > 0 && `　·　${enabledCount} 条启用 / 共 ${rules.length} 条`}
         </p>
+        {rules.length > 1 && (
+          <p className="mt-1 text-xs text-muted-foreground/70">
+            规则自上而下依次执行，前一条替换后的结果会参与后一条的匹配，可拖动左侧手柄调整顺序。
+          </p>
+        )}
       </div>
       <div className="p-4">
       {/* 添加新规则 — 两列对齐 */}
@@ -209,19 +222,22 @@ export default function TextReplacementSection() {
         <div className="mt-4 rounded-lg border border-border overflow-hidden">
           {/* 列头 */}
           <div className="flex items-center border-b border-border bg-muted/30 px-3 py-1.5">
+            <span className="w-[22px] shrink-0" />
             <span className="w-7 shrink-0" />
             <span className="flex-1 pl-3 text-xs text-muted-foreground">原文</span>
             <span className="mx-3 h-3 w-px shrink-0 bg-border" />
             <span className="flex-1 text-xs text-muted-foreground">替换为</span>
             <span className="w-8 shrink-0" />
           </div>
-          {rules.map((rule) => (
+          {rules.map((rule, index) => (
             <div
               key={rule.id}
+              {...sortable.rowProps(index)}
               className={`group flex items-center border-t border-border/60 px-3 py-2 transition-colors hover:bg-accent/40 first:border-t-0 ${
                 !rule.enabled ? 'opacity-50' : ''
-              }`}
+              } ${sortable.rowClassName(index)}`}
             >
+              <DragHandle {...sortable.handleProps(index, `拖动 ${rule.from}`)} />
               <Switch
                 checked={rule.enabled}
                 onChange={() => void toggleRule(rule.id)}

@@ -1,7 +1,8 @@
 import * as bridge from '../services/bridge'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Copy, Check } from 'lucide-react'
+import { Copy, Check, X } from 'lucide-react'
 import { addRuntimeEvent } from '../services/debugLog'
+import { formatRecordingTimer } from '../services/recorder/types'
 
 type OverlayState = 'waiting' | 'listening' | 'thinking' | 'fallback' | 'error' | 'toast'
 type OverlayWaveTheme = 'black-white' | 'black-blue' | 'black-rainbow'
@@ -218,8 +219,25 @@ export default function Overlay() {
   const showStreamingBubble = state === 'listening' && (streamingOn || streamingText.trim().length > 0)
   const hasStreamingText = streamingText.trim().length > 0
 
-  const timerText = useMemo(() => `${Math.floor(elapsedSec)}s`, [elapsedSec])
-  const timerColor = getTimerColor(theme)
+  const { text: timerText, countdown: inCountdown, remainingSec } = useMemo(
+    () => formatRecordingTimer(elapsedSec),
+    [elapsedSec],
+  )
+  // 越接近上限越醒目，但不用刺眼的纯红：琥珀 → 暖橙，最后 10 秒再叠一层脉动。
+  // 悬浮窗是黑底小尺寸，纯红（#f87171）在这上面又艳又跳，和整体配色不搭。
+  const urgent = inCountdown && remainingSec <= 10
+  // 胶囊宽度按波形条数固定，文字挤进来时按需让出条数：
+  //   · 同时有警告文字 + 倒计时 → 只画一半（最少 4 根，太少就不像波形了）
+  //   · 只有其中一种 → 画三分之二
+  // 这样波形始终是完整的整根条，不会被裁成半截。
+  const barBudget = warning && inCountdown
+    ? Math.max(4, Math.floor(bars.length / 2))
+    : (warning || inCountdown ? Math.max(6, Math.floor((bars.length * 2) / 3)) : bars.length)
+  const visibleBars = barBudget >= bars.length ? bars : bars.slice(0, barBudget)
+
+  const timerColor = inCountdown
+    ? (urgent ? '#fb923c' : '#fbbf24')
+    : getTimerColor(theme)
   const thinkingColor = getThinkingColor(theme)
 
   const handleCopyFallback = async () => {
@@ -234,12 +252,19 @@ export default function Overlay() {
         clearTimeout(hideTimerRef.current)
       }
       hideTimerRef.current = setTimeout(() => {
-        bridge.hideOverlay()
+        void bridge.setEscapeActionMode('off')
+        void bridge.hideOverlay()
         hideTimerRef.current = null
       }, 500)
     } catch (error) {
       addRuntimeEvent('error', 'overlay', '兜底卡片复制失败', { error: String(error) })
     }
+  }
+
+  const handleDismissFallback = () => {
+    addRuntimeEvent('info', 'overlay', '用户关闭兜底卡片')
+    void bridge.setEscapeActionMode('off')
+    void bridge.hideOverlay()
   }
 
   return (
@@ -261,20 +286,31 @@ export default function Overlay() {
             <div className="space-y-1">
               <span className="block text-xs font-medium tracking-[0.16em]" style={{ color: 'var(--overlay-text-muted)' }}>识别文本</span>
               <span className="block text-xs" style={{ color: 'var(--overlay-text-dim)' }}>
-                当前目标不支持直接写入，文本已经复制到剪贴板。
+                当前目标不支持直接写入。你可以复制文本，或关闭本提示。
               </span>
             </div>
-            <button
-              type="button"
-              onClick={handleCopyFallback}
-              title={copied ? '已复制' : '复制文本'}
-              className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition-colors ${copied
-                ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-200'
-                : 'border-white/10 bg-white/10 text-white/90 hover:bg-white/20'
-                }`}
-            >
-              {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-            </button>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={handleCopyFallback}
+                title={copied ? '已复制' : '复制文本'}
+                className={`inline-flex h-8 w-8 items-center justify-center rounded-lg border transition-colors ${copied
+                  ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-200'
+                  : 'border-white/10 bg-white/10 text-white/90 hover:bg-white/20'
+                  }`}
+              >
+                {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+              </button>
+              <button
+                type="button"
+                onClick={handleDismissFallback}
+                title="关闭"
+                aria-label="关闭识别文本提示"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-white/60 transition-colors hover:bg-white/15 hover:text-white"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
           </div>
           <div className="mt-4 flex-1 overflow-hidden rounded-lg px-3 py-3" style={{ background: 'var(--overlay-surface)' }}>
             <p className="max-h-[108px] overflow-auto pr-1 text-sm leading-6 select-text">
@@ -329,8 +365,16 @@ export default function Overlay() {
               />
             </div>
           )}
+          {/* 胶囊：窗口宽度按波形条数固定，所以这里必须禁止换行 —— 否则文字一多
+              （如「剩余 28s」+「请靠近麦克风」同时出现）就会折成两行，把圆角撑破。
+              超出时让**波形**让位（见下方 bars 容器的 min-w-0 + overflow-hidden），
+              文字保持完整：文字是信息，波形只是陪衬。 */}
+          {/* max-w 是配套的另一半：根容器是 justify-center，胶囊内容一宽就向两侧溢出、
+              被窗口裁掉，看着像"两端被切平的圆角矩形"。给了宽度上限，压缩压力才会
+              传到波形上（bars 的 min-w-0），胶囊本身始终保持完整的胶囊形状。
+              用 100vw 而不是 max-w-full：父层宽度也是按内容算的，撑不出约束。 */}
           <div
-            className="flex items-center rounded-full border px-4 py-2"
+            className="flex max-w-[calc(100vw-8px)] items-center overflow-hidden whitespace-nowrap rounded-full border px-4 py-2"
             style={{
               background: 'var(--overlay-bg)',
               color: 'var(--overlay-text)',
@@ -364,8 +408,11 @@ export default function Overlay() {
                 </div>
               ) : (
                 <>
-                  <div className="flex items-center gap-[2px]" style={{ height: '20px' }}>
-                    {bars.map((height, index) => {
+                  {/* 有文字要占位时**少画几根**，而不是让 overflow 把波形裁一半 —— 裁出来的
+                      半根条子看着像坏了。少画是"看起来就是这么设计的"。
+                      min-w-0 仍然留着兜底：万一文字特别长，宁可裁波形也不折行。 */}
+                  <div className="flex min-w-0 items-center gap-[2px] overflow-hidden" style={{ height: '20px' }}>
+                    {visibleBars.map((height, index) => {
                       const color = getListeningBarColor(index, bars.length, theme)
                       return (
                         <div
@@ -382,16 +429,18 @@ export default function Overlay() {
                       )
                     })}
                   </div>
-                  {showDuration && !warning && (
+                  {/* 计时**不再**被警告顶掉：警告是一闪而过的提示，计时是持续状态。
+                      以前条件里带 !warning，导致 4 分钟提示一出现，剩下一整分钟都看不到秒数。 */}
+                  {showDuration && (
                     <span
-                      className="ml-1.5 min-w-[24px] text-right font-mono tabular-nums text-xs"
+                      className={`ml-1.5 shrink-0 whitespace-nowrap text-right font-mono tabular-nums text-xs${inCountdown ? ' font-semibold' : ''}${urgent ? ' animate-pulse' : ''}`}
                       style={{ color: timerColor }}
                     >
                       {timerText}
                     </span>
                   )}
                   {warning && (
-                    <span className="ml-2 whitespace-nowrap text-xs text-amber-400 animate-pulse">
+                    <span className="ml-2 shrink-0 whitespace-nowrap text-xs text-amber-400 animate-pulse">
                       {warning}
                     </span>
                   )}
@@ -413,6 +462,7 @@ export default function Overlay() {
                   />
                 </div>
                 <span className="text-xs whitespace-nowrap" style={{ color: thinkingColor }}>处理中</span>
+                <span className="text-[10px] whitespace-nowrap" style={{ color: 'var(--overlay-text-dim)' }}>Esc 取消</span>
               </div>
             )}
 

@@ -3,16 +3,24 @@ import { BUILTIN_APP_RULES } from '@/services/personalization/defaults'
 import {
   getAppPromptRules,
   saveAppPromptRules,
+  CUSTOM_RULE_PRIORITY,
 } from '@/services/personalization/store'
 import type { AppPromptRule } from '@/services/personalization/types'
-import { refreshPreset, refreshRecorderSettings, setActivePresetCache } from '@/services/recorder'
+import {
+  refreshPreset,
+  refreshRecorderSettings,
+  setActivePresetCache,
+  setPromptPresetsCache,
+} from '@/services/recorder'
 import * as bridge from '@/services/bridge'
 import { useActivePreset } from '@/hooks/useActivePreset'
 import { refreshActivePreset, setActivePresetKnown } from '@/stores/activePreset'
 import {
   deletePromptPreset,
   getPromptPresets,
+  moveCustomPromptPreset,
   getPresetShortcuts,
+  getSetting,
   savePromptPreset,
   setActivePresetId,
   setPresetShortcuts,
@@ -29,6 +37,8 @@ export default function AIInstructionsPage() {
   const activePresetId = activePreset.id
   const [editingPreset, setEditingPreset] = useState<PromptPreset | null>(null)
   const [appPromptRules, setAppPromptRules] = useState<AppPromptRule[]>([])
+  // 编辑中的快捷键草稿：保存时才落库（取消不留痕，见 PromptPresetSection 的说明）
+  const [editingShortcut, setEditingShortcut] = useState('')
   const [presetShortcuts, setPresetShortcutsState] = useState<Record<string, string>>({})
 
   useEffect(() => {
@@ -37,6 +47,17 @@ export default function AIInstructionsPage() {
     getPresetShortcuts().then(setPresetShortcutsState)
     void refreshActivePreset()
   }, [])
+
+  // 预设切换快捷键不能和录音热键（免提 / 按住说话）相同，否则一次按键触发两个功能。
+  // 预设之间的重复不在这里拦：handleSetPresetShortcut 会自动把旧的清掉（后设的赢）。
+  const validatePresetShortcut = async (value: string): Promise<string | null> => {
+    if (!value) return null
+    const ptt = await getSetting('shortcutPTT', 'AltRight') as string
+    const handsFree = await getSetting('shortcutHandsFree', 'Alt+L') as string
+    if (value === ptt) return '与「按住说话」的快捷键相同，请更换一个组合键'
+    if (value === handsFree) return '与「免提模式」的快捷键相同，请更换一个组合键'
+    return null
+  }
 
   const handleSetPresetShortcut = async (presetId: string, accel: string) => {
     const next: Record<string, string> = { ...presetShortcuts }
@@ -64,18 +85,24 @@ export default function AIInstructionsPage() {
 
   const handleSavePreset = async (preset: PromptPreset) => {
     await savePromptPreset(preset)
-    setPresets(await getPromptPresets())
-    setEditingPreset(null)
-    if (preset.id === activePresetId) {
-      await refreshPreset()
+    // 快捷键在这一刻才写入：草稿期间不动库，取消就当没发生过
+    if ((presetShortcuts[preset.id] || '') !== editingShortcut) {
+      await handleSetPresetShortcut(preset.id, editingShortcut)
     }
+    const nextPresets = await getPromptPresets()
+    setPresets(nextPresets)
+    setPromptPresetsCache(nextPresets)
+    setEditingPreset(null)
+    setEditingShortcut('')
     // 名称可能已修改，刷新当前预设状态（标题栏/高亮）
     await refreshActivePreset()
   }
 
   const handleDeletePreset = async (id: string) => {
     await deletePromptPreset(id)
-    setPresets(await getPromptPresets())
+    const nextPresets = await getPromptPresets()
+    setPresets(nextPresets)
+    setPromptPresetsCache(nextPresets)
     // 清除该预设的快捷键映射，避免残留注册
     if (presetShortcuts[id]) {
       const next = { ...presetShortcuts }
@@ -97,12 +124,62 @@ export default function AIInstructionsPage() {
       name: '',
       systemPrompt: '',
     })
+    setEditingShortcut('')
+  }
+
+  /** 开始编辑：把该模式已有的快捷键读进草稿 */
+  const handleStartEditing = (preset: PromptPreset) => {
+    setEditingPreset(preset)
+    setEditingShortcut(presetShortcuts[preset.id] || '')
+  }
+
+  const handleCancelEditing = () => {
+    setEditingPreset(null)
+    setEditingShortcut('')
+  }
+
+  const handleMovePreset = async (from: number, to: number) => {
+    await moveCustomPromptPreset(from, to)
+    const nextPresets = await getPromptPresets()
+    setPresets(nextPresets)
+    setPromptPresetsCache(nextPresets)
   }
 
   const handleSaveAppRule = async (rule: AppPromptRule) => {
     const nextRules = appPromptRules
       .map((item) => (item.id === rule.id ? rule : item))
       .sort((left, right) => right.priority - left.priority)
+    setAppPromptRules(nextRules)
+    await saveAppPromptRules(nextRules)
+    await refreshRecorderSettings()
+  }
+
+  const handleCreateAppRule = async (draft: {
+    name: string
+    processNames: string[]
+    presetId?: string
+    promptAppend: string
+  }) => {
+    const id = `custom_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`
+    const rule: AppPromptRule = {
+      id,
+      appId: id,
+      name: draft.name,
+      builtin: false,
+      enabled: true,
+      priority: CUSTOM_RULE_PRIORITY,
+      presetId: draft.presetId,
+      promptAppend: draft.promptAppend,
+      matcher: { processNames: draft.processNames, windowTitleIncludes: [], windowClasses: [], automationIds: [] },
+    }
+    const nextRules = [...appPromptRules, rule].sort((left, right) => right.priority - left.priority)
+    setAppPromptRules(nextRules)
+    await saveAppPromptRules(nextRules)
+    await refreshRecorderSettings()
+  }
+
+  const handleDeleteAppRule = async (ruleId: string) => {
+    const nextRules = appPromptRules.filter((rule) => rule.id !== ruleId)
     setAppPromptRules(nextRules)
     await saveAppPromptRules(nextRules)
     await refreshRecorderSettings()
@@ -135,14 +212,17 @@ export default function AIInstructionsPage() {
           activePresetId={activePresetId}
           editingPreset={editingPreset}
           presetShortcuts={presetShortcuts}
+          editingShortcut={editingShortcut}
+          validateShortcut={validatePresetShortcut}
           onSelectPreset={handleSelectPreset}
           onStartNewPreset={handleNewPreset}
-          onStartEditing={setEditingPreset}
+          onStartEditing={handleStartEditing}
           onEditingPresetChange={setEditingPreset}
-          onCancelEditing={() => setEditingPreset(null)}
+          onEditingShortcutChange={setEditingShortcut}
+          onCancelEditing={handleCancelEditing}
           onSavePreset={handleSavePreset}
           onDeletePreset={handleDeletePreset}
-          onSetPresetShortcut={handleSetPresetShortcut}
+          onMovePreset={handleMovePreset}
         />
 
         <AppPromptRulesSection
@@ -150,6 +230,8 @@ export default function AIInstructionsPage() {
           rules={appPromptRules}
           onSaveRule={handleSaveAppRule}
           onResetRule={handleResetAppRule}
+          onCreateRule={handleCreateAppRule}
+          onDeleteRule={handleDeleteAppRule}
         />
       </div>
     </div>

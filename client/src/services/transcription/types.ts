@@ -36,6 +36,8 @@ export interface TranscriptionCallbacks {
 }
 
 export interface StartOptions {
+  /** 当前录音代次；取消或开始下一次后，旧代次的异步结果必须全部丢弃。 */
+  runId: number
   systemPrompt?: string
   disableAi?: boolean
   clientMeta?: ClientRuntimeInfo | null
@@ -70,7 +72,10 @@ export interface TranscriptionProvider {
   connect(callbacks: TranscriptionCallbacks): Promise<void>
 
   /** 开始一次转写会话 */
-  start(opts?: StartOptions): boolean
+  start(opts: StartOptions): boolean
+
+  /** 立即取消当前会话；允许底层任务自然结束，但之后不得再上抛任何结果。 */
+  cancel(): void
 
   /** 发送音频数据（流式，PCM Int16 ArrayBuffer） */
   sendAudio(buffer: ArrayBuffer): void

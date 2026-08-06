@@ -261,6 +261,44 @@ fn main() {
         log::info!("Custom models dir from DB: {}", custom_dir);
     }
 
+    // 注册 ggml 计算后端（GGUF 本地 ASR 用）。dynamic-backends 构建下不先注册就
+    // 加载模型会直接失败，所以必须在任何模型加载之前跑。
+    models::gguf_asr::init_backends();
+
+    // 回收上一代 sherpa-onnx 时期的模型权重（新引擎读不了，只白占几百 MB ~ 1 GB）。
+    // 放后台线程，不让删除卡住启动。
+    models::local_asr::spawn_legacy_reclaim();
+
+    // 本地模式：启动就在后台把模型加载起来，别等用户第一次按热键才等几百毫秒~几秒。
+    // 非本地模式不加载，避免白占几百 MB 内存。
+    if storage.get("workMode", None).as_str() == Some("local") {
+        let model_id = storage
+            .get("localAsr.modelId", None)
+            .as_str()
+            .unwrap_or("sensevoice-small-gguf")
+            .to_string();
+        let accelerator = storage
+            .get("localAsr.accelerator", None)
+            .as_str()
+            .unwrap_or("auto")
+            .to_string();
+        std::thread::spawn(move || {
+            match models::gguf_asr::preload(&model_id, &accelerator) {
+                Ok(()) => log::info!("启动预热本地模型完成: {}", model_id),
+                // 模型没下载是正常情况（新装用户），不当错误刷日志
+                Err(e) => log::info!("启动预热跳过 ({}): {}", model_id, e),
+            }
+        });
+    }
+
+    // 空闲超时卸载：默认让本地模型常驻，用户可在设置里选择 10 / 30 / 60 分钟。
+    // 守护线程始终只启动一个，0 表示仅监听动态配置、不执行卸载。
+    let idle_minutes = storage
+        .get("localAsr.unloadIdleMinutes", None)
+        .as_u64()
+        .unwrap_or(0);
+    models::gguf_asr::spawn_idle_unloader(idle_minutes);
+
     let window_state = WindowState::new();
     let keyboard_hook = KeyboardHookManager::new();
     let context_detector = ContextDetector::new();
@@ -378,8 +416,17 @@ fn main() {
                 }
 
                 if !launched_minimized {
+                    // show() 只清 SW_HIDE，不解除最小化（iconic）状态：窗口若以
+                    // 最小化状态诞生，只 show 会停在 -32000 的停车位上，看起来"没启动"。
+                    // 托盘/单实例路径都是 show + unminimize，这里保持一致。
                     let _ = main_window.show();
+                    let _ = main_window.unminimize();
                     let _ = main_window.set_focus();
+                    log::info!(
+                        "Main window shown (minimized={:?} visible={:?})",
+                        main_window.is_minimized().ok(),
+                        main_window.is_visible().ok()
+                    );
                 } else {
                     log::info!("Launched with --minimized, staying hidden in tray");
                 }
@@ -536,9 +583,11 @@ fn main() {
             // Shortcuts
             commands::shortcuts::shortcuts_changed,
             commands::shortcuts::test_shortcut,
+            commands::shortcuts::get_ptt_physical_key_states,
+            commands::shortcuts::set_escape_action_mode,
             commands::shortcuts::set_ptt_lab_config,
-            commands::shortcuts::begin_mouse_shortcut_capture,
-            commands::shortcuts::end_mouse_shortcut_capture,
+            commands::shortcuts::begin_shortcut_capture,
+            commands::shortcuts::end_shortcut_capture,
             // Export
             commands::export::save_text_export,
             commands::export::save_export_bundle,
@@ -547,6 +596,7 @@ fn main() {
             commands::backup::get_backup_directory,
             commands::backup::export_config,
             commands::backup::export_full,
+            commands::backup::inspect_config_import,
             commands::backup::import_config,
             commands::backup::import_full,
             commands::backup::restart_app,
@@ -585,6 +635,9 @@ fn main() {
             models::local_asr::local_transcribe,
             models::local_asr::preload_local_model,
             models::local_asr::unload_local_model,
+            models::local_asr::set_local_model_idle_unload,
+            models::local_asr::legacy_models_reclaimed_bytes,
+            models::gguf_asr::gguf_asr_diagnostics,
             models::test_audio::run_asr_benchmark,
             models::test_audio::get_test_audio_b64,
         ])

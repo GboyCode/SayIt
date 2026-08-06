@@ -1,13 +1,24 @@
+import { useEffect, useState } from 'react'
 import * as bridge from '@/services/bridge'
 import { Minus, Square, X, Wand2 } from 'lucide-react'
 import appIcon from '@/assets/ico-frame-48x48.png'
-import { useAiEnabled } from '@/hooks/useAiEnabled'
+import { useAiEnabled, useAiEnabledReady } from '@/hooks/useAiEnabled'
 import { useActivePreset } from '@/hooks/useActivePreset'
 import { toggleAiEnabled } from '@/stores/aiEnabled'
 import { Tooltip } from '@/components/ui/tooltip'
 
 export default function TitleBar() {
   const aiEnabled = useAiEnabled()
+  // 冷启动时 AI 初始值异步读回：就绪前开关先隐藏、不放动画，避免自己从关跳到开
+  const ready = useAiEnabledReady()
+  // 同 AppearancePage：显示与「允许过渡」必须错开一帧，否则揭开那一刻会把
+  // 开关从默认(关)到已保存(开)真的滑动一遍。
+  const [animate, setAnimate] = useState(false)
+  useEffect(() => {
+    if (!ready || animate) return
+    const id = requestAnimationFrame(() => requestAnimationFrame(() => setAnimate(true)))
+    return () => cancelAnimationFrame(id)
+  }, [ready, animate])
   const activePreset = useActivePreset()
   const presetName = activePreset.name || '默认'
 
@@ -31,8 +42,8 @@ export default function TitleBar() {
             >
               <Wand2 className={aiEnabled ? 'h-3.5 w-3.5 text-primary' : 'h-3.5 w-3.5 text-muted-foreground'} />
               <span className={aiEnabled ? 'text-xs text-foreground' : 'text-xs text-muted-foreground'}>AI 整理</span>
-              <span className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${aiEnabled ? 'bg-primary' : 'bg-muted'}`}>
-                <span className={`absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-card shadow transition-transform ${aiEnabled ? 'translate-x-3' : ''}`} />
+              <span className={`relative h-4 w-7 shrink-0 rounded-full ${animate ? 'transition-colors' : ''} ${aiEnabled ? 'bg-primary' : 'bg-muted'}`} style={ready ? undefined : { visibility: 'hidden' }}>
+                <span className={`absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-card shadow ${animate ? 'transition-transform' : ''} ${aiEnabled ? 'translate-x-3' : ''}`} />
               </span>
             </button>
           </Tooltip>

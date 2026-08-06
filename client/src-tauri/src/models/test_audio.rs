@@ -50,13 +50,11 @@ pub async fn run_asr_benchmark(
     let lang = language.unwrap_or_else(|| "auto".into());
 
     tokio::task::spawn_blocking(move || {
-        super::local_asr::ensure_loaded_pub(&model_id, &lang)?;
+        // 预热与计时分开：这里量的是纯解码耗时，不含模型加载
+        super::gguf_asr::preload(&model_id, "auto")?;
 
         let start = std::time::Instant::now();
-        let mut cache = super::local_asr::get_cache_lock()?;
-        let entry = cache.as_mut().ok_or("模型未加载")?;
-
-        let text = entry.transcribe(16000, &samples);
+        let text = super::gguf_asr::transcribe(&model_id, &lang, "auto", &samples, 16000)?;
         let elapsed_ms = start.elapsed().as_millis() as u64;
         let rtf = if audio_duration_sec > 0.0 {
             (elapsed_ms as f64 / 1000.0) / audio_duration_sec

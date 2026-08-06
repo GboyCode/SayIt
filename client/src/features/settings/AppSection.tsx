@@ -6,11 +6,15 @@ export default function AppSection({
   onToggleAutoLaunch,
   autoCheckUpdate,
   onToggleAutoCheckUpdate,
+  ready = true,
+  animate = true,
 }: {
   autoLaunch: boolean
   onToggleAutoLaunch: () => void
   autoCheckUpdate: boolean
   onToggleAutoCheckUpdate: () => void
+  ready?: boolean
+  animate?: boolean
 }) {
   return (
     <Card>
@@ -22,14 +26,14 @@ export default function AppSection({
               <p className="text-sm font-medium">开机自启动</p>
               <p className="text-xs text-muted-foreground">系统启动时自动运行 SayIt</p>
             </div>
-            <Switch checked={autoLaunch} onChange={onToggleAutoLaunch} />
+            <Switch checked={autoLaunch} onChange={onToggleAutoLaunch} noAnimation={!animate} hidden={!ready} />
           </div>
           <div className="flex items-center justify-between border-t border-border pt-4">
             <div>
               <p className="text-sm font-medium">自动检测更新</p>
               <p className="text-xs text-muted-foreground">启动时自动检查是否有新版本可用</p>
             </div>
-            <Switch checked={autoCheckUpdate} onChange={onToggleAutoCheckUpdate} />
+            <Switch checked={autoCheckUpdate} onChange={onToggleAutoCheckUpdate} noAnimation={!animate} hidden={!ready} />
           </div>
         </div>
       </CardContent>

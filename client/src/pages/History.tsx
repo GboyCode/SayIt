@@ -235,11 +235,15 @@ async function reprocessViaLocal(
   const durationSec = (chunk.byteLength / 2) / 16000
   const audioB64 = uint8ArrayToBase64(new Uint8Array(chunk))
 
-  const modelId = await getSetting('localAsr.modelId', 'sensevoice-small') as string
+  const modelId = await getSetting('localAsr.modelId', 'sensevoice-small-gguf') as string
   const language = await getSetting('localAsr.language', 'auto') as string
+  const accelerator = await getSetting('localAsr.accelerator', 'auto') as string
 
+  // hotwords 在 GGUF 引擎上不支持（transcribe.cpp 只有 whisper 族接 initial prompt），
+  // 参数留着是为了不改调用方签名，后端会忽略。
+  void hotwords
   const asrResult = await invoke<{ text: string; elapsed_ms: number }>('local_transcribe', {
-    audioB64, modelId, language, hotwords,
+    audioB64, modelId, language, accelerator,
   })
   const asrText = asrResult.text
   const asrMs = asrResult.elapsed_ms
@@ -445,11 +449,11 @@ export default function History() {
       result = await reprocessViaServer(chunk, hotwords, Boolean(aiEnabled), systemPrompt, clientMeta)
     }
 
-    // 极速模式下 llmText === asrText（后端未经 LLM 处理时直接复制 asrText）
-    // 此时文本可参与智能分段（是否分段由用户开关决定，见 applyTextTransforms）
-    const needsSegment = !result.llmText || result.llmText === result.asrText
-    const baseText = needsSegment ? result.asrText : result.llmText
-    const replacedLlm = await applyTextTransforms(baseText, { segmentable: needsSegment })
+    // llmText === asrText 说明这段没经过 AI 整理（极速模式，或后端未跑 LLM 直接回 asrText）。
+    // 纯 ASR 时「格式规范」由我们兜底；AI 整理过的文本把格式交给 AI，只做文本替换（见 applyTextTransforms）
+    const rawAsr = !result.llmText || result.llmText === result.asrText
+    const baseText = rawAsr ? result.asrText : result.llmText
+    const replacedLlm = await applyTextTransforms(baseText, { rawAsr })
 
     const meta = await buildReprocessMetadata(workMode, result)
 

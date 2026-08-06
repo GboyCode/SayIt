@@ -30,6 +30,7 @@ const dark: ThemeDefinition = {
     '--accent-foreground': '0 0% 90%',
     '--destructive': '0 60% 55%',
     '--destructive-foreground': '0 0% 95%',
+    '--destructive-strong': '0 70% 68%',    // #1f1f1f 底 5.6:1
     '--border': '0 0% 22%',
     '--input': '0 0% 22%',
     '--ring': '210 60% 58%',
@@ -54,13 +55,16 @@ const dark: ThemeDefinition = {
     '--input-focus-ring': '210 60% 58%',
     '--input-placeholder': '0 0% 45%',
 
-    // 状态色
+    // 状态色（暗底上 success/warning/info 本身已达标，-strong 仅略提亮）
     '--success': '120 40% 55%',
     '--success-foreground': '0 0% 100%',
+    '--success-strong': '120 45% 62%',      // 6.6:1 → 8.0:1
     '--warning': '40 80% 60%',
     '--warning-foreground': '0 0% 10%',
+    '--warning-strong': '40 90% 65%',       // 8.7:1 → 10.0:1
     '--info': '210 60% 58%',
     '--info-foreground': '0 0% 100%',
+    '--info-strong': '210 70% 68%',         // 5.1:1 → 7.0:1
   },
 }
 

@@ -21,17 +21,32 @@ function includesAny(value: string, patterns?: string[]) {
   return patterns.some((pattern) => value.includes(normalizeText(pattern)))
 }
 
+/**
+ * 判断一条应用规则是否命中当前窗口。
+ *
+ * 进程名是硬证据，窗口标题只是软线索 —— 所以**只要规则写了进程名、且这次确实拿到了
+ * 进程名，就只按进程名判定**，标题不再独立触发。
+ *
+ * 原来两者是「或」的关系，而标题是「包含即命中」，一个标题能同时命中多条规则：
+ * 在 Outlook 里写一封标题为「Teams 会议纪要 - Outlook」的邮件时，Teams 规则也会命中，
+ * 又因为 Teams 优先级更高，最终按"即时聊天短消息"来整理这封正式邮件。
+ *
+ * 保留标题/类名/控件 ID 的能力，是给"进程名区分不了"的场景兜底：
+ *   · 规则本身没写进程名（如网页版应用，进程都是浏览器，只能靠标题区分）；
+ *   · 少数窗口拿不到进程名（此时不能因为进程名为空就直接判不命中）。
+ */
 export function matchesAppPromptRule(rule: AppPromptRule, context: ActiveAppContext | null) {
   if (!context) return false
 
   const processName = normalizeProcessName(context)
+
+  if (rule.matcher.processNames.length > 0 && processName) {
+    return rule.matcher.processNames.some((candidate) => processName === normalizeText(candidate))
+  }
+
   const windowTitle = normalizeText(context.windowTitle)
   const windowClass = normalizeText(context.windowClass)
   const automationId = normalizeText(context.automationId)
-
-  const processMatched = rule.matcher.processNames.length > 0
-    && rule.matcher.processNames.some((candidate) => processName === normalizeText(candidate))
-  if (processMatched) return true
   if (includesAny(windowTitle, rule.matcher.windowTitleIncludes)) return true
   if (includesAny(windowClass, rule.matcher.windowClasses)) return true
   if (includesAny(automationId, rule.matcher.automationIds)) return true

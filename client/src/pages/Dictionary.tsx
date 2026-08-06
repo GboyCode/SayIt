@@ -10,6 +10,7 @@ import { BUILTIN_SETS, MAX_HOTWORDS } from '@/services/hotwords/model'
 import { useHotwordsManager } from '@/services/hotwords/useHotwordsManager'
 import TextReplacementSection from '@/components/TextReplacementSection'
 import TextFormatSection from '@/components/TextFormatSection'
+import { useSortable, DragHandle } from '@/components/ui/sortable'
 
 type Tab = 'hotwords' | 'replacement'
 
@@ -91,11 +92,15 @@ export default function Dictionary() {
     addTheme,
     addWordsToTheme,
     removeTheme,
+    moveTheme,
     toggleCustomTheme,
     removeWord,
     toggleBuiltinSet,
     resetBuiltinSet,
   } = useHotwordsManager()
+
+  // 搜索时列表是过滤后的，序号对不上完整列表，因此搜索状态下不启用拖拽
+  const themeSortable = useSortable({ onMove: (from, to) => void moveTheme(from, to) })
 
   const handleExport = async () => {
     const result = await exportHotwords()
@@ -188,13 +193,13 @@ export default function Dictionary() {
                       <tr><td>豆包 Seed-ASR 2.0</td><td>支持</td><td>关实时字幕最准；开启时约仅前 100 token 生效</td></tr>
                       <tr><td>千问 flash-realtime（实时）</td><td>支持</td><td>效果较好，约 10000 tokens</td></tr>
                       <tr><td>千问 flash（非实时）</td><td>支持</td><td>效果一般</td></tr>
-                      <tr><td>本地 Qwen3-ASR</td><td>支持</td><td>变动会重建模型，过多变慢</td></tr>
-                      <tr><td>本地 SenseVoice</td><td>不支持</td><td>—</td></tr>
+                      <tr><td>本地 Qwen3-ASR</td><td>暂不支持</td><td>GGML 引擎暂未接入</td></tr>
+                      <tr><td>本地 SenseVoice / Fun-ASR Nano</td><td>不支持</td><td>可用 AI 整理辅助纠正</td></tr>
                       <tr><td>服务器模式</td><td>支持</td><td>效果较好</td></tr>
                     </tbody>
                   </table>
-                  <p className="mt-2 max-w-[340px] leading-relaxed">
-                    热词只提高<span className="font-semibold">命中概率</span>，不保证 100% 准确；且<span className="font-semibold">并非越多越好</span>——过多反而会稀释效果。
+                  <p className="mt-2 max-w-[380px] leading-relaxed">
+                    热词只提高<span className="font-semibold">命中概率</span>，不保证 100% 准确；且<span className="font-semibold">并非越多越好</span>。使用暂不支持 ASR 热词的本地模型时，可开启「热词注入提示词」，由 AI 整理辅助纠正。
                   </p>
                 </div>
               }
@@ -251,16 +256,27 @@ export default function Dictionary() {
           ) : (
             <div className="space-y-4">
               {/* 自定义分类 */}
-              {visibleCustomThemes.map((theme) => {
+              {customThemes.length > 1 && !search && (
+                <p className="text-xs text-muted-foreground/70">
+                  分类顺序会影响热词的生效优先级：热词总数超过上限时按顺序截断，部分模型也只使用靠前的一部分，可拖动卡片左上角的手柄把常用分类往上调。
+                </p>
+              )}
+              {visibleCustomThemes.map((theme, themeIndex) => {
+                const canSort = !search && customThemes.length > 1
                 const active = !!customThemeActive[theme.id]
                 const activeWords = getThemeWordsInHotwords(theme)
                 const totalWords = theme.words.length
 
                 return (
-                  <Card key={theme.id} className={cn(!active && 'border-dashed opacity-70')}>
+                  <Card
+                    key={theme.id}
+                    {...(canSort ? themeSortable.rowProps(themeIndex) : {})}
+                    className={cn('group', !active && 'border-dashed opacity-70', canSort && themeSortable.rowClassName(themeIndex))}
+                  >
                     <CardContent className="p-4">
                       <div className="mb-3 flex items-center justify-between gap-3">
                         <div className="flex items-center gap-3 min-w-0">
+                          {canSort && <DragHandle {...themeSortable.handleProps(themeIndex, `拖动分类 ${theme.name}`)} />}
                           <Switch
                             checked={active}
                             onChange={() => void toggleCustomTheme(theme.id)}
@@ -273,16 +289,18 @@ export default function Dictionary() {
                             </p>
                           </div>
                         </div>
-                        <Tooltip content="删除分类">
-                          <button
-                            type="button"
-                            onClick={() => void removeTheme(theme.id)}
-                            className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-                            aria-label={`删除主题 ${theme.name}`}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        </Tooltip>
+                        <div className="flex shrink-0 items-center">
+                          <Tooltip content="删除分类">
+                            <button
+                              type="button"
+                              onClick={() => void removeTheme(theme.id)}
+                              className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                              aria-label={`删除主题 ${theme.name}`}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </Tooltip>
+                        </div>
                       </div>
 
                       {active && (

@@ -218,6 +218,9 @@ export function connect(cbs: WSCallbacks): Promise<void> {
     }
 
     socket.onmessage = (e) => {
+      // 已被 cancel/disconnect 替换的旧 socket 即使队列里还有消息，也绝不能
+      // 投递给新会话的 callbacks。
+      if (ws !== socket) return
       if (typeof e.data !== 'string') return
       try {
         const msg = JSON.parse(e.data)
@@ -278,6 +281,7 @@ export function connect(cbs: WSCallbacks): Promise<void> {
     }
 
     socket.onerror = (ev) => {
+      if (ws !== socket) return
       clearTimeout(timeout)
       updateGlobalState('error')
       addRuntimeEvent('error', 'websocket', '连接发生错误', {
@@ -287,6 +291,10 @@ export function connect(cbs: WSCallbacks): Promise<void> {
 
     socket.onclose = (ev) => {
       clearTimeout(timeout)
+      if (ws !== socket) {
+        addRuntimeEvent('info', 'websocket', '忽略已失效连接的 close 事件', { code: ev.code })
+        return
+      }
       stopHeartbeat()
       ws = null
       updateGlobalState('disconnected')
@@ -333,12 +341,14 @@ export function disconnect() {
     clearTimeout(reconnectTimer)
     reconnectTimer = null
   }
+  const socket = ws
+  ws = null
   try {
-    ws?.close()
+    socket?.close()
   } catch {
     // ignore
   }
-  ws = null
+  updateGlobalState('disconnected')
   endSessionIfNeeded()
 }
 

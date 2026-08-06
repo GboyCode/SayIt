@@ -4,6 +4,7 @@ import { getProvider, type TranscriptionProvider, type TranscriptionCallbacks, t
 import { isStreamingDisplayReady } from '@/lib/asrModels'
 import {
   addHistory,
+  deleteHistory,
   getActivePresetId,
   getPromptPresets,
   getSetting,
@@ -37,7 +38,7 @@ import { applyTextTransforms } from '../textPostProcess'
 import type { ActiveAppContext } from '../../types/appContext'
 import type { ClientRuntimeInfo } from '../../types/appApi'
 import { OverlayService } from './OverlayService'
-import { PasteService } from './PasteService'
+import { PasteService, type ProbeResult } from './PasteService'
 import { createDefaultUserStats } from '../personalization/defaults'
 import { resolvePromptRouting } from '../personalization/promptRouter'
 import {
@@ -47,6 +48,7 @@ import {
 } from '../personalization/store'
 import type { AppPromptRule, PromptResolution, UserStats } from '../personalization/types'
 import type { PTTEventPayload, RecorderState } from './types'
+import { MAX_RECORDING_SEC, RECORDING_COUNTDOWN_SEC } from './types'
 import {
   summarizeAppContext as _summarizeAppContext,
   buildStatsAppId as _buildStatsAppId,
@@ -73,11 +75,14 @@ const LATE_FINAL_GRACE_MS = 15000
 const MODIFIER_PTT_RELEASE_GUARD_MS = 200
 
 interface TimedOutProcessingContext {
+  runId: number
   timedOutAt: number
   audioDurationSec: number
   wallTimeSec: number
   promptResolution: PromptResolution | null
   appContext: ActiveAppContext | null
+  audioChunks: ArrayBuffer[]
+  probeResult: ProbeResult | null
 }
 
 interface ResetToIdleOptions {
@@ -89,6 +94,8 @@ export class RecorderOrchestrator {
   private state: RecorderState = 'idle'
   private onStateChange: ((s: RecorderState) => void) | null = null
   private initialized = false
+  private runSequence = 0
+  private activeRunId = 0
 
   private recordStartPerf = 0
   private audioSentSamples = 0
@@ -97,6 +104,12 @@ export class RecorderOrchestrator {
   private wallTimeAtStopSec = 0
   private finalHandledInCurrentRun = false
   private textInsertionInFlight = false
+  /** 迟到 final 正在完成历史/插入；此期间禁止新录音复用 Provider。 */
+  private finalizingLateRunId = 0
+  /** Esc 仅在 processing 的可逆阶段允许取消；进入系统粘贴前永久关闭。 */
+  private processingCancelable = false
+  /** 当前 fallback 卡片对应的 run token；用于拒绝队列中迟到的旧 dismiss。 */
+  private activeFallbackToken = 0
   /** Guard against re-entrant startRecording calls during async setup */
   private startRecordingLock = false
   /** PTT up arrived while startRecording was still initializing — stop immediately after setup */
@@ -104,6 +117,7 @@ export class RecorderOrchestrator {
   private processingTimeoutId: ReturnType<typeof setTimeout> | null = null
   private finalReceivedAt = 0
   private timedOutProcessingContext: TimedOutProcessingContext | null = null
+  private pendingHistoryArtifact: { runId: number; recordId: string; audioFilePath?: string } | null = null
 
   private handsFreeMode = false
   private pttSuppressed = false
@@ -112,6 +126,11 @@ export class RecorderOrchestrator {
   private lastPTTUpUsedModifier = false
 
   private cachedMicId = ''
+  /**
+   * 是否让浏览器对麦克风做降噪。默认开（底噪大的机器需要），
+   * 但降噪是按"人听得舒服"优化的，可能削掉 ASR 要的细节，所以可关。
+   */
+  private noiseSuppression = true
   /** 是否在录音期间静音系统输出（防外放被麦克风回采）。默认关闭。 */
   private cachedMuteSystemAudio = false
   /** 插入文本后是否自动还原剪贴板为插入前内容。默认开启。 */
@@ -184,6 +203,25 @@ export class RecorderOrchestrator {
     return this.state
   }
 
+  private isRunCurrent(runId: number) {
+    return runId !== 0 && this.activeRunId === runId
+  }
+
+  /** 幂等结束指定代次；所有清理都带 runId 条件，绝不清除随后创建的新代次。 */
+  private finishRun(runId: number) {
+    if (runId === 0) return
+    if (this.pendingHistoryArtifact?.runId === runId) {
+      this.pendingHistoryArtifact = null
+    }
+    if (this.timedOutProcessingContext?.runId === runId) {
+      this.timedOutProcessingContext = null
+    }
+    if (this.activeRunId === runId) {
+      this.activeRunId = 0
+      this.processingCancelable = false
+    }
+  }
+
   /** 若已开启「录音时静音系统声音」，在就绪提示音播放之后再静音系统输出。
    *  延迟略长于提示音时长（~150ms），避免把提示音也一起静掉。 */
   private scheduleSystemMuteIfEnabled() {
@@ -229,7 +267,7 @@ export class RecorderOrchestrator {
       case 'server':
         return '服务器未连接'
       case 'local':
-        return '模型未就绪'
+        return '模型未下载，请先在设置里下载'
       default:
         return '服务未就绪'
     }
@@ -283,6 +321,35 @@ export class RecorderOrchestrator {
       const payload = (event as { payload?: { presetId?: string } })?.payload
       const presetId = payload?.presetId
       if (presetId) void this.handlePresetSwitch(presetId)
+    })
+
+    bridge.onEscapeAction(({ mode, token }) => {
+      if (mode === 'cancel_recording') {
+        // Esc 可能在录音 stop 已发起、事件尚在 dispatcher 队列时到达；若此时已进入
+        // 可逆 processing，沿用同一 run token 取消，避免用户明明按了却被竞态吞掉。
+        if (this.state === 'processing' && this.processingCancelable) {
+          this.cancelProcessing(token)
+        } else {
+          void this.cancelRecording(token)
+        }
+        return
+      }
+      if (mode === 'cancel_processing') {
+        this.cancelProcessing(token)
+        return
+      }
+      if (mode === 'dismiss_fallback') {
+        if (token === 0 || token !== this.activeFallbackToken) {
+          addRuntimeEvent('info', 'recorder', '忽略过期的 Esc 兜底关闭动作', {
+            token,
+            activeFallbackToken: this.activeFallbackToken,
+          })
+          return
+        }
+        addRuntimeEvent('info', 'recorder', 'Esc 关闭兜底卡片', { token })
+        this.activeFallbackToken = 0
+        this.overlayService.hide()
+      }
     })
 
     bridge.onPTTDown((payload) => {
@@ -388,6 +455,16 @@ export class RecorderOrchestrator {
     this.cachedActivePresetId = id
   }
 
+  /** 新建、编辑或删除预设后同步最新列表，避免 active id 指向尚未进入运行时缓存的新预设。 */
+  setPromptPresetsCache(presets: PromptPreset[]) {
+    this.cachedPresets = presets.map((preset) => ({ ...preset }))
+  }
+
+  /** 热词变更后同步下一次录音使用的快照；当前录音仍使用开始时已捕获的 StartOptions。 */
+  setHotwordsCache(words: string[]) {
+    this.cachedHotwords = Array.from(new Set(words.map((word) => word.trim()).filter(Boolean)))
+  }
+
   /** 仅更新「流式实时显示」开关缓存，供外观设置切换后立即生效。 */
   setStreamingDisplayCache(next: boolean) {
     this.cachedStreamingDisplay = next
@@ -424,6 +501,7 @@ export class RecorderOrchestrator {
       userStats,
       streamingDisplay,
       injectHotwords,
+      noiseSuppression,
     ] = await Promise.all([
       getSetting('selectedMic', ''),
       getSetting('muteSystemAudioWhileRecording', false),
@@ -435,8 +513,10 @@ export class RecorderOrchestrator {
       getUserStats(),
       getSetting('streamingDisplayEnabled', false),
       getSetting('injectHotwordsToPrompt', false),
+      getSetting('micNoiseSuppression', true),
     ])
 
+    this.noiseSuppression = Boolean(noiseSuppression)
     this.cachedMicId = String(micId || '')
     this.cachedMuteSystemAudio = Boolean(muteSystemAudio)
     this.cachedProtectClipboard = Boolean(protectClipboard)
@@ -560,8 +640,10 @@ export class RecorderOrchestrator {
     this.handsFreeMode = false
     this.finalHandledInCurrentRun = false
     this.textInsertionInFlight = false
+    this.processingCancelable = false
     this.captureReadyPromise = null
     this.finalReceivedAt = 0
+    this.pendingHistoryArtifact = null
     this.currentActiveAppContext = null
     this.currentPromptResolution = null
     this.cachedProbeResult = null
@@ -584,6 +666,102 @@ export class RecorderOrchestrator {
     }
   }
 
+  private async discardCanceledHistory(artifact: { recordId: string; audioFilePath?: string }) {
+    try {
+      if (artifact.audioFilePath) await bridge.deleteAudioFile(artifact.audioFilePath)
+    } catch { /* 取消清理失败不阻塞状态复位 */ }
+    try {
+      await deleteHistory(artifact.recordId)
+      void bridge.emit('history-updated')
+    } catch { /* 记录可能尚未写入；processFinalResult 完成写入后会再次清理 */ }
+  }
+
+  private async cancelRecording(token: number) {
+    if (
+      this.state !== 'recording'
+      || token === 0
+      || token !== this.activeRunId
+    ) {
+      addRuntimeEvent('info', 'recorder', 'Esc 录音取消请求已忽略', {
+        state: this.state,
+        token,
+        activeRunId: this.activeRunId,
+      })
+      return
+    }
+
+    const canceledRunId = this.activeRunId
+    // 在任何 await 之前离开 recording 并让 run 失效。这样同时到达的 PTT up 不会
+    // 再进入正常 stopRecording，Provider 的迟到 partial/error 也会被 run guard 丢弃。
+    if (!this.transition('processing')) return
+    this.finalHandledInCurrentRun = true
+    this.processingCancelable = false
+    this.overlayService.stopListeningTicker()
+    this.restoreSystemMuteIfNeeded()
+    this.recordedChunks = []
+    this.finishRun(canceledRunId)
+    this.provider.cancel()
+
+    addRuntimeEvent('info', 'recorder', '用户取消录音', {
+      runId: canceledRunId,
+      mode: this.provider.mode,
+    })
+    this.overlayService.showCanceled()
+
+    try {
+      await stopCapture()
+    } catch (error) {
+      addRuntimeEvent('warn', 'recorder', '取消录音时停止采集失败', { error: String(error) })
+    } finally {
+      // state 在停止采集期间保持 processing，阻止新录音复用同一个 capture；确认旧
+      // capture 已结束后再回 idle。keepOverlay 保留短暂的“已取消”反馈。
+      if (this.getState() === 'processing' && this.activeRunId === 0) {
+        this.resetToIdle({ keepOverlay: true })
+      }
+      if (this.provider.mode === 'server') this.ensureConnection()
+    }
+  }
+
+  private cancelProcessing(token: number) {
+    if (
+      this.state !== 'processing'
+      || token === 0
+      || token !== this.activeRunId
+      || !this.processingCancelable
+    ) {
+      addRuntimeEvent('info', 'recorder', 'Esc 取消请求已忽略', {
+        state: this.state,
+        token,
+        activeRunId: this.activeRunId,
+        processingCancelable: this.processingCancelable,
+      })
+      return
+    }
+
+    const canceledRunId = this.activeRunId
+    const historyArtifact = this.pendingHistoryArtifact
+    this.clearProcessingTimeout()
+    this.timedOutProcessingContext = null
+    this.processingCancelable = false
+    this.provider.cancel()
+    this.recordedChunks = []
+    this.finishRun(canceledRunId)
+    if (historyArtifact?.runId === canceledRunId) {
+      void this.discardCanceledHistory(historyArtifact)
+    }
+
+    // token 与当前 run 在同一同步检查内通过后才允许提示“已取消”；旧队列动作不会影响新代次。
+    addRuntimeEvent('info', 'recorder', '用户取消处理中任务', {
+      runId: canceledRunId,
+      mode: this.provider.mode,
+    })
+    this.overlayService.showCanceled()
+    this.resetToIdle({ keepOverlay: true })
+
+    // ServerProvider.cancel 会主动断开旧 socket，隔离可能迟到的服务端结果。
+    if (this.provider.mode === 'server') this.ensureConnection()
+  }
+
   // ── Provider callbacks ──
 
   private buildProviderCallbacks(): TranscriptionCallbacks {
@@ -597,47 +775,78 @@ export class RecorderOrchestrator {
       onASR: (result) => {
         if (this.state !== 'processing') return
         if (this.finalHandledInCurrentRun) return
+        if (result.text && result.text.trim() !== '') return
 
-        if (!result.text || result.text.trim() === '') {
-          const audioDur = this.getAudioDurationSec()
-          const wallSec = this.wallTimeAtStopSec > 0 ? this.wallTimeAtStopSec : audioDur
-          // Save audio even for empty results
-          const saveAndRecord = async () => {
-            if (!(await getSetting('historyEnabled', true))) return
-            let audioFilePath: string | undefined
-            const recordId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
-            const saveAudioEnabled = await getSetting('audioRetentionEnabled', true)
-            if (saveAudioEnabled && this.recordedChunks.length > 0) {
-              try {
-                const savedPath = await saveRecordingAudio(recordId, this.recordedChunks)
-                if (savedPath) audioFilePath = savedPath
-              } catch (err) {
-                addRuntimeEvent('warn', 'recorder', '保存音频文件失败（空结果）', { error: String(err) })
+        const runId = this.activeRunId
+        if (!this.isRunCurrent(runId)) return
+        // 空 ASR 已是本代终态：同步阻止 timeout 与后续 final 再次收尾。
+        this.finalHandledInCurrentRun = true
+        this.clearProcessingTimeout()
+
+        const audioDur = this.getAudioDurationSec()
+        const wallSec = this.wallTimeAtStopSec > 0 ? this.wallTimeAtStopSec : audioDur
+        const audioChunks = this.recordedChunks.slice()
+        const historyMeta = this.buildHistoryMetadata(
+          this.currentPromptResolution,
+          this.currentActiveAppContext,
+        )
+        void (async () => {
+          let historyArtifact: { runId: number; recordId: string; audioFilePath?: string } | null = null
+          try {
+            const historyEnabled = await getSetting('historyEnabled', true)
+            if (!this.isRunCurrent(runId)) return
+            if (historyEnabled) {
+              const recordId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+              historyArtifact = { runId, recordId }
+              this.pendingHistoryArtifact = historyArtifact
+              const saveAudioEnabled = await getSetting('audioRetentionEnabled', true)
+              if (!this.isRunCurrent(runId)) return
+              if (saveAudioEnabled && audioChunks.length > 0) {
+                try {
+                  const savedPath = await saveRecordingAudio(recordId, audioChunks)
+                  if (savedPath) historyArtifact.audioFilePath = savedPath
+                } catch (err) {
+                  addRuntimeEvent('warn', 'recorder', '保存音频文件失败（空结果）', { error: String(err) })
+                }
+                // 保存文件后必须重新验代；失效时同时清文件和可能已存在的记录。
+                if (!this.isRunCurrent(runId)) {
+                  await this.discardCanceledHistory(historyArtifact)
+                  return
+                }
               }
+              await addHistory({
+                id: recordId,
+                timestamp: Date.now(),
+                asrText: '',
+                llmText: '',
+                asrMs: result.asrMs || 0,
+                llmMs: 0,
+                durationSec: wallSec,
+                audioDurationSec: audioDur > 0 ? audioDur : undefined,
+                asrDurationSec: result.durationSec > 0 ? result.durationSec : undefined,
+                charCount: 0,
+                isEmpty: true,
+                audioFilePath: historyArtifact.audioFilePath,
+                ...historyMeta,
+              })
+              // 写记录后同样验代；取消/新 run 会清掉刚写入的文件与记录。
+              if (!this.isRunCurrent(runId)) {
+                await this.discardCanceledHistory(historyArtifact)
+                return
+              }
+              void bridge.emit('history-updated')
             }
-            await addHistory({
-              id: recordId,
-              timestamp: Date.now(),
-              asrText: '',
-              llmText: '',
-              asrMs: result.asrMs || 0,
-              llmMs: 0,
-              durationSec: wallSec,
-              audioDurationSec: audioDur > 0 ? audioDur : undefined,
-              asrDurationSec: result.durationSec > 0 ? result.durationSec : undefined,
-              charCount: 0,
-              isEmpty: true,
-              audioFilePath,
-              ...this.buildHistoryMetadata(),
-            })
-            void bridge.emit('history-updated')
+          } catch (err) {
+            if (historyArtifact) await this.discardCanceledHistory(historyArtifact)
+            if (!this.isRunCurrent(runId)) return
+            addRuntimeEvent('warn', 'recorder', '写入空结果历史失败', { error: String(err) })
           }
-          void saveAndRecord()
-          // 明确提示"未检测到有效声音"再收尾，避免悬浮窗一闪而逝让用户困惑。
-          // keepOverlay 让提示留到它自己的计时器（约 2.5s）隐藏。
+
+          if (!this.isRunCurrent(runId)) return
           this.overlayService.showNoSpeech()
+          this.finishRun(runId)
           this.resetToIdle({ keepOverlay: true })
-        }
+        })()
       },
 
       onFinal: (result) => {
@@ -652,7 +861,17 @@ export class RecorderOrchestrator {
             asrMs: result.asrMs,
             llmMs: result.llmMs,
           })
-          void this.processFinalResult(result, lateContext, { allowInsertionWhenIdle: true, source: 'late_after_timeout' })
+          // final 已经快照到前端，立即废弃旧 Provider 会话；尤其 Server 必须断开旧 socket，
+          // 防止随后迟到的 done/error 在下一代 start 后误清新会话。
+          this.provider.cancel()
+          if (this.provider.mode === 'server') this.ensureConnection()
+          this.finalizingLateRunId = lateContext.runId
+          void this.processFinalResult(result, lateContext, {
+            allowInsertionWhenIdle: true,
+            source: 'late_after_timeout',
+          }).finally(() => {
+            if (this.finalizingLateRunId === lateContext.runId) this.finalizingLateRunId = 0
+          })
           return
         }
         if (this.finalHandledInCurrentRun) {
@@ -660,6 +879,8 @@ export class RecorderOrchestrator {
           return
         }
         this.finalHandledInCurrentRun = true
+        // 首个 processing final 在同步回调路径立即撤销 timeout，避免二者双收尾。
+        this.clearProcessingTimeout()
         this.finalReceivedAt = Date.now()
 
         const localAudioDur = this.getAudioDurationSec()
@@ -672,11 +893,14 @@ export class RecorderOrchestrator {
         })
 
         void this.processFinalResult(result, {
+          runId: this.activeRunId,
           timedOutAt: 0,
           audioDurationSec: this.getAudioDurationSec(),
           wallTimeSec: this.wallTimeAtStopSec > 0 ? this.wallTimeAtStopSec : this.getAudioDurationSec(),
           promptResolution: this.currentPromptResolution ? { ...this.currentPromptResolution } : null,
           appContext: this.currentActiveAppContext ? { ...this.currentActiveAppContext } : null,
+          audioChunks: this.recordedChunks.slice(),
+          probeResult: this.cachedProbeResult ? { ...this.cachedProbeResult } : null,
         }, {
           allowInsertionWhenIdle: false,
           source: 'processing',
@@ -687,80 +911,128 @@ export class RecorderOrchestrator {
         if (this.state !== 'processing') return
         if (this.finalHandledInCurrentRun) return
         if (this.textInsertionInFlight) return
+        const runId = this.activeRunId
+        this.clearProcessingTimeout()
+        this.finishRun(runId)
         this.resetToIdle()
       },
 
       onError: (msg) => {
+        const runId = this.activeRunId
+        if (!this.isRunCurrent(runId) || (this.state !== 'recording' && this.state !== 'processing')) {
+          addRuntimeEvent('warn', 'backend', '忽略非当前会话的错误回调', { msg, state: this.state, runId })
+          return
+        }
         addRuntimeEvent('error', 'backend', msg)
+        this.clearProcessingTimeout()
+        this.processingCancelable = false
+        void this.overlayService.disableEscapeAction()
+        this.finalHandledInCurrentRun = true
 
-        // 停止音频采集
+        // 停止音频采集，并进入不可再触发 stopRecording 的收尾状态。
         if (this.state === 'recording') {
           this.overlayService.stopListeningTicker()
           void stopCapture().catch(() => { })
+          this.restoreSystemMuteIfNeeded()
+          this.transition('processing')
         }
 
-        // 保存音频到历史记录（即使识别失败，也保留音频以便重新识别）
+        // 快照本代音频和元数据；每个异步 artifact 边界后均验代并清理失效产物。
         const audioDur = this.getAudioDurationSec()
         const wallSec = this.wallTimeAtStopSec > 0 ? this.wallTimeAtStopSec : audioDur
-        if (audioDur >= 0.5 && this.recordedChunks.length > 0) {
-          const saveErrorHistory = async () => {
-            if (!(await getSetting('historyEnabled', true))) return
-            let audioFilePath: string | undefined
-            const recordId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
-            const saveAudioEnabled = await getSetting('audioRetentionEnabled', true)
-            if (saveAudioEnabled) {
-              try {
-                const savedPath = await saveRecordingAudio(recordId, this.recordedChunks)
-                if (savedPath) audioFilePath = savedPath
-              } catch (err) {
-                addRuntimeEvent('warn', 'recorder', '保存音频文件失败（错误恢复）', { error: String(err) })
+        const audioChunks = this.recordedChunks.slice()
+        const historyMeta = this.buildHistoryMetadata(
+          this.currentPromptResolution,
+          this.currentActiveAppContext,
+        )
+        void (async () => {
+          let historyArtifact: { runId: number; recordId: string; audioFilePath?: string } | null = null
+          try {
+            if (audioDur >= 0.5 && audioChunks.length > 0) {
+              const historyEnabled = await getSetting('historyEnabled', true)
+              if (!this.isRunCurrent(runId)) return
+              if (historyEnabled) {
+                const recordId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+                historyArtifact = { runId, recordId }
+                this.pendingHistoryArtifact = historyArtifact
+                const saveAudioEnabled = await getSetting('audioRetentionEnabled', true)
+                if (!this.isRunCurrent(runId)) return
+                if (saveAudioEnabled) {
+                  try {
+                    const savedPath = await saveRecordingAudio(recordId, audioChunks)
+                    if (savedPath) historyArtifact.audioFilePath = savedPath
+                  } catch (err) {
+                    addRuntimeEvent('warn', 'recorder', '保存音频文件失败（错误恢复）', { error: String(err) })
+                  }
+                  if (!this.isRunCurrent(runId)) {
+                    await this.discardCanceledHistory(historyArtifact)
+                    return
+                  }
+                }
+                await addHistory({
+                  id: recordId,
+                  timestamp: Date.now(),
+                  asrText: '',
+                  llmText: '',
+                  asrMs: 0,
+                  llmMs: 0,
+                  durationSec: wallSec,
+                  audioDurationSec: audioDur > 0 ? audioDur : undefined,
+                  charCount: 0,
+                  isEmpty: true,
+                  audioFilePath: historyArtifact.audioFilePath,
+                  ...historyMeta,
+                })
+                if (!this.isRunCurrent(runId)) {
+                  await this.discardCanceledHistory(historyArtifact)
+                  return
+                }
+                void bridge.emit('history-updated')
               }
             }
-            await addHistory({
-              id: recordId,
-              timestamp: Date.now(),
-              asrText: '',
-              llmText: '',
-              asrMs: 0,
-              llmMs: 0,
-              durationSec: wallSec,
-              audioDurationSec: audioDur > 0 ? audioDur : undefined,
-              charCount: 0,
-              isEmpty: true,
-              audioFilePath,
-              ...this.buildHistoryMetadata(),
-            })
-            void bridge.emit('history-updated')
+          } catch (err) {
+            if (historyArtifact) await this.discardCanceledHistory(historyArtifact)
+            if (!this.isRunCurrent(runId)) return
+            addRuntimeEvent('warn', 'recorder', '错误历史写入失败', { error: String(err) })
           }
-          void saveErrorHistory().catch(() => { })
-        }
 
-        this.resetToIdle()
+          if (!this.isRunCurrent(runId)) return
+          this.finishRun(runId)
+          this.resetToIdle()
+        })()
       },
     }
   }
 
   // ── Text insertion: uses pre-probed editable result ──
 
-  private async handleTextInsertion(text: string, options?: { allowWhenIdle?: boolean }) {
+  private async handleTextInsertion(
+    text: string,
+    options: { allowWhenIdle?: boolean; runId: number; probeResult?: ProbeResult | null },
+  ) {
     const insertionStartedAt = Date.now()
-    const allowWhenIdle = options?.allowWhenIdle === true
-    // Guard: if we're no longer in processing (e.g. timeout fired), bail out
+    const { runId } = options
+    const allowWhenIdle = options.allowWhenIdle === true
+    if (!this.isRunCurrent(runId)) return
+
+    // Guard: if we're no longer in processing (e.g. timeout fired), bail out unless this
+    // is the explicitly retained late-final path.
     if (this.state !== 'processing' && !allowWhenIdle) {
-      addRuntimeEvent('warn', 'recorder', 'handleTextInsertion 跳过：状态已不是 processing', { state: this.state })
+      addRuntimeEvent('warn', 'recorder', 'handleTextInsertion 跳过：状态已不是 processing', { state: this.state, runId })
       return
     }
 
-    // Cancel the processing timeout — we're handling the result now
+    // Cancel the processing timeout — we're handling the result now.
     if (this.state === 'processing') {
       this.clearProcessingTimeout()
     }
 
-    // Fetch the probe result that was captured at PTT-down time
-    // Prefer the cached probe from startRecording (captured when target was focused)
-    // over a fresh probe (which may return the wrong window after recording ends)
-    const probe = this.cachedProbeResult ?? await this.pasteService.getProbeResult()
-    const usedCachedProbe = this.cachedProbeResult !== null
+    // 始终使用本次 final 携带的 probe 快照，不能读取可能已被下一次录音覆盖的实例字段。
+    const capturedProbe = options.probeResult ?? null
+    const probe = capturedProbe ?? await this.pasteService.getProbeResult()
+    if (!this.isRunCurrent(runId)) return
+
+    const usedCapturedProbe = capturedProbe !== null
     const probeAgeMs = typeof probe.completedAt === 'number' ? Date.now() - probe.completedAt : undefined
     const probeDurationMs = (
       typeof probe.completedAt === 'number'
@@ -769,6 +1041,7 @@ export class RecorderOrchestrator {
       ? probe.completedAt - probe.startedAt
       : undefined
     addRuntimeEvent('info', 'recorder', '粘贴决策', {
+      runId,
       probeId: probe.probeId,
       editable: probe.editable,
       hwnd: probe.hwnd,
@@ -779,7 +1052,7 @@ export class RecorderOrchestrator {
       isCurrentAppProcess: probe.isCurrentAppProcess,
       windowClass: probe.windowClass,
       focusClass: probe.focusClass,
-      usedCachedProbe,
+      usedCapturedProbe,
       probeAgeMs,
       probeDurationMs,
       finalToDecisionMs: this.finalReceivedAt > 0 ? insertionStartedAt - this.finalReceivedAt : undefined,
@@ -791,19 +1064,17 @@ export class RecorderOrchestrator {
       // SayIt 自身也是 Chromium 窗口，renderer 直插对 React 受控组件无效
       // （DOM value 被设置但 React state 不同步，下次 re-render 会覆盖）。
       // 所以不走 renderer 直插，而是和外部窗口一样走 Rust paste（Ctrl+V）。
-      // 先尝试把文本复制到剪贴板，然后通过 SendInput 粘贴。
       addRuntimeEvent('info', 'recorder', '命中 SayIt 自身进程，走 Rust paste 而非 renderer 直插', {
         probeId: probe.probeId,
         editable: probe.editable,
         hwnd: probe.hwnd,
         focusHwnd: probe.focusHwnd,
       })
-      // Fall through to the normal editable / not_editable flow below
     }
 
     if (!probe.editable) {
-      // Target was not editable at PTT-down → copy to clipboard + show fallback card
-      addRuntimeEvent('info', 'recorder', '目标不可编辑，进入兜底流程并复制到剪贴板', {
+      // 目标不可编辑时只展示主动操作卡片，不提前改写用户剪贴板。
+      addRuntimeEvent('info', 'recorder', '目标不可编辑，展示兜底卡片等待用户选择', {
         probeId: probe.probeId,
         pid: probe.pid,
         process: probe.process,
@@ -811,22 +1082,25 @@ export class RecorderOrchestrator {
         isCurrentAppProcess: probe.isCurrentAppProcess,
         detail: probe.detail,
       })
-      await this.copyTextSafely(text, 'not_editable')
-
-      addRuntimeEvent('info', 'recorder', '目标不是当前 SayIt 进程，准备展示兜底卡片', {
-        probeId: probe.probeId,
-        pid: probe.pid,
-        process: probe.process,
-      })
-      this.showFallbackAndReset(text, 'not_editable')
+      if (!this.isRunCurrent(runId)) return
+      this.showFallbackAndReset(text, 'not_editable', runId)
       return
     }
 
     await this.waitForModifierPTTReleaseIfNeeded()
+    if (!this.isRunCurrent(runId)) return
 
-    // Target was editable → paste (pass probe so Rust uses pre-probed hwnd)
+    // pasteText 一旦进入 Rust SendInput 就无法撤销。先关闭本地取消屏障，再确认原生
+    // Esc 模式已关闭，最后验代；已排队的旧 cancel 因 processingCancelable=false 只能被忽略。
+    this.processingCancelable = false
+    await this.overlayService.disableEscapeAction()
+    if (!this.isRunCurrent(runId)) return
+
+    // Target was editable → paste (pass the captured probe so Rust uses the original hwnd)
     const pasteStartedAt = Date.now()
     const result = await this.pasteService.pasteText(text, probe, this.cachedProtectClipboard)
+    if (!this.isRunCurrent(runId)) return
+
     if (result.ok) {
       addRuntimeEvent('info', 'recorder', '外部文本注入成功', {
         strategy: result.strategy,
@@ -836,15 +1110,17 @@ export class RecorderOrchestrator {
         pasteExecMs: Date.now() - pasteStartedAt,
       })
 
+      this.finishRun(runId)
       if (this.state === 'processing') {
         this.resetToIdle()
       }
       return
     }
 
-    // Paste command failed (SendInput error, timeout, etc.)
+    // Paste command failed (SendInput error, timeout, etc.). The card now lets the user
+    // explicitly copy or dismiss; do not overwrite the clipboard automatically here.
     const level = result.reason === 'paste_exception' ? 'error' : 'warn'
-    addRuntimeEvent(level, 'recorder', '外部文本注入失败，展示兜底卡片', {
+    addRuntimeEvent(level, 'recorder', '外部文本注入失败，展示兜底卡片等待用户选择', {
       strategy: result.strategy,
       reason: result.reason,
       detail: result.detail,
@@ -852,38 +1128,25 @@ export class RecorderOrchestrator {
       finalToPasteDoneMs: this.finalReceivedAt > 0 ? Date.now() - this.finalReceivedAt : undefined,
       pasteExecMs: Date.now() - pasteStartedAt,
     })
-    await this.copyTextSafely(text, result.reason || 'paste_failed')
-    this.showFallbackAndReset(text, result.reason || 'paste_failed')
-  }
-
-  private async copyTextSafely(text: string, reason: string) {
-    try {
-      await bridge.copyText(text)
-      addRuntimeEvent('info', 'recorder', '已复制文本到剪贴板', {
-        reason,
-        textLen: text.length,
-      })
-    } catch (error) {
-      addRuntimeEvent('warn', 'recorder', '复制兜底文本到剪贴板失败', {
-        reason,
-        error: String(error),
-      })
-    }
+    this.showFallbackAndReset(text, result.reason || 'paste_failed', runId)
   }
 
   /**
    * Show fallback card and transition to idle.
    * Ensures overlay layout is switched to fallback BEFORE hiding other states.
    */
-  private showFallbackAndReset(text: string, reason: string) {
+  private showFallbackAndReset(text: string, reason: string, runId: number) {
+    if (!this.isRunCurrent(runId)) return
     addRuntimeEvent('info', 'recorder', '展示兜底卡片', {
+      runId,
       reason,
       textLen: text.length,
       stateBeforeReset: this.state,
     })
-    // First: tell overlay to switch to fallback (this sends overlay-update with state='fallback',
-    // which triggers applyOverlayLayout in main process to resize the window)
-    this.overlayService.showFallback(text, reason)
+    // 先发布带本代 token 的 fallback，再结束 run；后续旧 dismiss 只能匹配这张卡片。
+    this.activeFallbackToken = runId
+    this.overlayService.showFallback(text, reason, runId)
+    this.finishRun(runId)
     // Then: transition to idle but keep overlay visible
     if (this.state === 'processing') {
       this.resetToIdle({ keepOverlay: true })
@@ -903,8 +1166,18 @@ export class RecorderOrchestrator {
   // ── Recording lifecycle ──
 
   private async startRecording() {
-    if (this.state !== 'idle' || this.startRecordingLock) {
-      addRuntimeEvent('info', 'recorder', '开始录音请求已忽略', { state: this.state, locked: this.startRecordingLock })
+    if (
+      this.state !== 'idle'
+      || this.startRecordingLock
+      || this.textInsertionInFlight
+      || this.finalizingLateRunId !== 0
+    ) {
+      addRuntimeEvent('info', 'recorder', '开始录音请求已忽略', {
+        state: this.state,
+        locked: this.startRecordingLock,
+        textInsertionInFlight: this.textInsertionInFlight,
+        finalizingLateRunId: this.finalizingLateRunId,
+      })
       return
     }
 
@@ -917,6 +1190,18 @@ export class RecorderOrchestrator {
       return
     }
 
+    // 新 run 创建前先废弃 timeout 宽限期的旧 provider 代次；后续原有 connect 流程
+    // 会为 ServerProvider 建立新 socket，Cloud/Local 也会因 cancel 丢弃旧回调。
+    const timedOutContext = this.timedOutProcessingContext
+    if (timedOutContext) {
+      this.timedOutProcessingContext = null
+      this.provider.cancel()
+      this.finishRun(timedOutContext.runId)
+    }
+
+    const runId = ++this.runSequence
+    this.activeRunId = runId
+    this.activeFallbackToken = 0
     this.startRecordingLock = true
     this.pendingStopWhileStarting = false
     this.timedOutProcessingContext = null
@@ -1020,13 +1305,15 @@ export class RecorderOrchestrator {
               addRuntimeEvent('warn', 'recorder', '免提模式 5 分钟到达，自动停止')
               void this.stopRecording()
             }
-          }, 60_000)
+          }, RECORDING_COUNTDOWN_SEC * 1000)
         }
-      }, 240_000) // 4 minutes
+        // 与上限统一由常量推导，避免"改了上限忘了改提醒时机"
+      }, (MAX_RECORDING_SEC - RECORDING_COUNTDOWN_SEC) * 1000)
     }
 
     const promptOpts = this.currentPromptResolution
       ? {
+        runId,
         systemPrompt: this.cachedAiEnabled ? this.currentPromptResolution.systemPrompt : undefined,
         disableAi: !this.cachedAiEnabled,
         clientMeta: this.cachedClientRuntimeInfo,
@@ -1036,6 +1323,7 @@ export class RecorderOrchestrator {
         streamingDisplay: this.cachedStreamingDisplay,
       }
       : {
+        runId,
         disableAi: !this.cachedAiEnabled,
         clientMeta: this.cachedClientRuntimeInfo,
         appContext: activeAppContext,
@@ -1056,6 +1344,7 @@ export class RecorderOrchestrator {
         startCapture(
           this.cachedMicId || undefined,
           (buffer) => {
+            if (!this.isRunCurrent(runId)) return
             if (this.audioSentSamples === 0) {
               console.log('[ptt-diag] 首个 onData buffer', {
                 byteLength: buffer.byteLength,
@@ -1067,6 +1356,7 @@ export class RecorderOrchestrator {
           },
           undefined,
           (pcmFrame) => {
+            if (!this.isRunCurrent(runId)) return
             this.audioSentSamples += pcmFrame.length
             const bars = computeBarsFromPCM(pcmFrame, this.overlayWaveState, {
               barCount: this.overlayService.getBarCount(),
@@ -1098,9 +1388,14 @@ export class RecorderOrchestrator {
             // 两档提醒：静音（未检测到声音）/ 偏低（请靠近麦克风）
             this.updateVolumeWarning(classifyMicLevel(rms, framePeak), pcmFrame.length)
           },
+          this.noiseSuppression,
         ),
       ])
       resolveCaptureReady!()
+      if (!this.isRunCurrent(runId)) {
+        await stopCapture().catch(() => { })
+        return
+      }
 
       // Both WebSocket and mic are ready — send start command
       const started = this.provider.start(promptOpts)
@@ -1113,13 +1408,17 @@ export class RecorderOrchestrator {
       this.recordStartPerf = performance.now()
       if (!this.transition('recording')) {
         this.startRecordingLock = false
+        this.provider.cancel()
+        this.finishRun(runId)
+        this.resetToIdle()
+        if (this.provider.mode === 'server') this.ensureConnection()
         return
       }
       this.startRecordingLock = false
       // 若本次会走流式实时显示，录音一开始就让气泡显示占位，避免中途弹出+缩放导致的抖动。
       // 实时读取供应商/WorkspaceId（避免切换供应商后缓存过期，导致非实时模型也弹气泡）。
       void this.applyStreamingActive()
-      this.overlayService.startListeningTicker()
+      this.overlayService.startListeningTicker(runId)
       // 录音一开始就查一次麦克风是否被系统静音，被静音则悬浮窗即时红色高警（不阻塞录音）
       void this.checkMicMuted()
       // 就绪提示音已触发，稍后再静音系统输出（避免把提示音一起静掉）
@@ -1142,7 +1441,8 @@ export class RecorderOrchestrator {
       this.restoreSystemMuteIfNeeded()
       addRuntimeEvent('error', 'recorder', '开始录音失败', { error: String(error) })
       try { await stopCapture() } catch { /* ignore */ }
-      this.provider.stop({ pttHoldMs: elapsedSecFromPerf(this.recordStartPerf) * 1000 })
+      this.finishRun(runId)
+      this.provider.cancel()
       // 在悬浮窗显示错误信息，让用户知道发生了什么
       const errMsg = String(error)
       if (errMsg.includes('麦克风') || errMsg.includes('microphone') || errMsg.includes('audio')) {
@@ -1253,6 +1553,8 @@ export class RecorderOrchestrator {
       return
     }
 
+    const runId = this.activeRunId
+
     // Wait for capture setup to complete (getUserMedia + AudioWorklet can take time)
     if (this.captureReadyPromise) {
       try {
@@ -1263,6 +1565,7 @@ export class RecorderOrchestrator {
       } catch { /* ignore */ }
       this.captureReadyPromise = null
     }
+    if (this.state !== 'recording' || !this.isRunCurrent(runId)) return
 
     this.overlayService.stopListeningTicker()
     addRuntimeEvent('info', 'recorder', '停止录音')
@@ -1270,6 +1573,8 @@ export class RecorderOrchestrator {
     try { await stopCapture() } catch (error) {
       addRuntimeEvent('error', 'recorder', '停止采集失败', { error: String(error) })
     }
+    // stopCapture 等待期间用户可能按 Esc 使 run 失效；此时绝不能继续 provider.stop。
+    if (this.state !== 'recording' || !this.isRunCurrent(runId)) return
 
     // 采集已停止，恢复系统输出到静音前的状态
     this.restoreSystemMuteIfNeeded()
@@ -1298,6 +1603,15 @@ export class RecorderOrchestrator {
       })
       // 不再丢弃音频，保留以便用户回放和重新识别
     }
+    if (audioDur < 0.5) {
+      addRuntimeEvent('info', 'recorder', '录音过短（<0.5s），取消 Provider 并直接丢弃')
+      this.provider.cancel()
+      this.finishRun(runId)
+      this.resetToIdle()
+      if (this.provider.mode === 'server') this.ensureConnection()
+      return
+    }
+
     this.provider.stop({
       pttHoldMs,
       audioStats: this.audioStatsTotalFrames > 0 ? {
@@ -1310,32 +1624,34 @@ export class RecorderOrchestrator {
     })
     addRuntimeEvent('info', 'recorder', '已发送 stop', { audioSec: audioDur, pttHoldMs: Math.round(pttHoldMs) })
 
-    if (audioDur < 0.5) {
-      addRuntimeEvent('info', 'recorder', '录音过短（<0.5s），直接丢弃')
+    if (!this.transition('processing')) {
+      this.finishRun(runId)
       this.resetToIdle()
       return
     }
-
-    if (!this.transition('processing')) return
+    this.processingCancelable = true
 
     const processingTimeoutMs = this.computeProcessingTimeoutMs(audioDur)
     addRuntimeEvent('info', 'recorder', '进入 processing', {
       audioSec: audioDur,
       timeoutMs: processingTimeoutMs,
     })
-    this.overlayService.showThinking(audioDur)
+    this.overlayService.showThinking(audioDur, runId)
     this.processingTimeoutId = setTimeout(() => {
-      if (this.state !== 'processing') return
+      if (this.state !== 'processing' || !this.isRunCurrent(runId)) return
       if (this.textInsertionInFlight) {
         addRuntimeEvent('warn', 'recorder', '处理超时但文本插入仍在进行，延长等待')
         return
       }
-      const timedOutCtx = {
+      const timedOutCtx: TimedOutProcessingContext = {
+        runId,
         timedOutAt: Date.now(),
         audioDurationSec: audioDur,
         wallTimeSec,
         promptResolution: this.currentPromptResolution ? { ...this.currentPromptResolution } : null,
         appContext: this.currentActiveAppContext ? { ...this.currentActiveAppContext } : null,
+        audioChunks: this.recordedChunks.slice(),
+        probeResult: this.cachedProbeResult ? { ...this.cachedProbeResult } : null,
       }
       this.timedOutProcessingContext = timedOutCtx
       addRuntimeEvent('warn', 'recorder', '处理超时，自动回到空闲状态', {
@@ -1347,18 +1663,30 @@ export class RecorderOrchestrator {
       // 安全网：快照本次录音音频与元数据。若宽限期内没等到迟到的 final，就把音频存入历史
       // （标记为空结果），用户可在历史里“重新识别”，避免超时丢失整段录音。
       // resetToIdle 不会清空 recordedChunks，这里再 slice 一份，防止后续录音替换缓冲。
-      const audioChunks = this.recordedChunks.slice()
-      const historyMeta = this.buildHistoryMetadata(timedOutCtx.promptResolution)
+      const audioChunks = timedOutCtx.audioChunks
+      const historyMeta = this.buildHistoryMetadata(timedOutCtx.promptResolution, timedOutCtx.appContext)
       window.setTimeout(() => {
         // onFinal 若在宽限期内消费了 context（迟到 final 已落历史）→ 跳过，避免重复记录。
-        if (this.timedOutProcessingContext !== timedOutCtx) return
+        if (this.timedOutProcessingContext !== timedOutCtx || !this.isRunCurrent(timedOutCtx.runId)) return
+        // 宽限期已结束，不再接受迟到结果。先废弃 Provider 旧会话，再异步保存兜底历史；
+        // Server 必须换 socket，避免旧 final/done/error 串到下一代。
         this.timedOutProcessingContext = null
+        this.provider.cancel()
+        if (this.provider.mode === 'server') this.ensureConnection()
         void (async () => {
+          let historyArtifact: { recordId: string; audioFilePath?: string } | null = null
           try {
-            if (!(await getSetting('historyEnabled', true))) return
+            const historyEnabled = await getSetting('historyEnabled', true)
+            if (!this.isRunCurrent(timedOutCtx.runId)) return
+            if (!historyEnabled) {
+              this.finishRun(timedOutCtx.runId)
+              return
+            }
+
             let audioFilePath: string | undefined
             const recordId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
             const saveAudioEnabled = await getSetting('audioRetentionEnabled', true)
+            if (!this.isRunCurrent(timedOutCtx.runId)) return
             if (saveAudioEnabled && audioChunks.length > 0) {
               try {
                 const savedPath = await saveRecordingAudio(recordId, audioChunks)
@@ -1367,6 +1695,12 @@ export class RecorderOrchestrator {
                 addRuntimeEvent('warn', 'recorder', '保存音频文件失败（超时兜底）', { error: String(err) })
               }
             }
+            historyArtifact = { recordId, audioFilePath }
+            if (!this.isRunCurrent(timedOutCtx.runId)) {
+              await this.discardCanceledHistory(historyArtifact)
+              return
+            }
+
             await addHistory({
               id: recordId,
               timestamp: Date.now(),
@@ -1381,9 +1715,17 @@ export class RecorderOrchestrator {
               audioFilePath,
               ...historyMeta,
             })
+            if (!this.isRunCurrent(timedOutCtx.runId)) {
+              await this.discardCanceledHistory(historyArtifact)
+              return
+            }
             void bridge.emit('history-updated')
+            this.finishRun(timedOutCtx.runId)
             addRuntimeEvent('info', 'recorder', '处理超时：已把录音存入历史，可重新识别', { audioSec: timedOutCtx.audioDurationSec })
           } catch (err) {
+            if (historyArtifact) await this.discardCanceledHistory(historyArtifact)
+            if (!this.isRunCurrent(timedOutCtx.runId)) return
+            this.finishRun(timedOutCtx.runId)
             addRuntimeEvent('warn', 'recorder', '超时兜底写入历史失败', { error: String(err) })
           }
         })()
@@ -1516,9 +1858,12 @@ export class RecorderOrchestrator {
     return _buildStatsAppId(appContext, promptResolution?.appId)
   }
 
-  private buildHistoryMetadata(promptResolution?: PromptResolution | null) {
+  private buildHistoryMetadata(
+    promptResolution?: PromptResolution | null,
+    appContext?: ActiveAppContext | null,
+  ) {
     const resolved = promptResolution || this.currentPromptResolution || undefined
-    const ctx = this.currentActiveAppContext
+    const ctx = appContext === undefined ? this.currentActiveAppContext : appContext
     return {
       appId: resolved?.appId,
       appName: resolved?.appName,
@@ -1581,12 +1926,15 @@ export class RecorderOrchestrator {
   }
 
   private consumeTimedOutProcessingContext() {
-    if (!this.timedOutProcessingContext) return null
     const context = this.timedOutProcessingContext
-    this.timedOutProcessingContext = null
-    if (Date.now() - context.timedOutAt > LATE_FINAL_GRACE_MS) {
+    if (!context) return null
+    if (!this.isRunCurrent(context.runId)) {
+      this.timedOutProcessingContext = null
       return null
     }
+    // 超过 15 秒时把 context 留给已排队的宽限期兜底定时器，避免双方都放弃收尾。
+    if (Date.now() - context.timedOutAt > LATE_FINAL_GRACE_MS) return null
+    this.timedOutProcessingContext = null
     return context
   }
 
@@ -1595,18 +1943,39 @@ export class RecorderOrchestrator {
     context: TimedOutProcessingContext,
     options: { allowInsertionWhenIdle: boolean; source: 'processing' | 'late_after_timeout' },
   ) {
-    // 极速模式下 llmText === asrText（后端未经 LLM 处理时直接复制 asrText）
-    // 此时文本可参与智能分段（是否分段由用户开关决定，见 applyTextTransforms）
-    const needsSegment = !result.llmText || result.llmText === result.asrText
-    const baseText = needsSegment ? result.asrText : result.llmText
-    const textToPaste = await applyTextTransforms(baseText, { segmentable: needsSegment })
+    const runId = context.runId
+    if (!this.isRunCurrent(runId)) return
+
+    // llmText === asrText 说明这段没经过 AI 整理（极速模式，或后端未跑 LLM 直接回 asrText）。
+    // 此时文本仍是纯 ASR，「格式规范」由我们兜底；AI 整理过的文本则把格式交给 AI，只做文本替换。
+    const rawAsr = !result.llmText || result.llmText === result.asrText
+    const baseText = rawAsr ? result.asrText : result.llmText
+    let textToPaste: string
+    try {
+      textToPaste = await applyTextTransforms(baseText, { rawAsr })
+    } catch (error) {
+      if (!this.isRunCurrent(runId)) return
+      addRuntimeEvent('warn', 'recorder', '文本后处理失败', { error: String(error), runId })
+      if (baseText && baseText.trim()) {
+        this.showFallbackAndReset(baseText, 'text_transform_failed', runId)
+      } else {
+        if (this.state === 'processing') this.overlayService.showNoSpeech()
+        this.finishRun(runId)
+        if (this.state === 'processing') this.resetToIdle({ keepOverlay: true })
+      }
+      return
+    }
+    if (!this.isRunCurrent(runId)) return
+
     const hasText = Boolean(textToPaste && textToPaste.trim())
     const audioDur = context.audioDurationSec
     const wallSec = context.wallTimeSec > 0 ? context.wallTimeSec : audioDur
     const promptResolution = context.promptResolution
     const appContext = context.appContext
+    let historyArtifact: { runId: number; recordId: string; audioFilePath?: string } | null = null
 
     addRuntimeEvent('info', 'recorder', '收到 final', {
+      runId,
       hasText,
       asrMs: result.asrMs,
       llmMs: result.llmMs,
@@ -1617,23 +1986,33 @@ export class RecorderOrchestrator {
     })
 
     try {
-      // 关闭历史记录时不保存任何记录与音频（共享电脑隐私），但仍完成文本插入
-      if (await getSetting('historyEnabled', true)) {
-        // Save audio file if we have recorded chunks
-        let audioFilePath: string | undefined
+      const historyEnabled = await getSetting('historyEnabled', true)
+      if (!this.isRunCurrent(runId)) return
+      if (historyEnabled) {
         const recordId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+        historyArtifact = { runId, recordId }
         const saveAudioEnabled = await getSetting('audioRetentionEnabled', true)
-        if (saveAudioEnabled && this.recordedChunks.length > 0) {
+        if (!this.isRunCurrent(runId)) return
+        if (saveAudioEnabled && context.audioChunks.length > 0) {
           try {
-            const savedPath = await saveRecordingAudio(recordId, this.recordedChunks)
-            if (savedPath) audioFilePath = savedPath
+            const savedPath = await saveRecordingAudio(recordId, context.audioChunks)
+            if (savedPath) historyArtifact.audioFilePath = savedPath
           } catch (err) {
             addRuntimeEvent('warn', 'recorder', '保存音频文件失败', { error: String(err) })
           }
         }
 
+        if (!this.isRunCurrent(runId)) {
+          await this.discardCanceledHistory(historyArtifact)
+          return
+        }
         const providerMeta = await this.buildProviderMetadata(result)
+        if (!this.isRunCurrent(runId)) {
+          await this.discardCanceledHistory(historyArtifact)
+          return
+        }
 
+        this.pendingHistoryArtifact = historyArtifact
         await addHistory({
           id: recordId,
           timestamp: Date.now(),
@@ -1646,46 +2025,71 @@ export class RecorderOrchestrator {
           asrDurationSec: result.durationSec > 0 ? result.durationSec : undefined,
           charCount: hasText ? textToPaste.length : 0,
           isEmpty: !hasText,
-          audioFilePath,
-          ...this.buildHistoryMetadata(promptResolution),
+          audioFilePath: historyArtifact.audioFilePath,
+          ...this.buildHistoryMetadata(promptResolution, appContext),
           ...providerMeta,
         })
+        if (!this.isRunCurrent(runId)) {
+          await this.discardCanceledHistory(historyArtifact)
+          return
+        }
         void bridge.emit('history-updated')
       }
     } catch (error) {
+      if (historyArtifact) await this.discardCanceledHistory(historyArtifact)
+      if (!this.isRunCurrent(runId)) return
       addRuntimeEvent('warn', 'recorder', '写入历史记录失败', { error: String(error) })
+    }
+
+    if (!this.isRunCurrent(runId)) {
+      if (historyArtifact) await this.discardCanceledHistory(historyArtifact)
+      return
     }
 
     if (!hasText) {
       if (this.state === 'processing') {
-        // 结果为空（未检测到有效声音）：给一个明确的悬浮窗提示再收尾，
-        // 而不是悄悄关闭让用户困惑。keepOverlay 让提示留到它自己的计时器隐藏。
         this.overlayService.showNoSpeech()
+      }
+      this.finishRun(runId)
+      if (this.state === 'processing') {
         this.resetToIdle({ keepOverlay: true })
       }
       return
     }
 
-    void this.updatePersonalizationFromFinal(textToPaste, promptResolution, appContext)
+    void this.updatePersonalizationFromFinal(runId, textToPaste, promptResolution, appContext)
 
     this.textInsertionInFlight = true
-    void this.handleTextInsertion(textToPaste, { allowWhenIdle: options.allowInsertionWhenIdle }).finally(() => {
+    try {
+      await this.handleTextInsertion(textToPaste, {
+        allowWhenIdle: options.allowInsertionWhenIdle,
+        runId,
+        probeResult: context.probeResult,
+      })
+    } catch (error) {
+      if (!this.isRunCurrent(runId)) return
+      addRuntimeEvent('error', 'recorder', '文本插入异常，展示兜底卡片', { error: String(error), runId })
+      this.showFallbackAndReset(textToPaste, 'paste_exception', runId)
+    } finally {
       this.textInsertionInFlight = false
-    })
+    }
   }
 
   private async updatePersonalizationFromFinal(
+    runId: number,
     finalText: string,
     promptResolution: PromptResolution | null,
     appContext: ActiveAppContext | null,
   ) {
-    if (!finalText.trim()) return
+    if (!finalText.trim() || !this.isRunCurrent(runId)) return
 
     try {
       const wordCount = finalText.length
       const appId = this.buildStatsAppId(appContext, promptResolution)
 
-      this.cachedUserStats = await recordSessionStats(appId, wordCount)
+      const nextStats = await recordSessionStats(appId, wordCount)
+      if (!this.isRunCurrent(runId)) return
+      this.cachedUserStats = nextStats
       addRuntimeEvent('info', 'personalization', 'session stats recorded', {
         appId,
         appName: promptResolution?.appName,
@@ -1694,6 +2098,7 @@ export class RecorderOrchestrator {
         totalSessions: this.cachedUserStats.totalSessions,
       })
     } catch (error) {
+      if (!this.isRunCurrent(runId)) return
       addRuntimeEvent('warn', 'personalization', 'failed to record session stats', {
         error: String(error),
       })

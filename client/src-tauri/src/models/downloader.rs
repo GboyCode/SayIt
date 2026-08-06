@@ -96,13 +96,22 @@ pub async fn download_file(
             .unwrap_or(0);
     }
 
-    // 如果已完成下载
+    // 如果已完成下载。目录里已有同名文件时：知道期望大小就按大小校验，
+    // 不一致视为残缺（删掉重下），避免半个模型被当成"已下载"——GGUF 这类
+    // 单个大文件如果只落了一半，加载时只会报一句含糊的 gguf load error。
     if dest_path.exists() {
         let size = std::fs::metadata(&dest_path).map(|m| m.len()).unwrap_or(0);
-        if expected_size == 0 || size == expected_size || size > 0 {
+        if size > 0 && (expected_size == 0 || size == expected_size) {
             emit_progress(&app, model_id, file_name, size, size, "completed", None, file_index, file_count);
             return Ok(());
         }
+        log::warn!(
+            "已存在的 {} 大小 {} 与期望 {} 不符，删除后重新下载",
+            file_name,
+            size,
+            expected_size
+        );
+        let _ = std::fs::remove_file(&dest_path);
     }
 
     let client = build_http_client()?;
