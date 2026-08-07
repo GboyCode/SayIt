@@ -9,6 +9,15 @@ import type { PromptPreset } from '@/services/store'
 import type { AppPromptRule } from '@/services/personalization/types'
 
 /**
+ * 「检测当前应用」的倒计时秒数。
+ *
+ * 这段时间是留给用户切窗口的：点完按钮得 Alt+Tab 或用鼠标找到目标程序并点进去，
+ * 3 秒对着一堆窗口翻找根本不够，超时后读到的还是 SayIt 自己，白跑一轮。
+ * 界面上的按钮文字与提示都从这个值推导，改这里一处即可。
+ */
+const DETECT_COUNTDOWN_SEC = 5
+
+/**
  * 只展示"真正决定命中"的条件。
  * 写了进程名的规则一律只按进程名判定（见 promptRouter.matchesAppPromptRule），
  * 此时再把窗口标题/类名列出来会让人误以为它们也会触发。
@@ -109,7 +118,7 @@ export default function AppPromptRulesSection({
    */
   const detectCurrentApp = async () => {
     setDetectHint('')
-    for (let s = 3; s > 0; s -= 1) {
+    for (let s = DETECT_COUNTDOWN_SEC; s > 0; s -= 1) {
       setCountdown(s)
       await new Promise((resolve) => setTimeout(resolve, 1000))
     }
@@ -224,7 +233,7 @@ export default function AppPromptRulesSection({
               <p className="text-xs text-muted-foreground">
                 {countdown > 0
                   ? '请在倒计时内切换到目标程序，松手不用管这里。'
-                  : detectHint || '点「检测当前应用」后切到目标程序，会自动填入它的进程名；多个进程名可用逗号分隔。'}
+                  : detectHint || `点「检测当前应用」后有 ${DETECT_COUNTDOWN_SEC} 秒时间切到目标程序，会自动填入它的进程名；多个进程名可用逗号分隔。`}
               </p>
 
               <div className="space-y-1.5">
@@ -271,7 +280,7 @@ export default function AppPromptRulesSection({
             const draft = drafts[rule.id] || rule
             const dirty = !isSameRule(draft, rule)
             const isExpanded = expandedRules.has(rule.id)
-            
+
             return (
               <div key={rule.id} className="rounded-lg border bg-card">
                 {/* 标题栏 */}
@@ -287,7 +296,7 @@ export default function AppPromptRulesSection({
                         <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
                       )}
                     </div>
-                    
+
                     <p className="text-sm font-medium">{rule.name}</p>
                     <span className="rounded border px-1.5 py-0.5 text-xs text-muted-foreground/50">{rule.builtin ? '内置' : '自定义'}</span>
                     <p className="ml-1 truncate text-xs text-muted-foreground/50">{formatMatcher(rule)}</p>

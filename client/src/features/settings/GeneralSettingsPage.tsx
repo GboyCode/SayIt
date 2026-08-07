@@ -17,7 +17,6 @@ import MicrophoneSection from './MicrophoneSection'
 import type { MicVolumeLevel } from './MicrophoneSection'
 import { ComboShortcutInput, PTTShortcutInput } from './ShortcutInputs'
 import { pttShortcutConflictsWithAccelerator } from '@/lib/shortcutKeys'
-import { formatRecordingLimit } from '@/services/recorder/types'
 
 const HANDS_FREE_HELP = '可以设置哪些按键？\n支持单个常用按键（如右 Alt、Caps Lock、F1–F12）、“修饰键 + 主键”组合，也可以使用鼠标侧键或中键。\n\n绑定鼠标按键有什么影响？\n绑定侧键后，原来的前进 / 后退功能会被占用；绑定中键后，打开新标签页、自动滚动等功能可能无法使用。'
 
@@ -199,9 +198,12 @@ export default function GeneralSettingsPage() {
         <Card>
           <CardContent className="p-6">
             <h2 className="text-lg font-semibold">键盘快捷键</h2>
-            {/* 上限要事先讲清楚：此前用户只有录到 4 分钟被提示时才知道有 5 分钟上限 */}
+            {/* 只讲 Esc：它此前只写在悬浮窗那行小字上，一闪而过、且没在任何设置页出现过。
+                录音上限不在这里讲 —— 最后一分钟悬浮窗会显示剩余时间、到点自动结束，界面自己会说。
+                「录音也不会保留」要写明：取消和「录了但没出字」在用户眼里很容易混。
+                「录音或识别处理」是两个阶段，别连写 —— Esc 在两个阶段都能按。 */}
             <p className="mb-4 mt-1 text-xs text-muted-foreground">
-              单次录音最长 {formatRecordingLimit()}，到时会自动结束并开始识别；最后一分钟悬浮窗会显示剩余时间。
+              录音或识别处理期间按 Esc 可以取消本次识别，不会插入文字，录音也不会保留。
             </p>
             <div className="space-y-4">
               <ComboShortcutInput

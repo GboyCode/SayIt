@@ -23,10 +23,11 @@ const OVERLAY_OPTIONS: Array<{
   { theme: 'black-rainbow', label: '黑底彩色', barColors: ['#4ade80', '#facc15', '#fb923c', '#f87171'] },
 ]
 
+// 由长到短排列：从「最完整」往「最克制」读，比反过来更符合挑尺寸的直觉。
 const WIDTH_OPTIONS: Array<{ value: OverlayWidthPreset; label: string }> = [
-  { value: 'short', label: '短' },
-  { value: 'medium', label: '中' },
   { value: 'long', label: '长' },
+  { value: 'medium', label: '中' },
+  { value: 'short', label: '短' },
 ]
 
 function getBarColor(index: number, total: number, theme: OverlayWaveTheme): string {

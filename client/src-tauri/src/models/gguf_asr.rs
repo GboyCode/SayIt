@@ -44,6 +44,61 @@ pub(crate) struct Loaded {
 
 static CACHE: Mutex<Option<Loaded>> = Mutex::new(None);
 
+/// 引擎状态的轻量镜像：只放"诊断 / 状态查询要读的那几个字段"，与 CACHE 分成两把锁。
+///
+/// 为什么必须分开：`ensure_loaded` 在**整个"卸旧 + 加载 + 预热"期间**都持着 CACHE
+/// 锁（1.7B 约 9 s，冷盘 / 弱 GPU / 首次编译 Vulkan pipeline 会更久）。
+/// 而 `gguf_asr_diagnostics` 曾经是同步 `#[tauri::command]` —— Tauri 把同步命令放在
+/// 主线程执行，主线程又是 UI 事件循环，于是"进设置页选个模型"会让整个窗口假死到
+/// 加载结束，用户只能强杀进程（0.1.4 的用户反馈就是这个）。
+///
+/// 所以规矩是：**任何"只是想知道当前状态"的读取都走这把小锁，绝不排在 CACHE 后面。**
+/// 这把锁只在赋值/克隆的瞬间持有，不会跨任何耗时操作。
+static STATUS: Mutex<EngineStatus> = Mutex::new(EngineStatus {
+    loading_model: None,
+    backend: None,
+});
+
+struct EngineStatus {
+    /// 正在加载中的模型 id；None = 当前没有加载在进行。
+    loading_model: Option<String>,
+    /// 已加载引擎实际绑定的后端字符串（"cpu" / "vulkan" / …）；None = 未加载。
+    backend: Option<String>,
+}
+
+fn mark_loading(model_id: &str) {
+    if let Ok(mut status) = STATUS.lock() {
+        status.loading_model = Some(model_id.to_string());
+        // 旧引擎马上就要被丢弃，先把 backend 清空：否则重载期间诊断页会报一个
+        // 已经不存在的后端。
+        status.backend = None;
+    }
+}
+
+fn mark_loaded(backend: &str) {
+    if let Ok(mut status) = STATUS.lock() {
+        status.backend = Some(backend.to_string());
+    }
+}
+
+fn mark_unloaded() {
+    if let Ok(mut status) = STATUS.lock() {
+        status.backend = None;
+    }
+}
+
+/// 离开 `ensure_loaded` 时一定清掉"加载中"标记。中途任何一个 `?` 提前返回
+/// （没下载 / 加载失败 / 建 session 失败）都不能让界面永远停在"正在加载"。
+struct LoadingGuard;
+
+impl Drop for LoadingGuard {
+    fn drop(&mut self) {
+        if let Ok(mut status) = STATUS.lock() {
+            status.loading_model = None;
+        }
+    }
+}
+
 /// 后端只需注册一次。dynamic-backends 构建下，不先注册就加载模型会直接报
 /// TRANSCRIBE_ERR_BACKEND，所以这一步是硬前置。
 static INIT: std::sync::Once = std::sync::Once::new();
@@ -101,20 +156,30 @@ pub struct GgufDevice {
 pub struct GgufDiagnostics {
     pub devices: Vec<GgufDevice>,
     pub current_backend: Option<String>,
+    /// 正在加载中的模型 id。非 None 时 `current_backend` 一定是 None ——
+    /// 界面这时该说"正在加载"，而不是"模型未加载"。
+    pub loading_model: Option<String>,
     pub native_version: String,
     /// 当前进程的工作集（MB）。核显机器上模型权重也算在这里面，所以这个数
     /// 就是用户在任务管理器看到的那个数。
     pub process_memory_mb: u64,
 }
 
+/// **必须是 async。** Tauri 把同步命令放在主线程执行，而主线程就是 UI 事件循环；
+/// 这里要做 native FFI（`devices()` 枚举计算设备、`version()`），在主线程上跑一旦
+/// 慢下来窗口就"无响应"。改成 async + spawn_blocking 后，即使底层卡住也只卡这一个
+/// 后台任务。状态字段读的是 STATUS 小锁，不会等模型加载。
 #[tauri::command]
-pub fn gguf_asr_diagnostics() -> GgufDiagnostics {
-    GgufDiagnostics {
+pub async fn gguf_asr_diagnostics() -> Result<GgufDiagnostics, String> {
+    tokio::task::spawn_blocking(|| GgufDiagnostics {
         devices: describe_devices(),
         current_backend: current_backend(),
+        loading_model: loading_model(),
         native_version: transcribe_cpp::version(),
         process_memory_mb: process_memory_mb(),
-    }
+    })
+    .await
+    .map_err(|e| format!("读取本地引擎状态失败: {}", e))
 }
 
 /// 当前进程的工作集，MB。用来回答"这个模型到底吃多少内存"——权重体积不等于
@@ -228,6 +293,11 @@ fn ensure_loaded(model_id: &str, accelerator: &str) -> Result<(), String> {
         }
     }
 
+    // 从这里开始就算"加载中"了：卸旧引擎本身也要时间，而这段时间里状态查询
+    // 应该说"正在加载"，不是"未加载"。
+    mark_loading(model_id);
+    let _loading_guard = LoadingGuard;
+
     // 先释放旧引擎再建新的，避免同时驻留两份权重（GGUF 动辄几百 MB ~ 数 GB）。
     *cache = None;
 
@@ -286,6 +356,7 @@ fn ensure_loaded(model_id: &str, accelerator: &str) -> Result<(), String> {
         supports_pnc
     );
 
+    mark_loaded(&entry.backend);
     *cache = Some(entry);
     // 必须在释放 CACHE 锁之前刷新；否则空闲守护线程可能在这里插入并卸载
     // 刚加载完成、马上要用于推理的模型。
@@ -412,14 +483,20 @@ pub fn unload() {
             log::info!("Unloading GGUF ASR model: {}", entry.model_id);
         }
     }
+    mark_unloaded();
 }
 
 /// 当前绑定的后端字符串，None = 未加载。
+/// 读 STATUS 那把小锁，**不碰 CACHE** —— 见 STATUS 的说明。
 pub fn current_backend() -> Option<String> {
-    CACHE
-        .lock()
-        .ok()
-        .and_then(|c| c.as_ref().map(|e| e.backend.clone()))
+    STATUS.lock().ok().and_then(|s| s.backend.clone())
+}
+
+/// 正在加载中的模型 id，None = 没有加载在进行。
+/// 与 `current_backend` 互斥：加载中时后端一定是 None，界面该显示"正在加载"
+/// 而不是"模型未加载"。
+pub fn loading_model() -> Option<String> {
+    STATUS.lock().ok().and_then(|s| s.loading_model.clone())
 }
 
 /// 转写一段 16 kHz mono f32 PCM。
@@ -519,6 +596,9 @@ pub fn spawn_idle_unloader(initial_idle_minutes: u64) {
                     idle_minutes,
                     entry.model_id
                 );
+                // 这里是直接 take 而不是走 unload()（已经持着 CACHE 锁了），
+                // 所以状态镜像要自己同步，否则诊断页会一直报着已卸载的后端。
+                mark_unloaded();
             }
         });
     });

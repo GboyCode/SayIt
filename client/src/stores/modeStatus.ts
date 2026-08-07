@@ -10,6 +10,12 @@
 
 import { invoke } from '@tauri-apps/api/core'
 import { getSetting } from '../services/store'
+import { loadAsrProfiles } from '../features/settings/asrProfileStore'
+import {
+  describeAsrMissing,
+  findAsrProvider,
+  resolveActiveAsrProfile,
+} from '../features/settings/asrProviderCatalog'
 
 export type ModeStatusMode = 'server' | 'cloud_api' | 'local'
 
@@ -45,13 +51,6 @@ export function getModeStatus(): ModeStatus {
 export function subscribeModeStatus(listener: Listener): () => void {
   listeners.add(listener)
   return () => listeners.delete(listener)
-}
-
-/** 云 API 供应商按平台分组共享 API Key —— 与 CloudAPISection.asrKeyGroup 保持一致 */
-function asrKeyGroup(provider: string): string {
-  if (provider === 'doubao_v2' || provider === 'doubao') return 'doubao'
-  if (provider === 'mimo') return 'mimo'
-  return 'qwen'
 }
 
 /** 云 API 供应商 key → 侧边栏简称。完整模型名在 Tooltip 里（resolveAsrDisplayModel）。 */
@@ -95,21 +94,22 @@ export async function refreshModeStatus(): Promise<void> {
       blockedReason = '读不到本地模型列表'
     }
   } else if (mode === 'cloud_api') {
-    const provider = await getSetting('cloudAsr.provider', 'doubao_v2') as string
-    detail = CLOUD_PROVIDER_SHORT[provider] ?? provider
-    // 云 API 就绪 = 当前供应商分组的密钥已填（豆包还额外需要 App ID）
-    const group = asrKeyGroup(provider)
-    const apiKey = String(await getSetting(`cloudAsr.${group}.apiKey`, '') || '').trim()
-    const appId = String(await getSetting(`cloudAsr.${group}.appId`, '') || '').trim()
-    const needsAppId = group === 'doubao'
-    if (!apiKey) {
+    // 就绪与否看**启用中那份服务档案**，而不是各平台的原始键：同一家可以存多份，
+    // 只有被启用的那份才决定录音时用什么。设置页与这里都从同一个列表读，不会打架。
+    const state = await loadAsrProfiles()
+    const active = resolveActiveAsrProfile(state.profiles, state.activeId)
+    if (!active) {
+      detail = '未配置'
       ready = false
-      blockedReason = needsAppId ? '还没填 Access Token' : '还没填 API Key'
-    } else if (needsAppId && !appId) {
-      ready = false
-      blockedReason = '还没填 App ID'
+      blockedReason = '还没配置语音识别服务'
     } else {
-      ready = true
+      detail = CLOUD_PROVIDER_SHORT[active.provider] ?? active.provider
+      const missing = describeAsrMissing(active)
+      // 流式识别缺业务空间 ID 时也算没配好：它会直接连不上地域专属端点
+      const needsWorkspace = findAsrProvider(active.provider)?.needsWorkspaceId === true
+        && active.workspaceId.trim() === ''
+      ready = missing === '' && !needsWorkspace
+      blockedReason = missing || (needsWorkspace ? '还没填业务空间 ID' : '')
     }
   }
 

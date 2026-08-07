@@ -2,6 +2,7 @@
 // 使用大模型录音文件极速版 HTTP API：一次请求即返回结果
 // 接口：POST https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash
 
+use super::doubao_auth::{self, DoubaoAuth};
 use super::doubao_protocol;
 use super::types::{AsrProviderConfig, AsrResult, TestResult};
 use std::time::Instant;
@@ -65,11 +66,10 @@ pub async fn transcribe(
     let wav_data = pcm_to_wav(&pcm_data, sample_rate);
     let wav_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &wav_data);
 
-    let app_id = if config.app_id.is_empty() {
-        &config.api_key // 有些用户可能只填一个
-    } else {
-        &config.app_id
-    };
+    let auth = DoubaoAuth::from_config(config);
+    if let Some(missing) = auth.missing_field() {
+        return Err(format!("豆包 ASR 缺少{}，请在设置里填好", missing));
+    }
 
     let mut request_params = serde_json::json!({
         "model_name": "bigmodel"
@@ -81,7 +81,7 @@ pub async fn transcribe(
 
     let body = serde_json::json!({
         "user": {
-            "uid": app_id
+            "uid": auth.uid()
         },
         "audio": {
             "data": wav_b64
@@ -92,14 +92,17 @@ pub async fn transcribe(
     let client = reqwest::Client::new();
     let start = Instant::now();
 
-    let resp = client
+    let mut req = client
         .post(RECOGNIZE_URL)
-        .header("X-Api-App-Key", app_id)
-        .header("X-Api-Access-Key", &config.api_key)
         .header("X-Api-Resource-Id", RESOURCE_ID)
         .header("X-Api-Request-Id", uuid::Uuid::new_v4().to_string())
         .header("X-Api-Sequence", "-1")
-        .header("Content-Type", "application/json")
+        .header("Content-Type", "application/json");
+    for (name, value) in auth.headers() {
+        req = req.header(name, value);
+    }
+
+    let resp = req
         .json(&body)
         .timeout(std::time::Duration::from_secs(60))
         .send()
@@ -107,6 +110,10 @@ pub async fn transcribe(
         .map_err(|e| format!("HTTP 请求失败: {}", e))?;
 
     let elapsed_ms = start.elapsed().as_millis() as u64;
+    doubao_auth::log_http_logid(
+        &format!("flash auth={}", auth.mode_name()),
+        resp.headers(),
+    );
 
     // 检查响应头中的状态码
     let status_code = resp
@@ -164,14 +171,18 @@ pub async fn test_connection(config: &AsrProviderConfig) -> TestResult {
     let wav = pcm_to_wav(&silence, 16000);
     let wav_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &wav);
 
-    let app_id = if config.app_id.is_empty() {
-        &config.api_key
-    } else {
-        &config.app_id
-    };
+    let auth = DoubaoAuth::from_config(config);
+    if let Some(missing) = auth.missing_field() {
+        return TestResult {
+            ok: false,
+            message: format!("还没填{}", missing),
+            elapsed_ms: 0,
+            detail: String::new(),
+        };
+    }
 
     let body = serde_json::json!({
-        "user": { "uid": app_id },
+        "user": { "uid": auth.uid() },
         "audio": { "data": wav_b64 },
         "request": { "model_name": "bigmodel" }
     });
@@ -179,14 +190,17 @@ pub async fn test_connection(config: &AsrProviderConfig) -> TestResult {
     let client = reqwest::Client::new();
     let start = Instant::now();
 
-    let result = client
+    let mut req = client
         .post(RECOGNIZE_URL)
-        .header("X-Api-App-Key", app_id)
-        .header("X-Api-Access-Key", &config.api_key)
         .header("X-Api-Resource-Id", RESOURCE_ID)
         .header("X-Api-Request-Id", uuid::Uuid::new_v4().to_string())
         .header("X-Api-Sequence", "-1")
-        .header("Content-Type", "application/json")
+        .header("Content-Type", "application/json");
+    for (name, value) in auth.headers() {
+        req = req.header(name, value);
+    }
+
+    let result = req
         .json(&body)
         .timeout(std::time::Duration::from_secs(15))
         .send()
@@ -196,6 +210,10 @@ pub async fn test_connection(config: &AsrProviderConfig) -> TestResult {
 
     match result {
         Ok(resp) => {
+            doubao_auth::log_http_logid(
+                &format!("flash test auth={}", auth.mode_name()),
+                resp.headers(),
+            );
             let status_code = resp
                 .headers()
                 .get("X-Api-Status-Code")

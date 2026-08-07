@@ -1,0 +1,335 @@
+// 云 API 语音识别的供应商目录、服务档案（profile）解析与延迟分档。
+//
+// 结构与「AI 服务」页对齐：一张卡 = 一份完整配置（供应商 + 该平台的凭据），可以存多份，
+// 同一家也能存多份（比如两个百炼账号、两套豆包密钥）。启用哪一份由 activeProfileId 决定。
+//
+// 和 AI 服务的唯一实质差别：供应商只能从内置清单里选，不能填任意地址 —— 每家 ASR 的
+// 协议都要一份专门的 Rust 实现（asr_doubao / asr_qwen / asr_qwen_omni / asr_mimo），
+// 不像 AI 整理那边只要是 OpenAI 兼容端点就能接。
+//
+// 「同平台重复粘密钥」的问题不靠"按平台存"解决（那样一张卡就不再是一份完整配置了），
+// 而是照 AI 服务的做法：新建时若该平台已有配置，自动把密钥带过来，界面上说明它从哪来。
+
+import {
+  describeDoubaoMissing,
+  effectiveDoubaoCredentials,
+  type DoubaoConsole,
+  type DoubaoCredentials,
+} from '@/lib/cloudAsrCreds'
+
+/** 凭据归属的平台。同平台的服务用同一种密钥形态。 */
+export type AsrPlatform = 'doubao' | 'qwen' | 'mimo'
+
+export interface AsrPlatformInfo {
+  label: string
+  /** 去哪儿领密钥 */
+  consoleUrl: string
+}
+
+export const ASR_PLATFORMS: Record<AsrPlatform, AsrPlatformInfo> = {
+  doubao: { label: '火山引擎', consoleUrl: 'https://console.volcengine.com/speech/app' },
+  qwen: { label: '阿里云百炼', consoleUrl: 'https://bailian.console.aliyun.com' },
+  mimo: { label: '小米', consoleUrl: 'https://xiaoai.mi.com' },
+}
+
+export interface AsrProviderEntry {
+  /** 存进 cloudAsr.provider 的值，也是 Rust 侧分发用的 key */
+  id: string
+  /** 卡片标题，短 */
+  label: string
+  /** 实际模型名，小字 */
+  model: string
+  platform: AsrPlatform
+  /** 一句定位，说清「什么时候选它」 */
+  blurb: string
+  /** 边说边出字（实时字幕） */
+  streaming?: boolean
+  /** 识别与 AI 整理一步完成，不需要单独配 AI 服务 */
+  omni?: boolean
+  /** 需要百炼「业务空间 ID」才能用 */
+  needsWorkspaceId?: boolean
+}
+
+/**
+ * 内置服务清单。顺序即卡片顺序：把最常用的放前面。
+ *
+ * label 刻意不带模型名后缀（模型名单独一行小字），否则卡片标题会被
+ * 「千问 3.5 Omni Plus（qwen3.5-omni-plus，ASR+AI）」这种括号串撑爆。
+ */
+export const ASR_PROVIDERS: AsrProviderEntry[] = [
+  {
+    id: 'doubao_v2',
+    label: '豆包 ASR',
+    model: 'Doubao-Seed-ASR-2.0',
+    platform: 'doubao',
+    blurb: '准确率高、速度快，日常口述首选。',
+  },
+  {
+    id: 'qwen',
+    label: '千问 ASR',
+    model: 'qwen3-asr-flash',
+    platform: 'qwen',
+    blurb: '多语种表现好，录完一次性出字。',
+  },
+  {
+    id: 'qwen_realtime',
+    label: '千问 ASR 流式',
+    model: 'qwen3-asr-flash-realtime',
+    platform: 'qwen',
+    blurb: '边说边出字，悬浮窗能看到实时字幕。',
+    streaming: true,
+    needsWorkspaceId: true,
+  },
+  {
+    id: 'qwen_omni_35_plus',
+    label: '千问 3.5 Omni Plus',
+    model: 'qwen3.5-omni-plus',
+    platform: 'qwen',
+    blurb: '识别加整理一步完成，不用再配 AI 服务。',
+    omni: true,
+  },
+  {
+    id: 'qwen_omni_35_flash',
+    label: '千问 3.5 Omni Flash',
+    model: 'qwen3.5-omni-flash',
+    platform: 'qwen',
+    blurb: '同上，更快更便宜，质量略低。',
+    omni: true,
+  },
+  {
+    id: 'mimo',
+    label: '小米 MiMo',
+    model: 'mimo-v2.5-asr',
+    platform: 'mimo',
+    blurb: '备选，需要小米的 API Key。',
+  },
+]
+
+export function findAsrProvider(id: string): AsrProviderEntry | undefined {
+  return ASR_PROVIDERS.find((p) => p.id === id)
+}
+
+/** 同一平台下有哪些可选服务 */
+export function providersOfPlatform(platform: AsrPlatform): AsrProviderEntry[] {
+  return ASR_PROVIDERS.filter((p) => p.platform === platform)
+}
+
+// ─────────────────────────── 检测结果 ───────────────────────────
+
+/**
+ * 一次识别测试的结论。
+ *
+ * 存的是结论而不只是耗时：只有耗时的话，界面上能说出「多快」，说不出「行不行」。
+ * 不可用也要留痕，否则用户点完测试、切走再回来，只看到一张和没测过一样的卡。
+ */
+export interface AsrCheck {
+  ok: boolean
+  /** 测试时间戳，用来判断结论是否还新鲜 */
+  at: number
+  /** 转写这段测试音频花了多久（毫秒），只有测通才有 */
+  latencyMs?: number
+  /** 测试音频时长（秒）。延迟要除以它才能横向比较，所以一起存 */
+  audioSec?: number
+  /** 不可用时的原因，一句话 */
+  reason?: string
+}
+
+function isFiniteNumber(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined
+}
+
+function parseCheck(raw: unknown): AsrCheck | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const v = raw as Record<string, unknown>
+  if (typeof v.ok !== 'boolean') return undefined
+  const at = isFiniteNumber(v.at)
+  if (at === undefined) return undefined
+  return {
+    ok: v.ok,
+    at,
+    latencyMs: isFiniteNumber(v.latencyMs),
+    audioSec: isFiniteNumber(v.audioSec),
+    reason: typeof v.reason === 'string' && v.reason ? v.reason : undefined,
+  }
+}
+
+// ─────────────────────────── 服务档案 ───────────────────────────
+
+/**
+ * 一份语音识别服务配置 = 选定的供应商 + 该平台需要的凭据。
+ *
+ * 凭据直接挂在档案上（而不是按平台共享），这样一张卡就是一份自洽的完整配置，
+ * 也才可能同时存两个账号。重复粘密钥的问题由「新建时自动沿用同平台上一份」解决。
+ */
+export interface AsrProfile {
+  id: string
+  /** 供应商 id，必须是 ASR_PROVIDERS 里的一个 */
+  provider: string
+  /** 千问 / 小米：API Key；豆包：当前控制台代次那一份密钥 */
+  apiKey: string
+  /** 豆包旧版控制台的 App ID */
+  appId: string
+  /** 豆包控制台代次 */
+  console: DoubaoConsole
+  /** 豆包另一代的密钥，切换代次时原样保留，不用重新粘 */
+  otherKey: string
+  /** 百炼业务空间 ID（流式识别需要） */
+  workspaceId: string
+  /** Omni 模型的 System Prompt（识别与整理一体，属于这份服务的行为） */
+  omniPrompt: string
+  /** 上次识别测试的结论 */
+  check?: AsrCheck
+}
+
+export function makeAsrProfileId(): string {
+  return `asr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+}
+
+/** 一份空白档案。provider 默认给最推荐的那个。 */
+export function emptyAsrProfile(provider = ASR_PROVIDERS[0].id): AsrProfile {
+  return {
+    id: makeAsrProfileId(),
+    provider,
+    apiKey: '',
+    appId: '',
+    console: 'new',
+    otherKey: '',
+    workspaceId: '',
+    omniPrompt: '',
+  }
+}
+
+function str(v: unknown): string {
+  return typeof v === 'string' ? v : ''
+}
+
+/**
+ * 容错解析存储里的档案列表。
+ *
+ * 存储可能被手改过、也可能是更早版本写的，坏条目一律丢弃而不是让整页崩掉。
+ * provider 不在内置清单里的条目也丢掉 —— 留着只会渲染出一张点不动的卡。
+ */
+export function parseAsrProfiles(raw: unknown): AsrProfile[] {
+  if (!Array.isArray(raw)) return []
+  const out: AsrProfile[] = []
+  const seen = new Set<string>()
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const v = item as Record<string, unknown>
+    const provider = str(v.provider)
+    if (!findAsrProvider(provider)) continue
+    const id = str(v.id) || makeAsrProfileId()
+    if (seen.has(id)) continue
+    seen.add(id)
+    const consoleRaw = str(v.console)
+    out.push({
+      id,
+      provider,
+      apiKey: str(v.apiKey),
+      appId: str(v.appId),
+      console: consoleRaw === 'legacy' ? 'legacy' : 'new',
+      otherKey: str(v.otherKey),
+      workspaceId: str(v.workspaceId),
+      omniPrompt: str(v.omniPrompt),
+      check: parseCheck(v.check),
+    })
+  }
+  return out
+}
+
+/** 启用项归一化：指向不存在的 id 时回落到第一条 */
+export function resolveActiveAsrProfile(
+  profiles: AsrProfile[],
+  activeId: string,
+): AsrProfile | null {
+  return profiles.find((p) => p.id === activeId) ?? profiles[0] ?? null
+}
+
+/**
+ * 档案里的豆包字段 → lib/cloudAsrCreds 的凭据结构。
+ *
+ * 抽出来是因为两处都要用（算生效凭据、判断缺什么）。档案里只存「当前代次那把密钥」
+ * 加「另一代那把」，映射时按代次还原成 consoleKey / accessToken。
+ */
+function toDoubaoCreds(profile: AsrProfile): DoubaoCredentials {
+  return {
+    console: profile.console,
+    consoleKey: profile.console === 'new' ? profile.apiKey : profile.otherKey,
+    accessToken: profile.console === 'new' ? profile.otherKey : profile.apiKey,
+    appId: profile.appId,
+  }
+}
+
+/**
+ * 算出一份档案「本次生效的凭据」。
+ *
+ * 豆包新版控制台下 appId 必须是空串 —— Rust 侧就是靠它区分两代鉴权头，
+ * 这条不变量的说明与测试在 lib/cloudAsrCreds.ts。
+ */
+export function effectiveAsrCredentials(profile: AsrProfile): { apiKey: string; appId: string } {
+  if (findAsrProvider(profile.provider)?.platform === 'doubao') {
+    return effectiveDoubaoCredentials(toDoubaoCreds(profile))
+  }
+  return { apiKey: profile.apiKey.trim(), appId: '' }
+}
+
+/**
+ * 这份档案还缺什么才能用（空串 = 齐了）。文案直接可展示。
+ *
+ * 豆包那套直接委托 describeDoubaoMissing，不再自己抄一遍：抄的那版曾经把
+ * 「还没填 API Key」写成没有空格的「还没填API Key」，而同一句话会和左下角就绪指示
+ * 同屏出现，差一个空格就露馅。同一句用户可见文案只该有一个出处。
+ */
+export function describeAsrMissing(profile: AsrProfile): string {
+  if (findAsrProvider(profile.provider)?.platform === 'doubao') {
+    return describeDoubaoMissing(toDoubaoCreds(profile))
+  }
+  return profile.apiKey.trim() ? '' : '还没填 API Key'
+}
+
+/**
+ * 密钥尾巴，用来区分同一家的多份配置。
+ *
+ * 同供应商的两张卡在界面上只差凭据，不给个区分标记就成了两张一模一样的卡，
+ * 用户不知道哪张是哪个账号。只露最后 4 位：够区分，又不算把密钥显示出来。
+ */
+export function keyFingerprint(profile: AsrProfile): string {
+  const key = effectiveAsrCredentials(profile).apiKey
+  return key.length >= 4 ? `••${key.slice(-4)}` : ''
+}
+
+// ─────────────────────────── 延迟分档 ───────────────────────────
+
+/**
+ * 为什么不直接复用 AI 服务那套 gradeLatency：口径完全不同。
+ *
+ * 那边测的是一次极小的 LLM 往返，1 秒就算慢。这边测的是**把一段音频转写成文字**，
+ * 一段 3 秒的话花 1 秒返回是正常水平。照搬阈值会把所有 ASR 服务标成「太慢」。
+ *
+ * 所以按 RTF（耗时 ÷ 音频时长）分档，界面上仍显示毫秒数（用户看得懂的是这个），
+ * 但结论词来自 RTF —— 这样即使将来换了测试音频，档位也不会跟着漂。
+ */
+export type AsrLatencyTier = 'instant' | 'fast' | 'normal' | 'slow' | 'tooSlow'
+
+export interface AsrLatencyGrade {
+  tier: AsrLatencyTier
+  label: string
+  /** ok = 放心用，warn = 能用但拖，bad = 不建议用于口述 */
+  tone: 'ok' | 'warn' | 'bad'
+}
+
+/** RTF 分界值集中在这里，想调手感只改这一处 */
+const RTF_THRESHOLDS = { instant: 0.15, fast: 0.3, normal: 0.5, slow: 0.8 } as const
+
+export function gradeAsrLatency(latencyMs: number, audioSec: number): AsrLatencyGrade {
+  // 音频时长缺失或不合理时不硬猜档位，只说「已测通」，避免给出一个凭空的结论
+  if (!Number.isFinite(audioSec) || audioSec <= 0) {
+    return { tier: 'normal', label: '已测通', tone: 'ok' }
+  }
+  const rtf = latencyMs / (audioSec * 1000)
+  if (rtf < RTF_THRESHOLDS.instant) return { tier: 'instant', label: '极速', tone: 'ok' }
+  if (rtf < RTF_THRESHOLDS.fast) return { tier: 'fast', label: '很快', tone: 'ok' }
+  if (rtf < RTF_THRESHOLDS.normal) return { tier: 'normal', label: '正常', tone: 'ok' }
+  if (rtf < RTF_THRESHOLDS.slow) return { tier: 'slow', label: '偏慢', tone: 'warn' }
+  return { tier: 'tooSlow', label: '太慢', tone: 'bad' }
+}

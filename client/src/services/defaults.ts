@@ -49,9 +49,20 @@ export const DEFAULTS: Record<string, unknown> = {
 
   // ── ASR（云 API）──
   'cloudAsr.provider': 'doubao_v2', // 可选: 'doubao_v2' | 'qwen' | 'qwen_realtime' | 'qwen_omni' | 'qwen_omni_turbo' | 'mimo'
+  // 运行时读的「本次生效凭据」镜像。豆包按控制台代次算出来后写进这两个键：
+  // 新版控制台只有一个 API Key、appId 必为空串（Rust 侧靠它区分两代鉴权头）。
   'cloudAsr.apiKey': '',
-  'cloudAsr.appId': '', // 豆包需要
+  'cloudAsr.appId': '', // 仅豆包旧版控制台需要
+  // 豆包控制台代次与各自的密钥（两代的密钥不是同一个东西，分开存，切换不丢）
+  'cloudAsr.doubao.console': 'new', // 'new' = 只要 API Key | 'legacy' = App ID + Access Token
+  'cloudAsr.doubao.consoleKey': '', // 新版控制台的 API Key
   'cloudAsr.omniSystemPrompt': '', // 千问 Omni 模式的 system prompt
+  // 服务列表：一张卡 = 一份完整配置（供应商 + 该平台凭据），同一家可存多份
+  'cloudAsr.profiles': [],
+  'cloudAsr.activeProfileId': '',
+  // 已经自动补建过哪些服务。刻意不是「迁移完成」那种布尔标记 —— 记「补过谁」才能
+  // 既在逻辑修好后自愈，又不把用户主动删掉的卡救回来。
+  'cloudAsr.autoCreatedProviders': [],
 
   // ── ASR（本地）──
   // 可选值就是 catalog.rs 里那几个 id：'sensevoice-small-gguf'（默认，最快）

@@ -87,6 +87,8 @@ interface GgufDevice {
 interface GgufDiagnostics {
   devices: GgufDevice[]
   current_backend: string | null
+  /** 正在加载中的模型 id。非 null 时 current_backend 一定是 null。 */
+  loading_model: string | null
   native_version: string
   process_memory_mb: number
 }
@@ -448,12 +450,13 @@ export default function LocalModeSection() {
       setSelectedModelId(modelId)
       await setSetting('localAsr.modelId', modelId)
       void refreshModeStatus() // 同步左下角的引擎指示
-      // provider 缓存着上次的就绪结果，不重连的话刚下载完第一次按快捷键仍会被判未就绪
-      reconnectProvider()
       try {
         const accelerator = await getSetting('localAsr.accelerator', 'auto') as string
         await invoke<string>('preload_local_model', { modelId, accelerator })
       } catch { /* ignore */ }
+      // provider 缓存着上次的就绪结果，不重连的话刚下载完第一次按快捷键仍会被判未就绪。
+      // 同 handleSelectModel：排在预加载之后，避免它的 onConnect 再排一轮加载。
+      reconnectProvider()
     } catch (err) {
       setDownloading((prev) => ({
         ...prev,
@@ -510,13 +513,18 @@ export default function LocalModeSection() {
     setPreloadingModelId(modelId)
     await setSetting('localAsr.modelId', modelId)
     void refreshModeStatus() // 同步左下角的引擎指示
-    // 切到未下载的模型时也要让 provider 重新判定就绪
-    reconnectProvider()
     try {
       const accelerator = await getSetting('localAsr.accelerator', 'auto') as string
       await invoke<string>('preload_local_model', { modelId, accelerator })
-    } catch { /* ignore */ } finally {
+    } catch { /* 未下载 / 加载失败都由就绪判定与识别阶段报出，这里不打断选择 */ } finally {
       setPreloadingModelId('')
+      // reconnectProvider 必须排在预加载**之后**：它的 onConnect 自己也会发一次
+      // preload_local_model，而引擎的加载是全局单锁串行的。放在前面（原来的写法）
+      // 等于一次点击排两轮"卸旧 + 载新"，等待时间可能翻倍。
+      // 放在后面，它只会命中已经加载好的缓存，立刻返回。
+      // 未下载的模型走的是同一条路：预加载报错后仍然要 reconnect 让 provider
+      // 重新判定为未就绪，所以这行放在 finally 里而不是 try 的末尾。
+      reconnectProvider()
     }
   }
 
@@ -735,6 +743,27 @@ export default function LocalModeSection() {
             })}
           </div>
 
+          {/* 加载一个模型要读完整个权重文件再预热一次推理，大模型几十秒也正常。
+              原来这段只让按钮变灰，界面看起来就是卡死了 —— 0.1.4 有用户因此强杀了进程。
+              所以这条必须显眼：配色沿用 Feedback 的 warning/error 写法（5% 底 + 25% 描边
+              + strong 图标色），但**用不停转的图标承担"还在动"的信息** —— 静态色块
+              说不出"没卡住"，转圈能。不用绿色：绿在这套配色里代表"成功/已完成"，
+              加载中打绿灯会让人以为已经好了。
+              role=status + aria-live：这条状态对读屏用户否则完全静默。 */}
+          {preloadingModelId && (
+            <div
+              role="status"
+              aria-live="polite"
+              className="mt-3 flex items-start gap-2 rounded-md border border-info/25 bg-info/5 px-3 py-2.5"
+            >
+              <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-info-strong" aria-hidden />
+              <p className="text-sm leading-relaxed text-foreground">
+                正在加载「{availableModels.find((m) => m.id === preloadingModelId)?.name || preloadingModelId}」…
+                要读完整个模型文件再预热一次，大模型可能要几十秒，这是正常的。
+              </p>
+            </div>
+          )}
+
           {/* 更多模型：小众需求（更多语种 / 中间量化档）折叠收纳 */}
           {moreModels.length > 0 && (
             <button
@@ -791,23 +820,32 @@ export function LocalModeAdvancedSection() {
   const [unloadIdleMinutes, setUnloadIdleMinutes] = useState(0)
   const [devices, setDevices] = useState<GgufDevice[]>([])
   const [currentBackend, setCurrentBackend] = useState<string | null>(null)
+  // 打开本页时可能正好有一次加载在进行（最常见：本地模式启动时的后台预热）。
+  // 那时后端还没绑定，显示"正在加载"比什么都不显示准确。
+  const [loadingModel, setLoadingModel] = useState<string | null>(null)
   const [diagnosticsState, setDiagnosticsState] = useState<'loading' | 'ready' | 'error'>('loading')
   // 切换计算后端会就地重载当前模型（几秒），期间禁掉按钮防连点
   const [rebinding, setRebinding] = useState(false)
+
+  /** 拉一次引擎实况。挂载时与换后端后都要用，别把这几个 setState 抄两份。 */
+  async function refreshDiagnostics() {
+    try {
+      const diag = await invoke<GgufDiagnostics>('gguf_asr_diagnostics')
+      setDevices(diag.devices)
+      setCurrentBackend(diag.current_backend)
+      setLoadingModel(diag.loading_model)
+      setDiagnosticsState('ready')
+    } catch {
+      setDiagnosticsState('error')
+    }
+  }
 
   useEffect(() => {
     void (async () => {
       setAsrLanguage(await getSetting('localAsr.language', 'auto') as string)
       setAccelerator(await getSetting('localAsr.accelerator', 'auto') as string)
       setUnloadIdleMinutes(Number(await getSetting('localAsr.unloadIdleMinutes', 0)) || 0)
-      try {
-        const diag = await invoke<GgufDiagnostics>('gguf_asr_diagnostics')
-        setDevices(diag.devices)
-        setCurrentBackend(diag.current_backend)
-        setDiagnosticsState('ready')
-      } catch {
-        setDiagnosticsState('error')
-      }
+      await refreshDiagnostics()
     })()
   }, [])
 
@@ -829,14 +867,7 @@ export function LocalModeAdvancedSection() {
       const modelId = await getSetting('localAsr.modelId', 'sensevoice-small-gguf') as string
       await invoke<string>('preload_local_model', { modelId, accelerator: value })
     } catch { /* ignore */ } finally {
-      try {
-        const diag = await invoke<GgufDiagnostics>('gguf_asr_diagnostics')
-        setDevices(diag.devices)
-        setCurrentBackend(diag.current_backend)
-        setDiagnosticsState('ready')
-      } catch {
-        setDiagnosticsState('error')
-      }
+      await refreshDiagnostics()
       setRebinding(false)
     }
   }
@@ -899,7 +930,10 @@ export function LocalModeAdvancedSection() {
           />
           {diagnosticsState === 'ready' && hasGpu && (
             <p className="mt-2 text-xs text-muted-foreground">
-              {gpuSummary}{currentBackend ? ` · 当前使用 ${currentBackend.toUpperCase()}` : ''}
+              {gpuSummary}
+              {/* 加载中就说加载中：后端是在模型加载时才绑定的，这期间 currentBackend
+                  一定是空，原来这里会什么都不显示，看着像检测失败。 */}
+              {loadingModel ? ' · 正在加载模型…' : currentBackend ? ` · 当前使用 ${currentBackend.toUpperCase()}` : ''}
             </p>
           )}
           <p className="mt-1.5 text-xs text-muted-foreground">

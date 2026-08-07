@@ -1,6 +1,7 @@
 // 豆包流式语音识别 2.0 — 使用流式输入模式（bigmodel_nostream）
 // 录完后一次性发送 PCM 音频，等最终结果返回
 
+use super::doubao_auth::{self, DoubaoAuth};
 use super::doubao_protocol;
 use super::types::{AsrProviderConfig, AsrResult, TestResult};
 use futures_util::{SinkExt, StreamExt};
@@ -8,7 +9,58 @@ use std::time::Instant;
 use tokio_tungstenite::tungstenite;
 
 const WS_URL: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream";
-const RESOURCE_ID: &str = "volc.seedasr.sauc.duration";
+
+/// 建立 nostream 连接：按「小时版 → 并发版」依次试资源 ID。
+///
+/// 之前这里写死小时版，而双向流式路径早就在两者间兜底了 —— 于是只开通并发版的账号
+/// 出现「实时字幕能用、普通录音识别连不上」这种自相矛盾的现象。两条路径口径统一。
+async fn connect(
+    auth: &DoubaoAuth<'_>,
+    scope: &str,
+) -> Result<(tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, &'static str), String> {
+    let mut last_err = String::from("未知错误");
+    for resource_id in doubao_auth::SAUC_RESOURCE_CANDIDATES {
+        let mut builder = tungstenite::http::Request::builder()
+            .uri(WS_URL)
+            .header("Host", "openspeech.bytedance.com")
+            .header("X-Api-Resource-Id", *resource_id)
+            .header("X-Api-Connect-Id", uuid::Uuid::new_v4().to_string())
+            .header(
+                "Sec-WebSocket-Key",
+                tungstenite::handshake::client::generate_key(),
+            )
+            .header("Sec-WebSocket-Version", "13")
+            .header("Connection", "Upgrade")
+            .header("Upgrade", "websocket");
+        for (name, value) in auth.headers() {
+            builder = builder.header(name, value);
+        }
+        let request = builder
+            .body(())
+            .map_err(|e| format!("构建请求失败: {}", e))?;
+
+        match tokio_tungstenite::connect_async(request).await {
+            Ok((ws, response)) => {
+                doubao_auth::log_ws_logid(
+                    &format!("{} resourceId={} auth={}", scope, resource_id, auth.mode_name()),
+                    &response,
+                );
+                return Ok((ws, resource_id));
+            }
+            Err(e) => {
+                last_err = e.to_string();
+                crate::commands::system::write_log_line(&format!(
+                    "[RUST] [doubao] {} connect FAILED resourceId={} auth={} err={}",
+                    scope,
+                    resource_id,
+                    auth.mode_name(),
+                    last_err
+                ));
+            }
+        }
+    }
+    Err(format!("WebSocket 连接失败: {}", last_err))
+}
 
 pub async fn transcribe(
     audio_pcm_b64: &str,
@@ -26,30 +78,15 @@ pub async fn transcribe(
         return Ok(AsrResult { text: String::new(), elapsed_ms: 0 });
     }
 
-    let app_id = if config.app_id.is_empty() { &config.api_key } else { &config.app_id };
-    let connect_id = uuid::Uuid::new_v4().to_string();
-
-    // 构建 WebSocket 请求
-    let request = tungstenite::http::Request::builder()
-        .uri(WS_URL)
-        .header("Host", "openspeech.bytedance.com")
-        .header("X-Api-App-Key", app_id)
-        .header("X-Api-Access-Key", &config.api_key)
-        .header("X-Api-Resource-Id", RESOURCE_ID)
-        .header("X-Api-Connect-Id", &connect_id)
-        .header("Sec-WebSocket-Key", tungstenite::handshake::client::generate_key())
-        .header("Sec-WebSocket-Version", "13")
-        .header("Connection", "Upgrade")
-        .header("Upgrade", "websocket")
-        .body(())
-        .map_err(|e| format!("构建请求失败: {}", e))?;
+    let auth = DoubaoAuth::from_config(config);
+    if let Some(missing) = auth.missing_field() {
+        return Err(format!("豆包 ASR 缺少{}，请在设置里填好", missing));
+    }
+    let uid = auth.uid().to_string();
 
     let start = Instant::now();
 
-    // 连接 WebSocket
-    let (mut ws, _response) = tokio_tungstenite::connect_async(request)
-        .await
-        .map_err(|e| format!("WebSocket 连接失败: {}", e))?;
+    let (mut ws, _resource_id) = connect(&auth, "nostream").await?;
 
     // 1. 发送 full client request
     let mut request_params = serde_json::json!({
@@ -65,7 +102,7 @@ pub async fn transcribe(
     }
 
     let client_request = serde_json::json!({
-        "user": { "uid": app_id },
+        "user": { "uid": uid },
         "audio": {
             "format": "pcm",
             "rate": sample_rate,
@@ -142,40 +179,35 @@ pub async fn transcribe(
 }
 
 pub async fn test_connection(config: &AsrProviderConfig) -> TestResult {
-    let app_id = if config.app_id.is_empty() { &config.api_key } else { &config.app_id };
-
-    let request = tungstenite::http::Request::builder()
-        .uri(WS_URL)
-        .header("Host", "openspeech.bytedance.com")
-        .header("X-Api-App-Key", app_id)
-        .header("X-Api-Access-Key", &config.api_key)
-        .header("X-Api-Resource-Id", RESOURCE_ID)
-        .header("X-Api-Connect-Id", uuid::Uuid::new_v4().to_string())
-        .header("Sec-WebSocket-Key", tungstenite::handshake::client::generate_key())
-        .header("Sec-WebSocket-Version", "13")
-        .header("Connection", "Upgrade")
-        .header("Upgrade", "websocket")
-        .body(())
-        .unwrap();
+    let auth = DoubaoAuth::from_config(config);
+    if let Some(missing) = auth.missing_field() {
+        return TestResult {
+            ok: false,
+            message: format!("还没填{}", missing),
+            elapsed_ms: 0,
+            detail: String::new(),
+        };
+    }
 
     let start = Instant::now();
 
-    match tokio_tungstenite::connect_async(request).await {
-        Ok((mut ws, _)) => {
+    match connect(&auth, "nostream test").await {
+        Ok((mut ws, resource_id)) => {
             let _ = ws.close(None).await;
             let elapsed_ms = start.elapsed().as_millis() as u64;
             TestResult {
                 ok: true,
                 message: format!("连接成功 ({}ms)", elapsed_ms),
                 elapsed_ms,
-                detail: String::new(),
+                // 资源 ID 决定计费方式（小时版/并发版），测通了顺手告诉用户命中的是哪个
+                detail: format!("资源: {}", resource_id),
             }
         }
         Err(e) => {
             let elapsed_ms = start.elapsed().as_millis() as u64;
             TestResult {
                 ok: false,
-                message: format!("连接失败: {}", e),
+                message: e,
                 elapsed_ms,
                 detail: String::new(),
             }

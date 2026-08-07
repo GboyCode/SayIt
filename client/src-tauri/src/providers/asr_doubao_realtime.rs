@@ -7,6 +7,7 @@
 //    后台 reader 持续读取并通过 `asr-partial` 事件上抛给前端做悬浮窗实时上屏。
 //    识别完成后，finish 返回累计的最终文本，仍会照常交给 AI 处理。
 
+use super::doubao_auth::{self, DoubaoAuth};
 use super::doubao_protocol;
 use super::types::AsrProviderConfig;
 use futures_util::stream::{SplitSink, SplitStream};
@@ -62,7 +63,7 @@ static RT_STATE: once_cell::sync::Lazy<Arc<Mutex<RtState>>> =
 static RT_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 fn build_client_request_json(
-    app_id: &str,
+    uid: &str,
     sample_rate: u32,
     hotwords: &Option<Vec<String>>,
 ) -> String {
@@ -82,7 +83,7 @@ fn build_client_request_json(
     }
 
     let client_request = serde_json::json!({
-        "user": { "uid": app_id },
+        "user": { "uid": uid },
         "audio": {
             "format": "pcm",
             "rate": sample_rate,
@@ -96,15 +97,12 @@ fn build_client_request_json(
 
 fn build_handshake_request(
     url: &str,
-    app_id: &str,
-    access_key: &str,
+    auth: &DoubaoAuth<'_>,
     resource_id: &str,
 ) -> Result<tungstenite::http::Request<()>, String> {
-    tungstenite::http::Request::builder()
+    let mut builder = tungstenite::http::Request::builder()
         .uri(url)
         .header("Host", "openspeech.bytedance.com")
-        .header("X-Api-App-Key", app_id)
-        .header("X-Api-Access-Key", access_key)
         .header("X-Api-Resource-Id", resource_id)
         // 双向流式端点(bigmodel)要求带 X-Api-Request-Id，否则网关直接 400（nostream 不带也能过）
         .header("X-Api-Request-Id", uuid::Uuid::new_v4().to_string())
@@ -115,7 +113,12 @@ fn build_handshake_request(
         )
         .header("Sec-WebSocket-Version", "13")
         .header("Connection", "Upgrade")
-        .header("Upgrade", "websocket")
+        .header("Upgrade", "websocket");
+    // 鉴权头按控制台代次不同：新版只有 X-Api-Key，旧版是 App Key + Access Key
+    for (name, value) in auth.headers() {
+        builder = builder.header(name, value);
+    }
+    builder
         .body(())
         .map_err(|e| format!("构建请求失败: {}", e))
 }
@@ -160,14 +163,14 @@ pub async fn doubao_stream_open(
         }
     }
 
-    let app_id = if config.app_id.is_empty() {
-        &config.api_key
-    } else {
-        &config.app_id
-    };
+    let auth = DoubaoAuth::from_config(&config);
+    if let Some(missing) = auth.missing_field() {
+        return Err(format!("豆包 ASR 缺少{}，请在设置里填好", missing));
+    }
+    let uid = auth.uid().to_string();
 
     // 实时：按顺序尝试多个「端点 × 资源」组合，优先推荐的 async 端点 + 用户手里的 duration 资源。
-    // 非实时：沿用一直可用的 nostream + duration。
+    // 非实时：沿用一直可用的 nostream，同样在小时版/并发版之间兜底。
     let candidates: &[(&str, &str)] = if realtime {
         &[
             (WS_URL_STREAM_ASYNC, RESOURCE_ID_DURATION),
@@ -176,20 +179,29 @@ pub async fn doubao_stream_open(
             (WS_URL_STREAM, RESOURCE_ID_CONCURRENT),
         ]
     } else {
-        &[(WS_URL_NOSTREAM, RESOURCE_ID_DURATION)]
+        &[
+            (WS_URL_NOSTREAM, RESOURCE_ID_DURATION),
+            (WS_URL_NOSTREAM, RESOURCE_ID_CONCURRENT),
+        ]
     };
 
     let mut connected: Option<WsStream> = None;
     let mut chosen_url = WS_URL_NOSTREAM;
     let mut last_err = String::from("未知错误");
     for (url, resource_id) in candidates {
-        let request = build_handshake_request(url, app_id, &config.api_key, resource_id)?;
+        let request = build_handshake_request(url, &auth, resource_id)?;
         match tokio_tungstenite::connect_async(request).await {
-            Ok((sock, _)) => {
-                crate::commands::system::write_log_line(&format!(
-                    "[RUST] [doubao_stream] connected realtime={} url={} resourceId={}",
-                    realtime, url, resource_id
-                ));
+            Ok((sock, response)) => {
+                doubao_auth::log_ws_logid(
+                    &format!(
+                        "stream realtime={} url={} resourceId={} auth={}",
+                        realtime,
+                        url,
+                        resource_id,
+                        auth.mode_name()
+                    ),
+                    &response,
+                );
                 connected = Some(sock);
                 chosen_url = url;
                 break;
@@ -206,7 +218,7 @@ pub async fn doubao_stream_open(
     let mut ws = connected.ok_or_else(|| format!("WebSocket 连接失败: {}", last_err))?;
 
     // 发送 full client request
-    let client_request = build_client_request_json(app_id, sample_rate, &hotwords);
+    let client_request = build_client_request_json(&uid, sample_rate, &hotwords);
     let frame = doubao_protocol::build_full_client_request(&client_request);
     ws.send(tungstenite::Message::Binary(frame.into()))
         .await

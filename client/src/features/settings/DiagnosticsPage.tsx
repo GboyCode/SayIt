@@ -29,6 +29,8 @@ interface GgufDevice {
 interface GgufDiagnostics {
   devices: GgufDevice[]
   current_backend: string | null
+  /** 正在加载中的模型 id。非 null 时 current_backend 一定是 null。 */
+  loading_model: string | null
   native_version: string
   process_memory_mb: number
 }
@@ -156,7 +158,9 @@ export default function DiagnosticsPage() {
         items.push({
           label: '本地引擎',
           status: 'ok',
-          detail: `${d.current_backend ?? '模型未加载（空闲已卸载或尚未使用）'} · 进程内存 ${d.process_memory_mb} MB · transcribe.cpp ${d.native_version}`,
+          detail: `${d.loading_model
+            ? `正在加载 ${d.loading_model}…`
+            : d.current_backend ?? '模型未加载（空闲已卸载或尚未使用）'} · 进程内存 ${d.process_memory_mb} MB · transcribe.cpp ${d.native_version}`,
         })
         items.push({
           label: '计算设备',
