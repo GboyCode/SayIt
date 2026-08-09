@@ -50,20 +50,38 @@ pub async fn local_transcribe(
     language: Option<String>,
     accelerator: Option<String>,
 ) -> Result<LocalAsrResult, String> {
-    let samples = decode_pcm(&audio_b64)?;
+    let samples = decode_pcm(&audio_b64).map_err(|e| {
+        crate::providers::diag::fail("local/asr", "decode_pcm", e)
+    })?;
     if samples.is_empty() {
+        crate::providers::diag::empty_result("local/asr", "客户端送来的音频是空的，没有跑模型");
         return Ok(LocalAsrResult { text: String::new(), elapsed_ms: 0 });
     }
 
     let accel = accelerator.unwrap_or_else(|| "auto".to_string());
     tokio::task::spawn_blocking(move || {
+        use crate::providers::diag;
         let lang = language.as_deref().unwrap_or("auto");
         let start = Instant::now();
+        let audio_sec = samples.len() as f64 / SR as f64;
+        diag::log(
+            "local/asr",
+            "start",
+            &format!(
+                "model={} accel={} lang={} audio_sec={:.1}",
+                model_id, accel, lang, audio_sec
+            ),
+        );
         // 先砍掉首尾静音：解码耗时基本与音频长度成正比，两头的空白是纯浪费
         let trimmed = match super::local_vad::detect_speech_span(&samples, SR) {
             Ok(Some(span)) => &samples[span],
             Ok(None) => {
-                log::info!("Silero VAD 未检测到人声，跳过本地 ASR");
+                // 这是「真的没人说话」，与识别失败要分得清 —— 前端两种都显示
+                // 「未检测到有效声音」，只有日志能区分
+                diag::empty_result(
+                    "local/asr",
+                    &format!("VAD 未检测到人声，没跑模型 audio_sec={:.1}", audio_sec),
+                );
                 return Ok(LocalAsrResult {
                     text: String::new(),
                     elapsed_ms: start.elapsed().as_millis() as u64,
@@ -72,18 +90,34 @@ pub async fn local_transcribe(
             Err(e) => {
                 // 防幻觉是硬约束：无法可靠判断是否有人声时，绝不能回退到会把静音
                 // 送进生成式模型的旧路径。保留错误便于诊断 VAD/本机环境问题。
-                log::error!("Silero VAD 失败，已取消本次本地 ASR: {e}");
-                return Err(format!("语音检测失败，已取消本次识别: {e}"));
+                return Err(diag::fail(
+                    "local/asr",
+                    "vad",
+                    format!("语音检测失败，已取消本次识别: {e}"),
+                ));
             }
         };
-        let text = gguf_asr::transcribe(&model_id, lang, &accel, trimmed, SR)?;
-        Ok(LocalAsrResult {
-            text,
-            elapsed_ms: start.elapsed().as_millis() as u64,
-        })
+        let text = gguf_asr::transcribe(&model_id, lang, &accel, trimmed, SR)
+            .map_err(|e| diag::fail("local/asr", "transcribe", e))?;
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        if text.trim().is_empty() {
+            // VAD 认定有人声、模型却什么都没输出 —— 模型/量化档/加速器组合有问题的信号
+            diag::empty_result(
+                "local/asr",
+                &format!(
+                    "VAD 判定有人声但模型没有输出 model={} accel={} audio_sec={:.1} elapsed={}ms",
+                    model_id, accel, audio_sec, elapsed_ms
+                ),
+            );
+        } else {
+            diag::ok("local/asr", elapsed_ms, text.chars().count());
+        }
+        Ok(LocalAsrResult { text, elapsed_ms })
     })
     .await
-    .map_err(|e| format!("推理异常: {}", e))?
+    .map_err(|e| {
+        crate::providers::diag::fail("local/asr", "join", format!("推理异常: {}", e))
+    })?
 }
 
 #[tauri::command]

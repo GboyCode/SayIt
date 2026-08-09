@@ -826,6 +826,9 @@ export class RecorderOrchestrator {
                 asrDurationSec: result.durationSec > 0 ? result.durationSec : undefined,
                 charCount: 0,
                 isEmpty: true,
+                // 调用本身成功，只是没出字。这一句和上面的报错要能区分开：
+                // 前者多半真没说话，后者是调用失败
+                failReason: '语音识别没有返回文本',
                 audioFilePath: historyArtifact.audioFilePath,
                 ...historyMeta,
               })
@@ -843,7 +846,14 @@ export class RecorderOrchestrator {
           }
 
           if (!this.isRunCurrent(runId)) return
-          this.overlayService.showNoSpeech()
+          this.overlayService.showNoSpeech({
+            reason: 'asr_empty',
+            mode: this.provider.mode,
+            audioSec: Number(audioDur.toFixed(1)),
+            asrMs: result.asrMs || 0,
+            audioChunks: audioChunks.length,
+            runId,
+          })
           this.finishRun(runId)
           this.resetToIdle({ keepOverlay: true })
         })()
@@ -980,6 +990,9 @@ export class RecorderOrchestrator {
                   audioDurationSec: audioDur > 0 ? audioDur : undefined,
                   charCount: 0,
                   isEmpty: true,
+                  // 供应商/后端给的原话（额度、资源未开通、连接被断都在这里），
+                  // 以前只进日志，用户看到的仍是「无有效声音」
+                  failReason: msg,
                   audioFilePath: historyArtifact.audioFilePath,
                   ...historyMeta,
                 })
@@ -1959,7 +1972,14 @@ export class RecorderOrchestrator {
       if (baseText && baseText.trim()) {
         this.showFallbackAndReset(baseText, 'text_transform_failed', runId)
       } else {
-        if (this.state === 'processing') this.overlayService.showNoSpeech()
+        if (this.state === 'processing') {
+          this.overlayService.showNoSpeech({
+            reason: 'text_transform_failed',
+            mode: this.provider.mode,
+            error: String(error),
+            runId,
+          })
+        }
         this.finishRun(runId)
         if (this.state === 'processing') this.resetToIdle({ keepOverlay: true })
       }
@@ -2025,6 +2045,13 @@ export class RecorderOrchestrator {
           asrDurationSec: result.durationSec > 0 ? result.durationSec : undefined,
           charCount: hasText ? textToPaste.length : 0,
           isEmpty: !hasText,
+          // 区分「ASR 本来就没出字」和「ASR 出了字但后处理把它清空了」——
+          // 后者是我们自己的问题（替换规则/格式化），别让用户以为是没识别到
+          failReason: hasText
+            ? undefined
+            : result.asrText?.trim()
+              ? '识别到文本，但经过文本处理后为空（请检查文本替换规则）'
+              : '语音识别没有返回文本',
           audioFilePath: historyArtifact.audioFilePath,
           ...this.buildHistoryMetadata(promptResolution, appContext),
           ...providerMeta,
@@ -2048,7 +2075,18 @@ export class RecorderOrchestrator {
 
     if (!hasText) {
       if (this.state === 'processing') {
-        this.overlayService.showNoSpeech()
+        // asrLen / llmLen 只记长度不记内容：能区分「ASR 就没出字」和
+        // 「ASR 有字但后处理把它清空了」，这两种成因完全不同
+        this.overlayService.showNoSpeech({
+          reason: 'final_empty',
+          mode: this.provider.mode,
+          audioSec: Number(audioDur.toFixed(1)),
+          asrMs: result.asrMs,
+          llmMs: result.llmMs,
+          asrLen: result.asrText?.length ?? 0,
+          llmLen: result.llmText?.length ?? 0,
+          runId,
+        })
       }
       this.finishRun(runId)
       if (this.state === 'processing') {

@@ -93,6 +93,50 @@ impl<'a> DoubaoAuth<'a> {
     }
 }
 
+/// 把火山的状态码翻成用户能照着做事的一句话。
+///
+/// 这些码会经历史记录的「原因」展示给用户看 —— 只给一串数字等于没说。
+///
+/// **只写有实据的**：`20000003` 有本仓库既有代码为证（test_connection 一直把它当静音音频
+/// 放行），`45000030` 是拿真实凭据打线上接口实测到的（`requested resource not granted`）。
+/// 其余按前缀分族给一个方向性说明，不猜具体含义 —— 猜错了比不写更坏，会把用户引到
+/// 错误的地方去排查。
+pub fn explain_status_code(code: &str) -> Option<&'static str> {
+    match code {
+        "20000003" => Some("音频被判定为静音，没有检测到语音"),
+        "45000030" => Some("这个账号没有开通所用的资源，或额度已用完，请到火山引擎控制台确认"),
+        _ => {
+            if code.starts_with("45") {
+                Some("请求被拒绝（参数、音频格式或额度问题），请到火山引擎控制台确认")
+            } else if code.starts_with("55") {
+                Some("火山服务端处理失败，可稍后重试")
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// 从服务端返回的 JSON 里取出状态码并翻成人话，拼成可直接展示的后缀。
+/// 拿不到码就返回空串，调用方直接拼接即可。
+pub fn explain_payload(payload: &str) -> String {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(payload) else {
+        return String::new();
+    };
+    // code 可能是数字也可能是字符串，两种都取
+    let code = json
+        .get("code")
+        .map(|v| match v {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        })
+        .unwrap_or_default();
+    match explain_status_code(&code) {
+        Some(text) => format!("（{}）", text),
+        None => String::new(),
+    }
+}
+
 /// 从 WebSocket 握手响应里取 X-Tt-Logid 并写日志。
 ///
 /// 火山文档明确「强烈建议记录 logid 作为排错线索」：这是服务端给的唯一追踪 ID，
@@ -183,6 +227,43 @@ mod tests {
         );
         assert_eq!(DoubaoAuth::from_config(&cfg("k", "")).missing_field(), None);
         assert_eq!(DoubaoAuth::from_config(&cfg("k", "123")).missing_field(), None);
+    }
+
+    /// 有实据的两个码要给出具体说明。
+    #[test]
+    fn explains_the_codes_we_have_evidence_for() {
+        assert!(explain_status_code("20000003").unwrap().contains("静音"));
+        assert!(explain_status_code("45000030").unwrap().contains("额度"));
+    }
+
+    /// 没实据的码按前缀给方向，不编造具体含义。
+    #[test]
+    fn falls_back_to_code_family() {
+        assert!(explain_status_code("45000001").unwrap().contains("请求被拒绝"));
+        assert!(explain_status_code("55000031").unwrap().contains("服务端"));
+    }
+
+    /// 成功码和无法识别的码不该产生任何提示。
+    #[test]
+    fn no_hint_for_success_or_unknown() {
+        assert_eq!(explain_status_code("20000000"), None);
+        assert_eq!(explain_status_code(""), None);
+        assert_eq!(explain_status_code("abc"), None);
+    }
+
+    /// 返回体里的 code 可能是数字也可能是字符串，两种都要认。
+    #[test]
+    fn explains_payload_with_either_code_type() {
+        assert!(explain_payload(r#"{"code":45000030}"#).contains("额度"));
+        assert!(explain_payload(r#"{"code":"45000030"}"#).contains("额度"));
+    }
+
+    /// 拿不到码就返回空串，调用方直接拼接不会多出括号。
+    #[test]
+    fn explains_payload_returns_empty_when_no_code() {
+        assert_eq!(explain_payload("not json"), "");
+        assert_eq!(explain_payload(r#"{"message":"x"}"#), "");
+        assert_eq!(explain_payload(r#"{"code":20000000}"#), "");
     }
 
     /// 前后空白是粘贴时常见的脏数据，判定与发送都应按 trim 后的值。

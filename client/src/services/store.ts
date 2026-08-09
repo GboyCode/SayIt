@@ -24,6 +24,16 @@ export interface HistoryRecord {
   charCount: number
   favorite?: boolean
   isEmpty?: boolean  // true if no valid audio/text
+  /**
+   * 这条为什么没出文本（仅 isEmpty 记录有）。
+   *
+   * 「无有效声音」这个结果有很多种成因：用户真的没说话、供应商额度耗尽、资源未开通、
+   * 服务端提前断连、文本后处理失败。以前这些一律显示成同一句话，用户和我们都只能猜。
+   * 这里存的是可以直接给用户看的一句话，展开详情时显示。
+   *
+   * 老记录没有这个字段，渲染处必须容错。
+   */
+  failReason?: string
   audioFilePath?: string
   appId?: string
   appName?: string

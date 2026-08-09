@@ -275,6 +275,10 @@ export default function AIProviderSection() {
   const [pendingDeleteId, setPendingDeleteId] = useState('')
   const [notice, setNotice] = useState<Notice | null>(null)
   const [workMode, setWorkMode] = useState(getWorkMode)
+  /** 「测试全部」的进度；null = 没在批量测试 */
+  const [batch, setBatch] = useState<{ done: number; total: number } | null>(null)
+  /** 批量测试是并发的，所以「正在测哪个」是一组而不是一个 */
+  const [checkingIds, setCheckingIds] = useState<string[]>([])
 
   // 服务器模式下本页配置不参与实际请求。曾经整页禁用过，但那样太粗暴：想提前配好、
   // 或者只是想测一下自己的 key 通不通的人被一起挡住了。现在只提醒、不阻止 ——
@@ -293,7 +297,9 @@ export default function AIProviderSection() {
     && draftIsNew
     && draft.apiKey.trim() !== ''
     && lastProfileOf(draft.provider)?.apiKey === draft.apiKey
-  const busy = saving || checkingId !== ''
+  const busy = saving || checkingId !== '' || batch !== null
+  /** 这个卡正在测吗 —— 单个测试和并发批量测试都要算上 */
+  const isChecking = (id: string) => checkingId === id || checkingIds.includes(id)
   const pendingDelete = profiles.find((p) => p.id === pendingDeleteId) ?? null
 
   useEffect(() => {
@@ -640,6 +646,83 @@ export default function AIProviderSection() {
   }
 
   /**
+   * 一键测试全部：**并发**真发一句话过去，一次点击直接开始（没有二次确认）。
+   *
+   * ⚠️ 并发的代价，改回串行前先想清楚：卡上的耗时是用来横向比较「哪个更快」的，
+   * 并发跑出来的数字互相污染 —— 同一个地址和密钥下挂着好几个模型时尤其明显，
+   * 还可能撞上限流被记成「不可用」。所以批量结果里会注明这批耗时不宜横向比较；
+   * 要拿准数字，用卡上的单张测试。
+   *
+   * 另外两个决定：
+   *  · **一次性落盘**，不逐张写。并发下每个回调拿到的都是同一份旧 profiles，
+   *    逐张 persist 会互相覆盖，只剩最后一个的结论。
+   *  · **跳过没填完的**，不给它们写「不可用」——它们缺的是配置而不是可用性，
+   *    写进结论只会污染卡片状态；跳过几个会在结果里说明。
+   */
+  async function handleCheckAll() {
+    if (busy) return
+    const targets = profiles.filter(isProfileComplete)
+    const skipped = profiles.length - targets.length
+    if (targets.length === 0) {
+      setNotice({
+        tone: 'warning',
+        scope: 'list',
+        message: '没有填完的服务可测。先把地址、密钥、模型补齐，再来一键测试。',
+      })
+      return
+    }
+
+    setNotice(null)
+    setBatch({ done: 0, total: targets.length })
+    setCheckingIds(targets.map((p) => p.id))
+
+    let done = 0
+    const results = await Promise.all(targets.map(async (target) => {
+      const outcome = await runTest(target)
+      // 每个自己测完就把图标停下、进度加一，不用等整批结束
+      done += 1
+      setBatch({ done, total: targets.length })
+      setCheckingIds((prev) => prev.filter((id) => id !== target.id))
+      return { target, outcome }
+    }))
+
+    const checks = new Map(results.map((r) => [r.target.id, outcomeToCheck(r.outcome)]))
+    await persist(
+      profiles.map((p) => {
+        const check = checks.get(p.id)
+        return check ? { ...p, check } : p
+      }),
+      activeId,
+    )
+    setCheckingIds([])
+    setBatch(null)
+
+    let okCount = 0
+    let failCount = 0
+    const lines = results.map(({ target, outcome }) => {
+      if (outcome.ok) {
+        okCount += 1
+        return `${target.model}：可用 · ${formatLatency(outcome.elapsedMs)}`
+      }
+      failCount += 1
+      return `${target.model}：不可用 —— ${outcome.message}`
+    })
+
+    const parts = [`${okCount} 个可用`]
+    if (failCount > 0) parts.push(`${failCount} 个不可用`)
+    if (skipped > 0) parts.push(`${skipped} 个没填完（已跳过）`)
+    if (targets.length > 1) {
+      lines.push('', '这批是并发测的，耗时互相有影响，不宜横向比较；要准确数字请单个测试。')
+    }
+    setNotice({
+      tone: failCount > 0 ? 'warning' : 'success',
+      scope: 'list',
+      message: `测试完成：${parts.join('，')}。`,
+      detail: lines.join('\n'),
+    })
+  }
+
+  /**
    * 一张卡就两行，约 70px：
    *   第一行  ✓ 模型名 ……… 状态标签（可用 1.2s / 不可用 / 未测试）
    *   第二行  供应商 · 主机名 ……… 测试 / 编辑 / 删除（划过才显形）
@@ -651,7 +734,7 @@ export default function AIProviderSection() {
    */
   function renderCard(profile: AiProfile) {
     const isActive = profile.id === activeId
-    const checking = checkingId === profile.id
+    const checking = isChecking(profile.id)
     const status = describeStatus(profile, checking)
 
     return (
@@ -768,17 +851,31 @@ export default function AIProviderSection() {
               点一张即启用，它的地址、密钥、模型会一起生效。
             </p>
           </div>
-          {/* 「新建」回到卡头右上角（和「润色模式」页同一个位置）。
-              它开的是弹窗，所以不会再出现"点了按钮、变化发生在屏幕外"的问题 */}
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-8 shrink-0"
-            onClick={() => openEditor(makeDraft(), true)}
-          >
-            <Plus className="mr-1 h-3.5 w-3.5" aria-hidden />
-            新建
-          </Button>
+          <div className="flex shrink-0 items-center gap-2">
+            {/* 并发跑，所以没有「停止」：invoke 发出去的请求没法撤回，
+                摆一颗停不掉任何东西的按钮比没有更糟。整批只等最慢那个，很快。 */}
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 shrink-0"
+              onClick={() => void handleCheckAll()}
+              disabled={busy || profiles.length === 0}
+            >
+              <RefreshCw className={cn('mr-1 h-3.5 w-3.5', batch && 'animate-spin')} aria-hidden />
+              {batch ? `测试中（${batch.done}/${batch.total}）` : '测试全部'}
+            </Button>
+            {/* 「新建」回到卡头右上角（和「润色模式」页同一个位置）。
+                它开的是弹窗，所以不会再出现"点了按钮、变化发生在屏幕外"的问题 */}
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 shrink-0"
+              onClick={() => openEditor(makeDraft(), true)}
+            >
+              <Plus className="mr-1 h-3.5 w-3.5" aria-hidden />
+              新建
+            </Button>
+          </div>
         </div>
 
         {/* fieldset 只当分组容器留着。服务器模式下不再禁用它：能照常新增、切换、测试，

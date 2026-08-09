@@ -3,10 +3,12 @@
 // 与千问的差异：鉴权头是 `api-key`（非 Bearer）、无 app_id、body 为 OpenAI chat 结构、
 // 响应为 choices[0].message.content（纯字符串）。
 
+use super::diag;
 use super::types::{AsrProviderConfig, AsrResult, TestResult};
 use std::time::Instant;
 
 const API_URL: &str = "https://api.xiaomimimo.com/v1/chat/completions";
+const SCOPE: &str = "mimo/asr";
 
 /// 将 16kHz 单声道 16-bit PCM 封装为 WAV 容器（MiMo 只接受 wav/mp3，不接受裸 PCM）。
 fn pcm_to_wav(pcm: &[u8], sr: u32) -> Vec<u8> {
@@ -88,9 +90,10 @@ pub async fn transcribe(
         &base64::engine::general_purpose::STANDARD,
         audio_pcm_b64,
     )
-    .map_err(|e| format!("base64 解码失败: {}", e))?;
+    .map_err(|e| diag::fail(SCOPE, "decode_b64", format!("base64 解码失败: {}", e)))?;
 
     if pcm.is_empty() {
+        diag::empty_result(SCOPE, "客户端送来的音频是空的，没有发起请求");
         return Ok(AsrResult { text: String::new(), elapsed_ms: 0 });
     }
 
@@ -99,6 +102,19 @@ pub async fn transcribe(
     let data_url = format!("data:audio/wav;base64,{}", wav_b64);
     let language = resolve_language(config);
     let body = build_body(&data_url, &language);
+
+    let audio_sec = pcm.len() as f64 / (sample_rate.max(1) as f64 * 2.0);
+    diag::log(
+        SCOPE,
+        "start",
+        &format!(
+            "pcm_bytes={} audio_sec={:.1} rate={} language={}",
+            pcm.len(),
+            audio_sec,
+            sample_rate,
+            language
+        ),
+    );
 
     let client = reqwest::Client::new();
     let start = Instant::now();
@@ -111,22 +127,61 @@ pub async fn transcribe(
         .timeout(std::time::Duration::from_secs(60))
         .send()
         .await
-        .map_err(|e| format!("请求失败: {}", e))?;
+        .map_err(|e| diag::fail(SCOPE, "http_send", format!("请求失败: {}", e)))?;
 
     let elapsed_ms = start.elapsed().as_millis() as u64;
+    let http_summary = diag::http_summary(resp.status(), resp.headers());
 
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        return Err(format!("MiMo ASR 错误 {}: {}", status, &body[..body.len().min(300)]));
+        return Err(diag::fail(
+            SCOPE,
+            "http_status",
+            // 原来是 `&body[..body.len().min(300)]`，中文报错体会切在汉字中间 panic
+            format!(
+                "MiMo ASR 错误 {} [{}]: {}",
+                status,
+                http_summary,
+                diag::truncate(&body, 300)
+            ),
+        ));
     }
 
-    let data: serde_json::Value = resp
-        .json()
+    let body_text = resp
+        .text()
         .await
-        .map_err(|e| format!("解析响应失败: {}", e))?;
+        .map_err(|e| diag::fail(SCOPE, "read_body", format!("读取响应失败: {}", e)))?;
+    let data: serde_json::Value = serde_json::from_str(&body_text).map_err(|e| {
+        diag::fail(
+            SCOPE,
+            "parse_json",
+            format!(
+                "解析响应失败: {} [{}] 响应片段: {}",
+                e,
+                http_summary,
+                diag::truncate(&body_text, 200)
+            ),
+        )
+    })?;
 
-    Ok(AsrResult { text: extract_text(&data), elapsed_ms })
+    let text = extract_text(&data);
+    if text.is_empty() {
+        diag::empty_result(
+            SCOPE,
+            &format!(
+                "文本为空 audio_sec={:.1} elapsed={}ms [{}] {}",
+                audio_sec,
+                elapsed_ms,
+                http_summary,
+                diag::describe_json(&body_text)
+            ),
+        );
+    } else {
+        diag::ok(SCOPE, elapsed_ms, text.chars().count());
+    }
+
+    Ok(AsrResult { text, elapsed_ms })
 }
 
 pub async fn test_connection(config: &AsrProviderConfig) -> TestResult {
@@ -159,17 +214,27 @@ pub async fn test_connection(config: &AsrProviderConfig) -> TestResult {
         },
         Ok(resp) => {
             let status = resp.status();
+            let summary = diag::http_summary(status, resp.headers());
             let body = resp.text().await.unwrap_or_default();
             TestResult {
                 ok: false,
-                message: format!("API 错误 {}: {}", status, &body[..body.len().min(100)]),
+                message: diag::fail(
+                    "mimo/asr-test",
+                    "http_status",
+                    format!(
+                        "API 错误 {} [{}]: {}",
+                        status,
+                        summary,
+                        diag::truncate(&body, 100)
+                    ),
+                ),
                 elapsed_ms,
                 detail: String::new(),
             }
         }
         Err(e) => TestResult {
             ok: false,
-            message: format!("连接失败: {}", e),
+            message: diag::fail("mimo/asr-test", "http_send", format!("连接失败: {}", e)),
             elapsed_ms,
             detail: String::new(),
         },

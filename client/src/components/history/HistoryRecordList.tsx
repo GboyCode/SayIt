@@ -1,5 +1,5 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Trash2, VolumeX, Star, Play, Pause, RotateCcw, Loader2, Download, Check, Copy, X, FolderOpen, Pencil } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Trash2, VolumeX, Star, Play, Pause, RotateCcw, Loader2, Download, Check, Copy, X, FolderOpen, Pencil, ChevronDown, ChevronUp } from 'lucide-react'
 import { Tooltip } from '@/components/ui/tooltip'
 import { Card, CardContent } from '@/components/ui/card'
 import { type HistoryRecord } from '@/services/store'
@@ -91,11 +91,6 @@ function highlightText(text: string, keyword: string) {
   return parts
 }
 
-/** 悬停多久才展开：路过不触发，避免列表在指针底下抽动 */
-const HOVER_OPEN_MS = 160
-/** 离开多久才收起：手抖或经过缝隙不会闪 */
-const HOVER_CLOSE_MS = 180
-
 function HistoryItem({
   record,
   onDelete,
@@ -111,19 +106,14 @@ function HistoryItem({
   onEdit?: (nextText: string) => Promise<void> | void
   highlight?: string
 }) {
-  // 详情区改为**鼠标悬停展开**，不再需要那个"展开详情"箭头。
+  // 详情区靠**点「展开详情」按钮**开合，不用 hover。
   //
-  // 只靠 hover 会有两个坑，这里都处理了：
-  //  1. 路过就展开、离开就收起 → 列表在指针底下抽动，容易点错。
-  //     所以进入要**停留** HOVER_OPEN_MS 才展开，离开也**延迟** HOVER_CLOSE_MS 才收，
-  //     手抖、经过缝隙都不会闪。
-  //  2. 展开区里是可操作的控件（编辑、播放、倍速），鼠标移开就收起会打断操作。
-  //     所以正在编辑 / 正在播放 / 卡片内有键盘焦点时一律保持展开（粘滞）。
-  //     focus-within 那条同时也是键盘用户的入口 —— Tab 进来就会展开。
-  const [hoverOpen, setHoverOpen] = useState(false)
-  const [focusWithin, setFocusWithin] = useState(false)
-  const openTimerRef = useRef<number | undefined>(undefined)
-  const closeTimerRef = useRef<number | undefined>(undefined)
+  // 曾经改成过鼠标悬停展开（进入停留 160ms 才开、离开延迟 180ms 才收，编辑/播放/
+  // 键盘焦点时粘滞不收）。那套逻辑本身是能用的，但被撤掉了：hover 展开意味着
+  // 光标只是路过列表，行高就会变化，读一屏历史时整个列表始终在动；而"展开某条看细节"
+  // 本来就是个明确的意图，值得用户点一下。
+  // 别再改回 hover —— 那条路已经走过一次了。
+  const [expanded, setExpanded] = useState(false)
   const [editing, setEditing] = useState(false)
   const [editText, setEditText] = useState('')
   const [audioPlaying, setAudioPlaying] = useState(false)
@@ -339,40 +329,17 @@ function HistoryItem({
     return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
   }
 
-  useEffect(() => () => {
-    window.clearTimeout(openTimerRef.current)
-    window.clearTimeout(closeTimerRef.current)
-  }, [])
-
   const progress = duration > 0 ? Math.min(currentTime / duration, 1) : 0
 
-  // 粘滞：这些情况下即使鼠标移开也不收起
-  const sticky = editing || audioPlaying || focusWithin
-  const open = hoverOpen || sticky
-
-  const handlePointerEnter = () => {
-    window.clearTimeout(closeTimerRef.current)
-    if (hoverOpen) return
-    openTimerRef.current = window.setTimeout(() => setHoverOpen(true), HOVER_OPEN_MS)
-  }
-
-  const handlePointerLeave = () => {
-    window.clearTimeout(openTimerRef.current)
-    closeTimerRef.current = window.setTimeout(() => setHoverOpen(false), HOVER_CLOSE_MS)
-  }
+  const open = expanded
 
   return (
     <div
       className="group rounded-md transition-colors hover:bg-accent/50"
       // 关掉滚动锚定：Chromium 默认会在行高变化时自动调 scrollTop 去"稳住"某个锚点元素，
-      // 锚点若落在展开行下方，补偿的结果就是内容（含你正悬停的这行）往上蹿 ——
+      // 锚点若落在展开行下方，补偿的结果就是内容（含你刚点开的这行）往上蹿 ——
       // 表现为"有时往上、有时往下，挤来挤去"。关掉之后展开一律向下推，行为可预期。
       style={{ overflowAnchor: 'none' }}
-      onMouseEnter={handlePointerEnter}
-      onMouseLeave={handlePointerLeave}
-      // React 的 onFocus/onBlur 会冒泡，等价于 :focus-within
-      onFocus={() => setFocusWithin(true)}
-      onBlur={() => setFocusWithin(false)}
     >
       <div className="flex items-start gap-2 px-2 py-2">
         <span className="w-12 shrink-0 pt-0.5 text-xs text-muted-foreground">
@@ -471,6 +438,19 @@ function HistoryItem({
               </Tooltip>
             )}
 
+            <Tooltip content={expanded ? '收起详情' : '展开详情'}>
+              <button
+                onClick={() => setExpanded(!expanded)}
+                className="rounded p-1 hover:bg-accent"
+                aria-label="详情"
+                aria-expanded={expanded}
+              >
+                {expanded
+                  ? <ChevronUp className="h-3.5 w-3.5 text-muted-foreground" />
+                  : <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />}
+              </button>
+            </Tooltip>
+
             <Tooltip content="删除记录">
               <button
                 onClick={onDelete}
@@ -482,9 +462,8 @@ function HistoryItem({
             </Tooltip>
           </div>
 
-          {/* 展开动画沿用原来点「展开详情」时的那一套（grid 0fr→1fr，200ms ease-out）——
-              这套本来就没人抱怨。中途试过实测高度 + 自定义曲线 + 内容淡入位移，
-              叠得越多反而越碎，已经撤掉。这里只把触发方式换成 hover。 */}
+          {/* 展开动画：grid 0fr→1fr，200ms ease-out。中途试过实测高度 + 自定义曲线 +
+              内容淡入位移，叠得越多反而越碎，已经撤掉，别再往上加。 */}
           <div
             className="col-span-2 grid grid-cols-subgrid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none"
             style={{ gridTemplateRows: open ? '1fr' : '0fr' }}
@@ -492,6 +471,14 @@ function HistoryItem({
           >
             <div className="col-span-2 grid grid-cols-subgrid overflow-hidden">
               <div className="col-span-2 mt-2 grid grid-cols-subgrid gap-y-2 text-xs">
+                {/* 空结果的成因。折叠行只能显示「无有效声音」，真实原因（额度耗尽、
+                    资源未开通、服务端断连、文本处理清空）放这里。老记录没有这个字段。 */}
+                {isEmpty && record.failReason && (
+                  <div className="col-span-2 text-muted-foreground">
+                    <span className="font-medium">原因：</span>
+                    <span className="whitespace-pre-line break-words">{record.failReason}</span>
+                  </div>
+                )}
                 {!isEmpty && record.asrText && (
                   <div className="text-muted-foreground">
                     <span className="font-medium">ASR 原文：</span>
@@ -523,75 +510,75 @@ function HistoryItem({
                       按钮之间也就被撑到 8px，比右上角那排（gap-0.5）散得多。
                       这里组内用 gap-0.5 与上排统一，组与文字之间仍由外层的 gap-2 分隔。 */}
                   <div className="flex items-center gap-0.5">
-                  {!isEmpty && onEdit && !editing && (
-                    <Tooltip content="编辑文本">
-                      <button
-                        type="button"
-                        onClick={startEdit}
-                        className="relative top-[0.5px] flex h-7 w-7 items-center justify-center rounded p-1.5 hover:bg-accent"
-                        aria-label="编辑"
-                      >
-                        <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
-                      </button>
-                    </Tooltip>
-                  )}
-                  {record.audioFilePath && (
-                    <Tooltip content={audioPlaying ? '暂停播放' : '播放录音'}>
-                      <button
-                        type="button"
-                        onClick={() => { void handleTogglePlayback() }}
-                        disabled={audioLoading}
-                        className="relative top-[0.5px] flex h-7 w-7 items-center justify-center rounded p-1.5 hover:bg-accent disabled:opacity-50"
-                        aria-label={audioPlaying ? '暂停播放' : '播放录音'}
-                      >
-                        {audioLoading ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                        ) : audioPlaying ? (
-                          <Pause className="h-3.5 w-3.5 text-primary" />
-                        ) : (
-                          <Play className="h-3.5 w-3.5 text-muted-foreground" />
-                        )}
-                      </button>
-                    </Tooltip>
-                  )}
-                  {record.audioFilePath && (
-                    <Tooltip content={downloadStatus === 'ok' ? `已保存到 ${downloadPath}` : downloadStatus === 'fail' ? `下载失败: ${downloadPath}` : '下载音频'}>
-                      <button
-                        type="button"
-                        onClick={() => { void handleDownloadAudio() }}
-                        disabled={downloading}
-                        className="relative top-[0.5px] flex h-7 w-7 items-center justify-center rounded p-1.5 hover:bg-accent disabled:opacity-50"
-                        aria-label="下载音频"
-                      >
-                        {downloading ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                        ) : downloadStatus === 'ok' ? (
-                          <Check className="h-3.5 w-3.5 text-success" />
-                        ) : downloadStatus === 'fail' ? (
-                          <X className="h-3.5 w-3.5 text-destructive" />
-                        ) : (
-                          <Download className="h-3.5 w-3.5 text-muted-foreground" />
-                        )}
-                      </button>
-                    </Tooltip>
-                  )}
-                  {record.audioFilePath && onReprocess && (
-                    <Tooltip content="重新识别">
-                      <button
-                        type="button"
-                        onClick={() => { void handleReprocess() }}
-                        disabled={reprocessing}
-                        className="relative top-[0.5px] flex h-7 w-7 items-center justify-center rounded p-1.5 hover:bg-accent disabled:opacity-50"
-                        aria-label="重新识别"
-                      >
-                        {reprocessing ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                        ) : (
-                          <RotateCcw className="h-3.5 w-3.5 text-muted-foreground" />
-                        )}
-                      </button>
-                    </Tooltip>
-                  )}
+                    {!isEmpty && onEdit && !editing && (
+                      <Tooltip content="编辑文本">
+                        <button
+                          type="button"
+                          onClick={startEdit}
+                          className="relative top-[0.5px] flex h-7 w-7 items-center justify-center rounded p-1.5 hover:bg-accent"
+                          aria-label="编辑"
+                        >
+                          <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
+                        </button>
+                      </Tooltip>
+                    )}
+                    {record.audioFilePath && (
+                      <Tooltip content={audioPlaying ? '暂停播放' : '播放录音'}>
+                        <button
+                          type="button"
+                          onClick={() => { void handleTogglePlayback() }}
+                          disabled={audioLoading}
+                          className="relative top-[0.5px] flex h-7 w-7 items-center justify-center rounded p-1.5 hover:bg-accent disabled:opacity-50"
+                          aria-label={audioPlaying ? '暂停播放' : '播放录音'}
+                        >
+                          {audioLoading ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                          ) : audioPlaying ? (
+                            <Pause className="h-3.5 w-3.5 text-primary" />
+                          ) : (
+                            <Play className="h-3.5 w-3.5 text-muted-foreground" />
+                          )}
+                        </button>
+                      </Tooltip>
+                    )}
+                    {record.audioFilePath && (
+                      <Tooltip content={downloadStatus === 'ok' ? `已保存到 ${downloadPath}` : downloadStatus === 'fail' ? `下载失败: ${downloadPath}` : '下载音频'}>
+                        <button
+                          type="button"
+                          onClick={() => { void handleDownloadAudio() }}
+                          disabled={downloading}
+                          className="relative top-[0.5px] flex h-7 w-7 items-center justify-center rounded p-1.5 hover:bg-accent disabled:opacity-50"
+                          aria-label="下载音频"
+                        >
+                          {downloading ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                          ) : downloadStatus === 'ok' ? (
+                            <Check className="h-3.5 w-3.5 text-success" />
+                          ) : downloadStatus === 'fail' ? (
+                            <X className="h-3.5 w-3.5 text-destructive" />
+                          ) : (
+                            <Download className="h-3.5 w-3.5 text-muted-foreground" />
+                          )}
+                        </button>
+                      </Tooltip>
+                    )}
+                    {record.audioFilePath && onReprocess && (
+                      <Tooltip content="重新识别">
+                        <button
+                          type="button"
+                          onClick={() => { void handleReprocess() }}
+                          disabled={reprocessing}
+                          className="relative top-[0.5px] flex h-7 w-7 items-center justify-center rounded p-1.5 hover:bg-accent disabled:opacity-50"
+                          aria-label="重新识别"
+                        >
+                          {reprocessing ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                          ) : (
+                            <RotateCcw className="h-3.5 w-3.5 text-muted-foreground" />
+                          )}
+                        </button>
+                      </Tooltip>
+                    )}
                   </div>
                 </div>
                 {downloadStatus === 'ok' && downloadPath && (

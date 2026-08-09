@@ -198,7 +198,9 @@ export default function GeneralSettingsPage() {
         <Card>
           <CardContent className="p-6">
             <h2 className="text-lg font-semibold">键盘快捷键</h2>
-            {/* 只讲 Esc：它此前只写在悬浮窗那行小字上，一闪而过、且没在任何设置页出现过。
+            {/* ⚠ 这是「按 Esc 能取消」在整个界面上的**唯一**出处 —— 悬浮窗上那行提示已经
+                去掉了（见 overlay/Overlay.tsx 的 thinking 分支）。删掉这句，这个能力就没有
+                任何地方告诉用户了。
                 录音上限不在这里讲 —— 最后一分钟悬浮窗会显示剩余时间、到点自动结束，界面自己会说。
                 「录音也不会保留」要写明：取消和「录了但没出字」在用户眼里很容易混。
                 「录音或识别处理」是两个阶段，别连写 —— Esc 在两个阶段都能按。 */}

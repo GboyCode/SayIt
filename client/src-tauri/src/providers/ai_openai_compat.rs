@@ -1,9 +1,12 @@
 // OpenAI 兼容 AI 供应商
 // 覆盖所有支持 /v1/chat/completions 的服务：DeepSeek、通义、豆包（火山方舟）等
 
+use super::diag;
 use super::prompt::wrap_user_text;
 use super::types::{AiProviderConfig, AiResult, TestResult};
 use std::time::Instant;
+
+const SCOPE: &str = "ai/openai-compat";
 
 static HTTP_CLIENT: once_cell::sync::Lazy<reqwest::Client> =
     once_cell::sync::Lazy::new(reqwest::Client::new);
@@ -77,6 +80,19 @@ pub async fn polish(
 
     let start = Instant::now();
 
+    // 只记长度和模型，不记待校对的文本本身
+    diag::log(
+        SCOPE,
+        "start",
+        &format!(
+            "provider={} model={} chars={} url={}",
+            config.provider,
+            config.model,
+            text.chars().count(),
+            url
+        ),
+    );
+
     let mut req = HTTP_CLIENT
         .post(&url)
         .header("Authorization", format!("Bearer {}", config.api_key))
@@ -90,26 +106,83 @@ pub async fn polish(
         .timeout(std::time::Duration::from_secs(60))
         .send()
         .await
-        .map_err(|e| format!("HTTP 请求失败: {}", describe_reqwest_error(&e)))?;
+        .map_err(|e| {
+            diag::fail(
+                SCOPE,
+                "http_send",
+                format!("HTTP 请求失败: {}", describe_reqwest_error(&e)),
+            )
+        })?;
 
     let elapsed_ms = start.elapsed().as_millis() as u64;
+    let http_summary = diag::http_summary(resp.status(), resp.headers());
 
     if !resp.status().is_success() {
         let status = resp.status();
         let body_text = resp.text().await.unwrap_or_default();
-        return Err(format!("API 返回错误 {}: {}", status, truncate(&body_text, 200)));
+        return Err(diag::fail(
+            SCOPE,
+            "http_status",
+            format!(
+                "API 返回错误 {} [{}]: {}",
+                status,
+                http_summary,
+                diag::truncate(&body_text, 200)
+            ),
+        ));
     }
 
-    let data: serde_json::Value = resp
-        .json()
+    let body_text = resp
+        .text()
         .await
-        .map_err(|e| format!("解析响应失败: {}", e))?;
+        .map_err(|e| diag::fail(SCOPE, "read_body", format!("读取响应失败: {}", e)))?;
+    let data: serde_json::Value = serde_json::from_str(&body_text).map_err(|e| {
+        diag::fail(
+            SCOPE,
+            "parse_json",
+            format!(
+                "解析响应失败: {} [{}] 响应片段: {}",
+                e,
+                http_summary,
+                diag::truncate(&body_text, 200)
+            ),
+        )
+    })?;
 
-    let result_text = extract_chat_completion_text(&data)
-        .unwrap_or_else(|| text.to_string());
+    // 取不到内容就回落成原文。这是**静默失败**：用户看到有字、以为校对生效了，
+    // 实际上 AI 那一步等于没跑。必须留证，否则「AI 好像没起作用」永远查不下去。
+    let result_text = match extract_chat_completion_text(&data) {
+        Some(t) => t,
+        None => {
+            diag::log(
+                SCOPE,
+                "no_content_fallback_to_input",
+                &format!(
+                    "响应里没有可用内容，已回落为原文 [{}] {}",
+                    http_summary,
+                    diag::describe_json(&body_text)
+                ),
+            );
+            text.to_string()
+        }
+    };
 
     // 去除 <think>...</think> 标签（部分模型如 Qwen3 会输出思考过程）
     let cleaned = strip_thinking(&result_text);
+
+    if cleaned.is_empty() {
+        diag::log(
+            SCOPE,
+            "empty_after_strip_thinking",
+            &format!(
+                "去掉思考段后为空，已回落为原文 model={} raw_chars={}",
+                config.model,
+                result_text.chars().count()
+            ),
+        );
+    } else {
+        diag::ok(SCOPE, elapsed_ms, cleaned.chars().count());
+    }
 
     Ok(AiResult {
         text: if cleaned.is_empty() { text.to_string() } else { cleaned },
@@ -180,17 +253,31 @@ pub async fn test_connection(config: &AiProviderConfig) -> TestResult {
         }
         Ok(resp) => {
             let status = resp.status();
+            let summary = diag::http_summary(status, resp.headers());
             let body = resp.text().await.unwrap_or_default();
             TestResult {
                 ok: false,
-                message: format!("API 返回 {}: {}", status, truncate(&body, 100)),
+                message: diag::fail(
+                    "ai/openai-compat-test",
+                    "http_status",
+                    format!(
+                        "API 返回 {} [{}]: {}",
+                        status,
+                        summary,
+                        diag::truncate(&body, 100)
+                    ),
+                ),
                 elapsed_ms,
                 detail: format!("模型: {}\n请求地址: {}", config.model, url),
             }
         }
         Err(e) => TestResult {
             ok: false,
-            message: format!("连接失败: {}", describe_reqwest_error(&e)),
+            message: diag::fail(
+                "ai/openai-compat-test",
+                "http_send",
+                format!("连接失败: {}", describe_reqwest_error(&e)),
+            ),
             elapsed_ms,
             detail: format!("模型: {}\n请求地址: {}", config.model, url),
         },
@@ -289,12 +376,4 @@ fn strip_thinking(text: &str) -> String {
     }
 
     cleaned.to_string()
-}
-
-fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len])
-    }
 }

@@ -441,8 +441,9 @@ pub unsafe fn read_class_name(hwnd: HWND) -> String {
 }
 
 
+/// pid → 可执行文件名（不含路径）。inject 模块用它指认「是谁占着剪贴板」。
 #[cfg(windows)]
-fn get_process_name(pid: u32) -> String {
+pub(crate) fn get_process_name(pid: u32) -> String {
     use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
     use windows::Win32::Foundation::CloseHandle;
     unsafe {

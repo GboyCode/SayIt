@@ -1,10 +1,12 @@
 // 阿里云千问 ASR — qwen3-asr-flash
 // DashScope 多模态接口，支持 Base64 data URL 音频
 
+use super::diag;
 use super::types::{AsrProviderConfig, AsrResult, TestResult};
 use std::time::Instant;
 
 const API_URL: &str = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
+const SCOPE: &str = "qwen/asr-flash";
 
 /// 将热词列表拼接为千问 ASR 的上下文偏置文本。
 ///
@@ -101,9 +103,10 @@ pub async fn transcribe(
 ) -> Result<AsrResult, String> {
     let pcm = base64::Engine::decode(
         &base64::engine::general_purpose::STANDARD, audio_pcm_b64,
-    ).map_err(|e| format!("base64 解码失败: {}", e))?;
+    ).map_err(|e| diag::fail(SCOPE, "decode_b64", format!("base64 解码失败: {}", e)))?;
 
     if pcm.is_empty() {
+        diag::empty_result(SCOPE, "客户端送来的音频是空的，没有发起请求");
         return Ok(AsrResult { text: String::new(), elapsed_ms: 0 });
     }
 
@@ -121,6 +124,19 @@ pub async fn transcribe(
         .filter(|w| seen.insert(w.to_string()))
         .collect();
     let system_text = words.join(", ");
+
+    let audio_sec = pcm.len() as f64 / (sample_rate.max(1) as f64 * 2.0);
+    diag::log(
+        SCOPE,
+        "start",
+        &format!(
+            "pcm_bytes={} audio_sec={:.1} rate={} hotwords={}",
+            pcm.len(),
+            audio_sec,
+            sample_rate,
+            words.len()
+        ),
+    );
 
     let body = serde_json::json!({
         "model": "qwen3-asr-flash",
@@ -146,18 +162,44 @@ pub async fn transcribe(
         .timeout(std::time::Duration::from_secs(60))
         .send()
         .await
-        .map_err(|e| format!("请求失败: {}", e))?;
+        .map_err(|e| diag::fail(SCOPE, "http_send", format!("请求失败: {}", e)))?;
 
     let elapsed_ms = start.elapsed().as_millis() as u64;
+    let http_summary = diag::http_summary(resp.status(), resp.headers());
 
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        return Err(format!("千问 ASR 错误 {}: {}", status, &body[..body.len().min(300)]));
+        return Err(diag::fail(
+            SCOPE,
+            "http_status",
+            // 曾经这里是 `&body[..body.len().min(300)]`：DashScope 的报错体是中文，
+            // 按字节切会切在汉字中间直接 panic —— 一出错就崩，反而什么都查不到
+            format!(
+                "千问 ASR 错误 {} [{}]: {}",
+                status,
+                http_summary,
+                diag::truncate(&body, 300)
+            ),
+        ));
     }
 
-    let data: serde_json::Value = resp.json().await
-        .map_err(|e| format!("解析响应失败: {}", e))?;
+    let body_text = resp
+        .text()
+        .await
+        .map_err(|e| diag::fail(SCOPE, "read_body", format!("读取响应失败: {}", e)))?;
+    let data: serde_json::Value = serde_json::from_str(&body_text).map_err(|e| {
+        diag::fail(
+            SCOPE,
+            "parse_json",
+            format!(
+                "解析响应失败: {} [{}] 响应片段: {}",
+                e,
+                http_summary,
+                diag::truncate(&body_text, 200)
+            ),
+        )
+    })?;
 
     // 响应格式：output.choices[0].message.content[0].text
     let text = data.get("output")
@@ -172,7 +214,33 @@ pub async fn transcribe(
         .to_string();
 
     // 防热词回显：短/不清晰音频下，模型可能把整串热词吐出来。命中≥3个且无其它内容则清空。
+    let raw_chars = text.chars().count();
     let text = strip_hotword_echo(text, &words);
+
+    // 这个启发式会把「有内容」变成「空」，而空结果对外就是「未检测到有效声音」。
+    // 一旦它误判，用户看到的和真正发生的事情完全对不上，所以必须留一条。
+    if text.is_empty() && raw_chars > 0 {
+        diag::log(
+            SCOPE,
+            "hotword_echo_stripped",
+            &format!("原文 {} 字被判为热词回显并清空 hotwords={}", raw_chars, words.len()),
+        );
+    }
+
+    if text.is_empty() {
+        diag::empty_result(
+            SCOPE,
+            &format!(
+                "文本为空 audio_sec={:.1} elapsed={}ms [{}] {}",
+                audio_sec,
+                elapsed_ms,
+                http_summary,
+                diag::describe_json(&body_text)
+            ),
+        );
+    } else {
+        diag::ok(SCOPE, elapsed_ms, text.chars().count());
+    }
 
     Ok(AsrResult { text, elapsed_ms })
 }
@@ -215,17 +283,31 @@ pub async fn test_connection(config: &AsrProviderConfig) -> TestResult {
         },
         Ok(resp) => {
             let status = resp.status();
+            let summary = diag::http_summary(status, resp.headers());
             let body = resp.text().await.unwrap_or_default();
             TestResult {
                 ok: false,
-                message: format!("API 错误 {}: {}", status, &body[..body.len().min(100)]),
+                message: diag::fail(
+                    "qwen/asr-flash-test",
+                    "http_status",
+                    format!(
+                        "API 错误 {} [{}]: {}",
+                        status,
+                        summary,
+                        diag::truncate(&body, 100)
+                    ),
+                ),
                 elapsed_ms,
                 detail: String::new(),
             }
         }
         Err(e) => TestResult {
             ok: false,
-            message: format!("连接失败: {}", e),
+            message: diag::fail(
+                "qwen/asr-flash-test",
+                "http_send",
+                format!("连接失败: {}", e),
+            ),
             elapsed_ms,
             detail: String::new(),
         },

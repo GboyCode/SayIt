@@ -314,6 +314,18 @@ fn is_mouse_button_setting(setting: &str) -> bool {
     matches!(setting, "XButton1" | "XButton2" | "MButton")
 }
 
+/// 这个 vk 是鼠标按键吗（VK_MBUTTON / VK_XBUTTON1 / VK_XBUTTON2）。
+///
+/// ⚠️ 鼠标按键的物理状态**查不到**：低级鼠标钩子把它们的 down/up 都吞掉了
+/// （返回 LRESULT(1)，否则会触发别的程序的前进/后退导航），事件因此不进系统输入
+/// 队列，Windows 也就不为它们维护异步键状态 —— `GetAsyncKeyState` 会一直报「没按下」。
+/// 所以凡是以 `is_ptt_member_physically_down` 为判据的逻辑，遇到鼠标按键都必须绕开。
+///
+/// 若日后往 SINGLE_KEY_TABLE 里加第四个鼠标键，这里也要跟着加（有测试钉住）。
+fn is_mouse_vk(vk: u32) -> bool {
+    matches!(vk, 0x04 | 0x05 | 0x06)
+}
+
 #[allow(dead_code)]
 fn modifier_kind(setting: &str) -> Option<&'static str> {
     match setting {
@@ -626,6 +638,16 @@ fn spawn_ptt_member_watchdog(
                         continue;
                     }
 
+                    // 鼠标按键必须跳过这套判据。它由「repeat 静默」+「异步键状态」两个
+                    // 信号组成，而这两个对鼠标按键都不存在：鼠标按键没有自动重复，
+                    // 异步键状态又因为我们吞掉了事件而不更新（见 is_mouse_vk）。
+                    // 于是条件恒真、只会稳定误判。鼠标键的 up 由我们自己的钩子直接观测，
+                    // 吞掉不影响我们收到事件；真丢了 up 还有 5 分钟硬释放兜底。
+                    if is_mouse_vk(member_vk) {
+                        released_samples[index] = 0;
+                        continue;
+                    }
+
                     let repeat_silence_ms = now_ms()
                         .saturating_sub(state.ptt_last_down_ms[index].load(Ordering::SeqCst));
                     let physically_down = unsafe { is_ptt_member_physically_down(member_vk) };
@@ -737,6 +759,14 @@ fn spawn_ptt_release_watchdog(
                         continue;
                     }
 
+                    // 见 member watchdog 里同一处的说明：这套「repeat 静默 + 异步键状态」
+                    // 的判据对鼠标按键两个信号都缺，必然误判。实测按住侧键/中键 1.7 秒
+                    // 就会被判成「漏了 keyup」而强制结束录音（reason=missing_keyup_release）。
+                    if is_mouse_vk(member_vk) {
+                        released_samples[index] = 0;
+                        continue;
+                    }
+
                     let repeat_silence_ms = now_ms()
                         .saturating_sub(state.ptt_last_down_ms[index].load(Ordering::SeqCst));
                     let physically_down = unsafe { is_ptt_member_physically_down(member_vk) };
@@ -760,6 +790,11 @@ fn spawn_ptt_release_watchdog(
                     let mut cleared_mask = 0_u64;
                     for (other_index, &other_vk) in state.ptt_vk_codes.iter().enumerate() {
                         let bit = 1_u64 << other_index;
+                        // 同样跳过鼠标按键：它的物理状态查不到，清掉只会误伤。
+                        // （鼠标键目前只允许单键格式，走不到这里，但判据要一致。）
+                        if is_mouse_vk(other_vk) {
+                            continue;
+                        }
                         if state.ptt_pressed_mask.load(Ordering::SeqCst) & bit != 0
                             && !unsafe { is_ptt_member_physically_down(other_vk) }
                         {
@@ -1849,8 +1884,9 @@ unsafe extern "system" fn low_level_keyboard_proc(
 #[cfg(test)]
 mod tests {
     use super::{
-        begin_ptt_press, claim_ptt_release, complete_ptt_release, press_ptt_member,
-        ptt_key_config, release_ptt_member, should_consume_combo_main_down,
+        begin_ptt_press, claim_ptt_release, complete_ptt_release, is_mouse_button_setting,
+        is_mouse_vk, press_ptt_member, ptt_key_config, release_ptt_member,
+        should_consume_combo_main_down, SINGLE_KEY_TABLE,
     };
     #[cfg(windows)]
     use super::queue_ptt_release;
@@ -2005,5 +2041,42 @@ mod tests {
         assert_eq!(active_generation.load(Ordering::SeqCst), active_gen);
         assert_eq!(claim_ptt_release(&active_generation, Some(active_gen)), Some(active_gen));
         assert!(complete_ptt_release(&active_generation, active_gen));
+    }
+
+    /// 鼠标按键清单必须与 `is_mouse_vk` 保持一致。
+    ///
+    /// 这两处一旦不同步就是静默失败：两个 PTT 看门狗靠 `is_mouse_vk` 绕开
+    /// 「repeat 静默 + 异步键状态」判据，漏掉一个鼠标键的后果是按住它录音会在
+    /// 1.7 秒后被强制结束（0.1.5 的实测症状），而编译和其它测试都不会报错。
+    #[test]
+    fn is_mouse_vk_covers_every_mouse_button_in_the_key_table() {
+        for (code, vk) in SINGLE_KEY_TABLE {
+            let listed_as_mouse = is_mouse_button_setting(code);
+            assert_eq!(
+                listed_as_mouse,
+                is_mouse_vk(*vk),
+                "{code} (vk={vk:#04x}): is_mouse_button_setting={listed_as_mouse} \
+                 但 is_mouse_vk={}，两处判定必须一致",
+                is_mouse_vk(*vk),
+            );
+        }
+    }
+
+    /// 鼠标按键只允许单键格式。两个看门狗跳过鼠标成员时依赖这一点：
+    /// 单键设置只有一个成员，不存在「组合里半个键被清掉」的情况。
+    #[test]
+    fn mouse_buttons_are_single_key_only() {
+        for combo in ["XButton1+KeyA", "ControlLeft+XButton1", "MButton+ShiftLeft"] {
+            let config = ptt_key_config(combo);
+            assert_ne!(
+                config.setting, combo,
+                "{combo} 不该被接受为有效组合（鼠标键只允许单键）",
+            );
+        }
+        for single in ["XButton1", "XButton2", "MButton"] {
+            let config = ptt_key_config(single);
+            assert_eq!(config.setting, single, "{single} 应当是有效的单键设置");
+            assert_eq!(config.vk_codes.len(), 1, "{single} 应当只有一个成员");
+        }
     }
 }

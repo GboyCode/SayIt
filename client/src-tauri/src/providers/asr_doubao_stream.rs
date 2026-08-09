@@ -1,6 +1,7 @@
 // 豆包流式语音识别 2.0 — 使用流式输入模式（bigmodel_nostream）
 // 录完后一次性发送 PCM 音频，等最终结果返回
 
+use super::diag;
 use super::doubao_auth::{self, DoubaoAuth};
 use super::doubao_protocol;
 use super::types::{AsrProviderConfig, AsrResult, TestResult};
@@ -9,6 +10,7 @@ use std::time::Instant;
 use tokio_tungstenite::tungstenite;
 
 const WS_URL: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream";
+const SCOPE: &str = "doubao/nostream";
 
 /// 建立 nostream 连接：按「小时版 → 并发版」依次试资源 ID。
 ///
@@ -49,17 +51,26 @@ async fn connect(
             }
             Err(e) => {
                 last_err = e.to_string();
-                crate::commands::system::write_log_line(&format!(
-                    "[RUST] [doubao] {} connect FAILED resourceId={} auth={} err={}",
+                // 逐个资源都记：只开通了并发版的账号会在小时版这一轮失败一次再成功，
+                // 看到这条不代表最终失败，但它是判断「账号开的是哪种计费」的直接证据。
+                diag::log(
                     scope,
-                    resource_id,
-                    auth.mode_name(),
-                    last_err
-                ));
+                    "connect_attempt_failed",
+                    &format!(
+                        "resourceId={} auth={} err={}",
+                        resource_id,
+                        auth.mode_name(),
+                        diag::truncate(&last_err, 200)
+                    ),
+                );
             }
         }
     }
-    Err(format!("WebSocket 连接失败: {}", last_err))
+    Err(diag::fail(
+        scope,
+        "connect",
+        format!("WebSocket 连接失败: {}", last_err),
+    ))
 }
 
 pub async fn transcribe(
@@ -72,21 +83,42 @@ pub async fn transcribe(
         &base64::engine::general_purpose::STANDARD,
         audio_pcm_b64,
     )
-    .map_err(|e| format!("base64 解码失败: {}", e))?;
+    .map_err(|e| diag::fail(SCOPE, "decode_b64", format!("base64 解码失败: {}", e)))?;
 
     if pcm_data.is_empty() {
+        diag::empty_result(SCOPE, "客户端送来的音频是空的，没有发起请求");
         return Ok(AsrResult { text: String::new(), elapsed_ms: 0 });
     }
 
     let auth = DoubaoAuth::from_config(config);
     if let Some(missing) = auth.missing_field() {
-        return Err(format!("豆包 ASR 缺少{}，请在设置里填好", missing));
+        return Err(diag::fail(
+            SCOPE,
+            "credentials",
+            format!("豆包 ASR 缺少{}，请在设置里填好", missing),
+        ));
     }
     let uid = auth.uid().to_string();
 
+    // 进门先记「送出去的是什么」：音频多长、采样率、几个热词、哪套鉴权。
+    // 长音频失败而短音频正常这类问题，第一步要确认的就是客户端确实把整段音频发了出去。
+    let audio_sec = pcm_data.len() as f64 / (sample_rate.max(1) as f64 * 2.0);
+    diag::log(
+        SCOPE,
+        "start",
+        &format!(
+            "pcm_bytes={} audio_sec={:.1} rate={} hotwords={} auth={}",
+            pcm_data.len(),
+            audio_sec,
+            sample_rate,
+            hotwords.len(),
+            auth.mode_name()
+        ),
+    );
+
     let start = Instant::now();
 
-    let (mut ws, _resource_id) = connect(&auth, "nostream").await?;
+    let (mut ws, resource_id) = connect(&auth, SCOPE).await?;
 
     // 1. 发送 full client request
     let mut request_params = serde_json::json!({
@@ -117,15 +149,26 @@ pub async fn transcribe(
     );
     ws.send(tungstenite::Message::Binary(request_frame.into()))
         .await
-        .map_err(|e| format!("发送请求失败: {}", e))?;
+        .map_err(|e| diag::fail(SCOPE, "send_request", format!("发送请求失败: {}", e)))?;
 
     // 等待服务端确认
     if let Some(msg) = ws.next().await {
-        let msg = msg.map_err(|e| format!("接收确认失败: {}", e))?;
+        let msg =
+            msg.map_err(|e| diag::fail(SCOPE, "recv_ack", format!("接收确认失败: {}", e)))?;
         if let tungstenite::Message::Binary(data) = msg {
-            let resp = doubao_protocol::parse_server_response(&data)?;
+            let resp = doubao_protocol::parse_server_response(&data)
+                .map_err(|e| diag::fail(SCOPE, "parse_ack", e))?;
             if resp.is_error {
-                return Err(format!("服务端错误: {}", resp.payload));
+                // 这里的 payload 是服务端的错误说明（额度/资源/鉴权），不是识别文本
+                return Err(diag::fail(
+                    SCOPE,
+                    "server_error_on_ack",
+                    format!(
+                        "服务端错误: {}{}",
+                        resp.payload,
+                        doubao_auth::explain_payload(&resp.payload)
+                    ),
+                ));
             }
         }
     }
@@ -135,19 +178,37 @@ pub async fn transcribe(
     let audio_frame = doubao_protocol::build_audio_request(&pcm_data, true);
     ws.send(tungstenite::Message::Binary(audio_frame.into()))
         .await
-        .map_err(|e| format!("发送音频失败: {}", e))?;
+        .map_err(|e| diag::fail(SCOPE, "send_audio", format!("发送音频失败: {}", e)))?;
 
     // 3. 接收结果（bigmodel_async 双向流式：每包输入对应一包返回，取最终结果）
     let mut final_text = String::new();
+    // 有没有收到「最后一包」标记。这个标记是区分下面两种情况的唯一依据：
+    //   收到了 + 文本为空 = 服务端确实没听出内容（用户可能真的没说话）
+    //   没收到 + 文本为空 = 这次调用失败了，服务端在给结果前就断开
+    // 以前两种都返回 Ok(空文本)，于是失败被显示成「未检测到有效声音」，
+    // 日志里一个字都没有 —— 排查一次要来回问用户好几轮。
+    let mut saw_last = false;
+    let mut last_payload_desc = String::from("(没收到任何结果包)");
 
     while let Some(msg) = ws.next().await {
-        let msg = msg.map_err(|e| format!("接收结果失败: {}", e))?;
+        let msg = msg.map_err(|e| diag::fail(SCOPE, "recv", format!("接收结果失败: {}", e)))?;
         match msg {
             tungstenite::Message::Binary(data) => {
-                let resp = doubao_protocol::parse_server_response(&data)?;
+                let resp = doubao_protocol::parse_server_response(&data)
+                    .map_err(|e| diag::fail(SCOPE, "parse_result", e))?;
                 if resp.is_error {
-                    return Err(format!("识别错误: {}", resp.payload));
+                    return Err(diag::fail(
+                        SCOPE,
+                        "server_error",
+                        format!(
+                            "识别错误: {}{}",
+                            resp.payload,
+                            doubao_auth::explain_payload(&resp.payload)
+                        ),
+                    ));
                 }
+
+                last_payload_desc = diag::describe_json(&resp.payload);
 
                 // 解析 JSON 结果，持续更新 final_text
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&resp.payload) {
@@ -159,10 +220,27 @@ pub async fn transcribe(
                 }
 
                 if resp.is_last {
+                    saw_last = true;
                     break;
                 }
             }
-            tungstenite::Message::Close(_) => break,
+            tungstenite::Message::Close(frame) => {
+                let reason = frame
+                    .map(|f| format!("code={} reason={}", f.code, diag::truncate(&f.reason, 200)))
+                    .unwrap_or_else(|| "无详情".to_string());
+                if !saw_last {
+                    let _ = ws.close(None).await;
+                    // 服务端主动断开且没给最终结果 —— 额度耗尽、资源未开通、超限都长这样。
+                    // 必须报错，不能假装识别成功却没内容。
+                    return Err(diag::fail(
+                        SCOPE,
+                        "closed_before_result",
+                        format!("豆包服务端提前关闭了连接（{}），本次识别未完成", reason),
+                    ));
+                }
+                diag::log(SCOPE, "close", &reason);
+                break;
+            }
             _ => {}
         }
     }
@@ -171,6 +249,31 @@ pub async fn transcribe(
     let _ = ws.close(None).await;
 
     let elapsed_ms = start.elapsed().as_millis() as u64;
+
+    // 流结束了却始终没见到最后一包，同样是没跑完的调用
+    if !saw_last {
+        return Err(diag::fail(
+            SCOPE,
+            "stream_ended_without_result",
+            format!(
+                "豆包连接中断，没有收到最终结果（已收 {} 字符，耗时 {}ms）",
+                final_text.chars().count(),
+                elapsed_ms
+            ),
+        ));
+    }
+
+    if final_text.is_empty() {
+        diag::empty_result(
+            SCOPE,
+            &format!(
+                "服务端给出最终结果但文本为空 resourceId={} audio_sec={:.1} elapsed={}ms {}",
+                resource_id, audio_sec, elapsed_ms, last_payload_desc
+            ),
+        );
+    } else {
+        diag::ok(SCOPE, elapsed_ms, final_text.chars().count());
+    }
 
     Ok(AsrResult {
         text: final_text,
@@ -191,7 +294,7 @@ pub async fn test_connection(config: &AsrProviderConfig) -> TestResult {
 
     let start = Instant::now();
 
-    match connect(&auth, "nostream test").await {
+    match connect(&auth, "doubao/nostream-test").await {
         Ok((mut ws, resource_id)) => {
             let _ = ws.close(None).await;
             let elapsed_ms = start.elapsed().as_millis() as u64;

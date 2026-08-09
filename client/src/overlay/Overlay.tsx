@@ -462,7 +462,12 @@ export default function Overlay() {
                   />
                 </div>
                 <span className="text-xs whitespace-nowrap" style={{ color: thinkingColor }}>处理中</span>
-                <span className="text-[10px] whitespace-nowrap" style={{ color: 'var(--overlay-text-dim)' }}>Esc 取消</span>
+                {/* 这里**故意**不写「Esc 取消」。Esc 取消的能力照常生效（原生钩子 +
+                    escape-action，与本组件无关），只是这行提示不该出现在悬浮窗上：
+                    悬浮窗是贴在光标附近、每次口述都会闪一下的东西，越安静越好，而
+                    「按 Esc 能取消」是知道一次就一直知道的事实，不需要每次复述。
+                    这件事已在 设置 → 键盘快捷键 的说明里静态交代（见 GeneralSettingsPage）。
+                    要加回来之前先想清楚：它每次处理都出现，收益只有第一次。 */}
               </div>
             )}
 

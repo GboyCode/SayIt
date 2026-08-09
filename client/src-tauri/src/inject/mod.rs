@@ -110,6 +110,7 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 #[cfg(windows)]
 use windows::Win32::System::DataExchange::{
     OpenClipboard, CloseClipboard, EmptyClipboard, SetClipboardData, GetClipboardData,
+    GetOpenClipboardWindow,
 };
 #[cfg(windows)]
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
@@ -327,17 +328,25 @@ unsafe fn do_inject(target: HWND, focus: HWND, text: &str, restore_clipboard: bo
     // Step 1: Write text to clipboard
     let clipboard_ok = set_clipboard_with_retry(text, 5, 30);
     if !clipboard_ok {
+        // 连 5 次都写不进剪贴板，基本就是被安全软件的剪贴板保护挡着。
+        // 把命中的软件名写进日志和 detail，用户才知道该去哪儿加信任。
+        let guards = detect_input_guard_software();
         crate::commands::system::write_log_line(&format!(
-            "[RUST] [inject] clipboard write failed pasteId={} utf8Len={} utf16Len={}",
+            "[RUST] [inject] clipboard write failed pasteId={} utf8Len={} utf16Len={} inputGuards={} {}",
             paste_id,
             text.len(),
-            text.encode_utf16().count()
+            text.encode_utf16().count(),
+            guards,
+            describe_clipboard_holder()
         ));
         return InjectResult {
             ok: false,
             strategy: Some("clipboard".to_string()),
-            reason: Some("clipboard_write_failed".to_string()),
-            detail: Some(format!("pasteId={} failed after 5 retries", paste_id)),
+            reason: Some("clipboard_blocked".to_string()),
+            detail: Some(format!(
+                "pasteId={} 重试 5 次仍写不进剪贴板 inputGuards={}",
+                paste_id, guards
+            )),
             uncertain: false,
         };
     }
@@ -502,21 +511,74 @@ unsafe fn do_inject(target: HWND, focus: HWND, text: &str, restore_clipboard: bo
     let uncertain = false; // UIA-based editability is checked upstream in probe
 
     if sent >= 4 {
-        InjectResult {
+        return InjectResult {
             ok: true,
             strategy: Some("send_input".to_string()),
             reason: None,
             detail: Some(detail),
             uncertain,
+        };
+    }
+
+    // ── SendInput 没被完整接受：模拟按键被挡在了 OS 层 ──
+    //
+    // err=5(ERROR_ACCESS_DENIED) 有两个常见来源，对用户来说解法不同：
+    //   ① UIPI：目标程序以管理员运行、SayIt 没有 → SayIt 也要以管理员运行
+    //   ② 安全软件的「防键盘模拟」拦截 → 要在那边给 SayIt 加信任
+    // 两者都只能靠日志区分，所以把进程扫描结果一起记下来。
+    const ERROR_ACCESS_DENIED: u32 = 5;
+    let guards = detect_input_guard_software();
+    crate::commands::system::write_log_line(&format!(
+        "[RUST] [inject] SendInput blocked {} inputGuards={}",
+        detail, guards
+    ));
+
+    // 最后一搏：改用 WM_PASTE。它是发给窗口的消息，不经过模拟输入那条通道，
+    // 因此「按键被拦但消息能过」的情况下还能救回来。
+    // 只在 SendInput 已经失败时做 —— 那时什么都没粘上，误伤的风险远小于彻底失败。
+    if !try_wm_paste {
+        let mut result_val: usize = 0;
+        let send_ok = SendMessageTimeoutW(
+            paste_target,
+            WM_PASTE,
+            windows::Win32::Foundation::WPARAM(0),
+            windows::Win32::Foundation::LPARAM(0),
+            SMTO_ABORTIFHUNG,
+            2000,
+            Some(&mut result_val),
+        );
+        if send_ok.0 != 0 {
+            crate::commands::system::write_log_line(&format!(
+                "[RUST] [inject] WM_PASTE last-resort ok hwnd={} class={}",
+                paste_target.0 as isize, focus_class
+            ));
+            return InjectResult {
+                ok: true,
+                strategy: Some("wm_paste_last_resort".to_string()),
+                reason: None,
+                detail: Some(format!("{} inputGuards={}", detail, guards)),
+                uncertain: false,
+            };
         }
-    } else {
-        InjectResult {
-            ok: false,
-            strategy: Some("send_input".to_string()),
-            reason: Some("send_input_short_write".to_string()),
-            detail: Some(detail),
-            uncertain: false,
-        }
+        crate::commands::system::write_log_line(
+            "[RUST] [inject] WM_PASTE last-resort also failed",
+        );
+    }
+
+    let blocked_by_privilege = sent == 0 && last_err == ERROR_ACCESS_DENIED;
+    InjectResult {
+        ok: false,
+        strategy: Some("send_input".to_string()),
+        reason: Some(
+            if blocked_by_privilege {
+                "input_blocked_access_denied"
+            } else {
+                "send_input_short_write"
+            }
+            .to_string(),
+        ),
+        detail: Some(format!("{} inputGuards={}", detail, guards)),
+        uncertain: false,
     }
 }
 
@@ -617,10 +679,110 @@ unsafe fn release_modifiers() {
 
 // ─── Clipboard helpers ───
 
+/// 指认「现在是谁占着剪贴板」。
+///
+/// 这是排查安全软件（360 安全卫士、火绒、QQ 电脑管家等）拦截剪贴板最直接的手段：
+/// 它们的剪贴板保护会先把剪贴板打开，我们的 `OpenClipboard` 就拿不到、只能拿到一个
+/// 含义模糊的 ERROR_ACCESS_DENIED。`GetOpenClipboardWindow` 能给出持有者窗口，
+/// 顺着它拿到进程名，日志里就直接写着是哪个程序，不用再靠猜或者让用户逐个关软件。
+#[cfg(windows)]
+unsafe fn describe_clipboard_holder() -> String {
+    // 拿不到持有者（Err 或空 HWND）却仍然打不开剪贴板：通常是驱动层/钩子拦截，
+    // 而不是正常的「另一个程序刚好占着」的竞争
+    let holder = match GetOpenClipboardWindow() {
+        Ok(h) if !h.0.is_null() => h,
+        _ => return "holder=<none>".to_string(),
+    };
+    let mut pid: u32 = 0;
+    GetWindowThreadProcessId(holder, Some(&mut pid));
+    let name = crate::context::get_process_name(pid);
+    format!(
+        "holder_hwnd={} holder_pid={} holder_process={} holder_class={}",
+        holder.0 as isize,
+        pid,
+        if name.is_empty() { "<unknown>" } else { &name },
+        crate::context::read_class_name(holder)
+    )
+}
+
+/// 已知会拦截模拟按键 / 剪贴板的安全软件进程名（小写）。
+///
+/// **只用于日志**：命中了不改任何行为，仅在插入失败时把它写进日志，让「文本插不进去」
+/// 一眼能看出环境里有这类软件。绝不能拿它做拉黑或者绕过 —— 那既不可靠，也会让我们
+/// 更像恶意程序（本来就已经有误报问题了）。
+#[cfg(windows)]
+const INPUT_GUARD_PROCESSES: &[&str] = &[
+    // 360
+    "360tray.exe", "360safe.exe", "zhudongfangyu.exe", "360sd.exe", "360rp.exe",
+    // 火绒
+    "hipstray.exe", "usysdiag.exe", "wsctrlsvc.exe",
+    // 腾讯电脑管家
+    "qqpctray.exe", "qqpcmgr.exe", "qqpcrtp.exe",
+    // 金山毒霸
+    "kxetray.exe", "kislive.exe", "kwsprotect64.exe",
+    // 联想电脑管家 / 其他常见国产安全套件
+    "lavasoft.exe", "baidusdtray.exe", "avp.exe",
+];
+
+/// 扫一遍进程，列出命中的安全软件。结果缓存 —— 这些软件不会在一次会话中途装上，
+/// 而插入失败可能连续发生，没必要每次都枚举全部进程。
+#[cfg(windows)]
+fn detect_input_guard_software() -> &'static str {
+    use std::sync::OnceLock;
+    static DETECTED: OnceLock<String> = OnceLock::new();
+    DETECTED.get_or_init(|| {
+        use windows::Win32::System::ProcessStatus::K32EnumProcesses;
+        let mut pids = vec![0u32; 1024];
+        let mut needed: u32 = 0;
+        let ok = unsafe {
+            K32EnumProcesses(
+                pids.as_mut_ptr(),
+                (pids.len() * std::mem::size_of::<u32>()) as u32,
+                &mut needed,
+            )
+        };
+        if !ok.as_bool() {
+            return String::from("<enum_failed>");
+        }
+        let count = needed as usize / std::mem::size_of::<u32>();
+        let mut hits: Vec<String> = Vec::new();
+        for &pid in pids.iter().take(count) {
+            if pid == 0 {
+                continue;
+            }
+            let name = crate::context::get_process_name(pid).to_lowercase();
+            if name.is_empty() {
+                continue;
+            }
+            if INPUT_GUARD_PROCESSES.contains(&name.as_str()) && !hits.contains(&name) {
+                hits.push(name);
+            }
+        }
+        if hits.is_empty() {
+            String::from("<none>")
+        } else {
+            hits.join(",")
+        }
+    })
+    .as_str()
+}
+
 #[cfg(windows)]
 unsafe fn set_clipboard_with_retry(text: &str, max_retries: u32, retry_delay_ms: u64) -> bool {
     for attempt in 0..max_retries {
-        if native_set_clipboard_text(text) { return true; }
+        match native_set_clipboard_text(text) {
+            Ok(()) => return true,
+            Err(why) => {
+                // 每次都记：能区分「被占用一下、重试就成了」和「一直被拦」，
+                // 这两种给用户的建议完全不同
+                crate::commands::system::write_log_line(&format!(
+                    "[RUST] [inject] clipboard set attempt {}/{} failed {}",
+                    attempt + 1,
+                    max_retries,
+                    why
+                ));
+            }
+        }
         if attempt < max_retries - 1 {
             std::thread::sleep(std::time::Duration::from_millis(retry_delay_ms));
         }
@@ -628,35 +790,49 @@ unsafe fn set_clipboard_with_retry(text: &str, max_retries: u32, retry_delay_ms:
     false
 }
 
+/// 写剪贴板。失败时返回**具体卡在哪一步**，而不是一个笼统的 false ——
+/// OpenClipboard 被拦、内存分配失败、SetClipboardData 被拒，三者成因完全不同。
 #[cfg(windows)]
-unsafe fn native_set_clipboard_text(text: &str) -> bool {
-    if OpenClipboard(HWND(std::ptr::null_mut())).is_err() { return false; }
+unsafe fn native_set_clipboard_text(text: &str) -> Result<(), String> {
+    if OpenClipboard(HWND(std::ptr::null_mut())).is_err() {
+        let err = windows::Win32::Foundation::GetLastError().0;
+        return Err(format!(
+            "step=OpenClipboard err={} {}",
+            err,
+            describe_clipboard_holder()
+        ));
+    }
 
-    let result = (|| -> bool {
+    let result = (|| -> Result<(), String> {
         let _ = EmptyClipboard();
         let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
         let byte_len = wide.len() * 2;
 
         let hmem = match GlobalAlloc(GMEM_MOVEABLE, byte_len) {
             Ok(h) => h,
-            Err(_) => return false,
+            Err(e) => return Err(format!("step=GlobalAlloc bytes={} err={}", byte_len, e)),
         };
 
         let locked = GlobalLock(hmem);
-        if locked.is_null() { return false; }
+        if locked.is_null() {
+            return Err("step=GlobalLock err=null".to_string());
+        }
 
         std::ptr::copy_nonoverlapping(wide.as_ptr() as *const u8, locked as *mut u8, byte_len);
         let _ = GlobalUnlock(hmem);
 
         // CF_UNICODETEXT = 13
-        let ok = SetClipboardData(13, HANDLE(hmem.0 as *mut _)).is_ok();
+        if let Err(e) = SetClipboardData(13, HANDLE(hmem.0 as *mut _)) {
+            let err = windows::Win32::Foundation::GetLastError().0;
+            return Err(format!("step=SetClipboardData err={} detail={}", err, e));
+        }
 
         // 标记本次剪贴板内容「不进入 Win+V 历史 / 不上传云剪贴板」。
         // 否则每次插入文本都会往剪贴板历史里塞一条（配合「保护剪贴板」还原时甚至塞两条）。
         // 与浏览器无痕模式、密码管理器用的是同一套机制。失败不影响粘贴，忽略即可。
         mark_clipboard_history_excluded();
 
-        ok
+        Ok(())
     })();
 
     let _ = CloseClipboard();

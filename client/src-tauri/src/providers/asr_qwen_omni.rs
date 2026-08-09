@@ -2,6 +2,7 @@
 // 使用 Manual 模式：发送音频 → commit → create_response → 接收文本
 // 同时充当 ASR 和 AI，输出模态设为仅文本
 
+use super::diag;
 use super::types::{AsrProviderConfig, AsrResult, TestResult};
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
@@ -10,6 +11,7 @@ use tokio_tungstenite::tungstenite;
 
 /// 默认模型
 const DEFAULT_MODEL: &str = "qwen3-omni-flash-realtime";
+const SCOPE: &str = "qwen/omni";
 
 fn ws_url(model: &str) -> String {
     format!(
@@ -68,9 +70,10 @@ pub async fn transcribe(
 ) -> Result<AsrResult, String> {
     let pcm = base64::engine::general_purpose::STANDARD
         .decode(audio_pcm_b64)
-        .map_err(|e| format!("base64 解码失败: {}", e))?;
+        .map_err(|e| diag::fail(SCOPE, "decode_b64", format!("base64 解码失败: {}", e)))?;
 
     if pcm.is_empty() {
+        diag::empty_result(SCOPE, "客户端送来的音频是空的，没有发起请求");
         return Ok(AsrResult {
             text: String::new(),
             elapsed_ms: 0,
@@ -96,16 +99,29 @@ pub async fn transcribe(
         .header("Upgrade", "websocket")
         .header("Host", "dashscope.aliyuncs.com")
         .body(())
-        .map_err(|e| format!("构建请求失败: {}", e))?;
+        .map_err(|e| diag::fail(SCOPE, "build_request", format!("构建请求失败: {}", e)))?;
+
+    let audio_sec = pcm.len() as f64 / 32000.0; // 16kHz / 16bit / mono
+    diag::log(
+        SCOPE,
+        "start",
+        &format!(
+            "pcm_bytes={} audio_sec={:.1} model={} hotwords={}",
+            pcm.len(),
+            audio_sec,
+            model,
+            hotwords.len()
+        ),
+    );
 
     let start = Instant::now();
 
     let (mut ws, _) = tokio_tungstenite::connect_async(request)
         .await
-        .map_err(|e| format!("WebSocket 连接失败: {}", e))?;
+        .map_err(|e| diag::fail(SCOPE, "connect", format!("WebSocket 连接失败: {}", e)))?;
 
     // 等待 session.created
-    wait_for_event(&mut ws, "session.created").await?;
+    wait_for_event(&mut ws, "session.created", SCOPE).await?;
 
     // 发送 session.update — 仅输出文本，禁用 VAD（Manual 模式）
     let session_update = serde_json::json!({
@@ -119,16 +135,19 @@ pub async fn transcribe(
     });
     ws.send(tungstenite::Message::Text(session_update.to_string().into()))
         .await
-        .map_err(|e| format!("发送 session.update 失败: {}", e))?;
+        .map_err(|e| {
+            diag::fail(SCOPE, "send_session_update", format!("发送 session.update 失败: {}", e))
+        })?;
 
     // 等待 session.updated
-    wait_for_event(&mut ws, "session.updated").await?;
+    wait_for_event(&mut ws, "session.updated", SCOPE).await?;
 
     // 发送音频数据（PCM 16kHz 16bit mono，分块发送）
     // Qwen Omni 接受原始 PCM，不需要 WAV 头
     // 但如果采样率不是 16kHz，需要注意
     let chunk_size = 3200; // 100ms @ 16kHz 16bit mono
-    for chunk in pcm.chunks(chunk_size) {
+    let total_chunks = pcm.len().div_ceil(chunk_size);
+    for (idx, chunk) in pcm.chunks(chunk_size).enumerate() {
         let audio_b64 = base64::engine::general_purpose::STANDARD.encode(chunk);
         let append_event = serde_json::json!({
             "type": "input_audio_buffer.append",
@@ -136,19 +155,30 @@ pub async fn transcribe(
         });
         ws.send(tungstenite::Message::Text(append_event.to_string().into()))
             .await
-            .map_err(|e| format!("发送音频失败: {}", e))?;
+            // 带上第几包：长音频中途被切断和第一包就发不出去，成因完全不同
+            .map_err(|e| {
+                diag::fail(
+                    SCOPE,
+                    "send_audio",
+                    format!("发送音频失败（第 {}/{} 包）: {}", idx + 1, total_chunks, e),
+                )
+            })?;
     }
 
     // 提交音频并请求响应
     let commit = serde_json::json!({ "type": "input_audio_buffer.commit" });
     ws.send(tungstenite::Message::Text(commit.to_string().into()))
         .await
-        .map_err(|e| format!("发送 commit 失败: {}", e))?;
+        .map_err(|e| diag::fail(SCOPE, "send_commit", format!("发送 commit 失败: {}", e)))?;
 
     let create_response = serde_json::json!({ "type": "response.create" });
     ws.send(tungstenite::Message::Text(create_response.to_string().into()))
         .await
-        .map_err(|e| format!("发送 response.create 失败: {}", e))?;
+        .map_err(|e| {
+            diag::fail(SCOPE, "send_response_create", format!("发送 response.create 失败: {}", e))
+        })?;
+
+    diag::log(SCOPE, "audio_sent", &format!("chunks={}", total_chunks));
 
     // 收集响应文本
     let mut result_text = String::new();
@@ -159,15 +189,28 @@ pub async fn transcribe(
         let msg = match tokio::time::timeout(timeout, ws.next()).await {
             Err(_) => {
                 let _ = ws.close(None).await;
-                return Err("等待响应超时 (60s)".to_string());
+                return Err(diag::fail(
+                    SCOPE,
+                    "recv_timeout",
+                    format!(
+                        "等待响应超时 (60s)（音频 {:.1}s，已收 {} 字符）",
+                        audio_sec,
+                        result_text.chars().count()
+                    ),
+                ));
             }
             Ok(None) => break, // 连接已关闭
             Ok(Some(Err(e))) => {
                 // 连接错误（包括对方关闭后仍发消息），跳出循环用已有结果
                 if !result_text.is_empty() || !input_transcript.is_empty() {
+                    diag::log(
+                        SCOPE,
+                        "recv_error_after_result",
+                        &format!("已有结果，按成功处理: {}", diag::truncate(&e.to_string(), 200)),
+                    );
                     break;
                 }
-                return Err(format!("接收消息失败: {}", e));
+                return Err(diag::fail(SCOPE, "recv", format!("接收消息失败: {}", e)));
             }
             Ok(Some(Ok(m))) => m,
         };
@@ -221,13 +264,28 @@ pub async fn transcribe(
                             .and_then(|e| e.get("message"))
                             .and_then(|m| m.as_str())
                             .unwrap_or("未知错误");
+                        let err_code = event
+                            .get("error")
+                            .and_then(|e| e.get("code"))
+                            .and_then(|c| c.as_str())
+                            .unwrap_or("-");
                         let _ = ws.close(None).await;
-                        return Err(format!("Qwen Omni 错误: {}", err_msg));
+                        return Err(diag::fail(
+                            SCOPE,
+                            "server_error",
+                            format!("Qwen Omni 错误 [{}]: {}", err_code, err_msg),
+                        ));
                     }
                     _ => {}
                 }
             }
-            tungstenite::Message::Close(_) => break,
+            tungstenite::Message::Close(frame) => {
+                let reason = frame
+                    .map(|f| format!("code={} reason={}", f.code, diag::truncate(&f.reason, 200)))
+                    .unwrap_or_else(|| "无详情".to_string());
+                diag::log(SCOPE, "close", &reason);
+                break;
+            }
             _ => {}
         }
     }
@@ -236,11 +294,28 @@ pub async fn transcribe(
     let elapsed_ms = start.elapsed().as_millis() as u64;
 
     // 如果 AI 没有输出文本但有输入转录，使用输入转录
-    let final_text = if result_text.trim().is_empty() && !input_transcript.is_empty() {
+    let used_input_transcript = result_text.trim().is_empty() && !input_transcript.is_empty();
+    let final_text = if used_input_transcript {
         input_transcript
     } else {
         result_text
     };
+
+    if final_text.trim().is_empty() {
+        diag::empty_result(
+            SCOPE,
+            &format!(
+                "对话结束但没有拿到任何文本 audio_sec={:.1} elapsed={}ms model={} chunks={}",
+                audio_sec, elapsed_ms, model, total_chunks
+            ),
+        );
+    } else {
+        diag::ok(SCOPE, elapsed_ms, final_text.chars().count());
+        if used_input_transcript {
+            // 模型没给回答、只给了输入转写。结果可用，但说明 instructions 可能没生效
+            diag::log(SCOPE, "used_input_transcript", "模型未输出文本，回落到输入转写");
+        }
+    }
 
     Ok(AsrResult {
         text: final_text,
@@ -252,20 +327,37 @@ pub async fn transcribe(
 async fn wait_for_event(
     ws: &mut (impl StreamExt<Item = Result<tungstenite::Message, tungstenite::Error>> + Unpin),
     expected_type: &str,
+    scope: &str,
 ) -> Result<serde_json::Value, String> {
     let timeout = tokio::time::Duration::from_secs(10);
+    let stage = format!("wait:{}", expected_type);
     loop {
         let msg = match tokio::time::timeout(timeout, ws.next()).await {
-            Err(_) => return Err(format!("等待 {} 超时", expected_type)),
-            Ok(None) => return Err(format!("等待 {} 时连接关闭", expected_type)),
-            Ok(Some(Err(e))) => return Err(format!("接收消息失败: {}", e)),
+            Err(_) => {
+                return Err(diag::fail(
+                    scope,
+                    &stage,
+                    format!("等待 {} 超时", expected_type),
+                ))
+            }
+            Ok(None) => {
+                return Err(diag::fail(
+                    scope,
+                    &stage,
+                    format!("等待 {} 时连接关闭", expected_type),
+                ))
+            }
+            Ok(Some(Err(e))) => {
+                return Err(diag::fail(scope, &stage, format!("接收消息失败: {}", e)))
+            }
             Ok(Some(Ok(m))) => m,
         };
 
         match msg {
             tungstenite::Message::Text(text) => {
-                let event: serde_json::Value = serde_json::from_str(&text)
-                    .map_err(|e| format!("解析事件失败: {}", e))?;
+                let event: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+                    diag::fail(scope, &stage, format!("解析事件失败: {}", e))
+                })?;
 
                 let event_type = event
                     .get("type")
@@ -278,7 +370,16 @@ async fn wait_for_event(
                         .and_then(|e| e.get("message"))
                         .and_then(|m| m.as_str())
                         .unwrap_or("未知错误");
-                    return Err(format!("Qwen Omni 错误: {}", err_msg));
+                    let err_code = event
+                        .get("error")
+                        .and_then(|e| e.get("code"))
+                        .and_then(|c| c.as_str())
+                        .unwrap_or("-");
+                    return Err(diag::fail(
+                        scope,
+                        &stage,
+                        format!("Qwen Omni 错误 [{}]: {}", err_code, err_msg),
+                    ));
                 }
 
                 if event_type == expected_type {
@@ -287,9 +388,13 @@ async fn wait_for_event(
             }
             tungstenite::Message::Close(frame) => {
                 let reason = frame
-                    .map(|f| format!("code={}, reason={}", f.code, f.reason))
+                    .map(|f| format!("code={}, reason={}", f.code, diag::truncate(&f.reason, 200)))
                     .unwrap_or_else(|| "无详情".to_string());
-                return Err(format!("等待 {} 时服务端关闭了连接 ({})", expected_type, reason));
+                return Err(diag::fail(
+                    scope,
+                    &stage,
+                    format!("等待 {} 时服务端关闭了连接 ({})", expected_type, reason),
+                ));
             }
             _ => {}
         }
@@ -316,7 +421,7 @@ pub async fn test_connection(config: &AsrProviderConfig) -> TestResult {
     match tokio_tungstenite::connect_async(request).await {
         Ok((mut ws, _)) => {
             // 尝试等待 session.created
-            let result = wait_for_event(&mut ws, "session.created").await;
+            let result = wait_for_event(&mut ws, "session.created", "qwen/omni-test").await;
             let _ = ws.close(None).await;
             let elapsed_ms = start.elapsed().as_millis() as u64;
             match result {
@@ -338,7 +443,7 @@ pub async fn test_connection(config: &AsrProviderConfig) -> TestResult {
             let elapsed_ms = start.elapsed().as_millis() as u64;
             TestResult {
                 ok: false,
-                message: format!("连接失败: {}", e),
+                message: diag::fail("qwen/omni-test", "connect", format!("连接失败: {}", e)),
                 elapsed_ms,
                 detail: String::new(),
             }

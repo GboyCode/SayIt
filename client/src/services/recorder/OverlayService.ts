@@ -1,4 +1,5 @@
 import * as bridge from '../bridge'
+import { addRuntimeEvent } from '../debugLog'
 import { getSetting } from '../store'
 import { clampSec } from '../timeModel'
 import {
@@ -323,8 +324,17 @@ export class OverlayService {
     this.fallbackHideId = setTimeout(() => this.hide(), 1600)
   }
 
-  /** 识别结果为空（未检测到有效声音）时的提示。 */
-  showNoSpeech() {
+  /**
+   * 识别结果为空（未检测到有效声音）时的提示。
+   *
+   * `diagnostic` 由调用方补充成因上下文。日志刻意放在这里、而不是各个调用点：
+   * 这句提示是全软件最容易被误读的一条 —— 真实成因可能是用户没说话、供应商额度
+   * 耗尽、服务端提前断开、文本后处理失败，用户看到的却是同一句话。放在这个唯一
+   * 出口，就保证「用户看到这句」和「日志里有记录」永远一一对应，不会因为将来
+   * 新增一个调用点而漏掉。
+   */
+  showNoSpeech(diagnostic?: Record<string, unknown>) {
+    addRuntimeEvent('warn', 'recorder', '显示「未检测到有效声音」', diagnostic ?? {})
     this.setEscapeMode('off', 0)
     void bridge.presentOverlay({
       state: 'toast',

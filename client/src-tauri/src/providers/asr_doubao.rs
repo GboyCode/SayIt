@@ -2,6 +2,7 @@
 // 使用大模型录音文件极速版 HTTP API：一次请求即返回结果
 // 接口：POST https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash
 
+use super::diag;
 use super::doubao_auth::{self, DoubaoAuth};
 use super::doubao_protocol;
 use super::types::{AsrProviderConfig, AsrResult, TestResult};
@@ -10,6 +11,7 @@ use std::time::Instant;
 const RECOGNIZE_URL: &str =
     "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash";
 const RESOURCE_ID: &str = "volc.bigasr.auc_turbo";
+const SCOPE: &str = "doubao/flash";
 
 /// 将 PCM Int16 音频转换为 WAV 格式（火山引擎需要 WAV/MP3/OGG 格式）
 fn pcm_to_wav(pcm_data: &[u8], sample_rate: u32) -> Vec<u8> {
@@ -53,9 +55,10 @@ pub async fn transcribe(
         &base64::engine::general_purpose::STANDARD,
         audio_pcm_b64,
     )
-    .map_err(|e| format!("base64 解码失败: {}", e))?;
+    .map_err(|e| diag::fail(SCOPE, "decode_b64", format!("base64 解码失败: {}", e)))?;
 
     if pcm_data.is_empty() {
+        diag::empty_result(SCOPE, "客户端送来的音频是空的，没有发起请求");
         return Ok(AsrResult {
             text: String::new(),
             elapsed_ms: 0,
@@ -68,8 +71,27 @@ pub async fn transcribe(
 
     let auth = DoubaoAuth::from_config(config);
     if let Some(missing) = auth.missing_field() {
-        return Err(format!("豆包 ASR 缺少{}，请在设置里填好", missing));
+        return Err(diag::fail(
+            SCOPE,
+            "credentials",
+            format!("豆包 ASR 缺少{}，请在设置里填好", missing),
+        ));
     }
+
+    let audio_sec = pcm_data.len() as f64 / (sample_rate.max(1) as f64 * 2.0);
+    diag::log(
+        SCOPE,
+        "start",
+        &format!(
+            "pcm_bytes={} audio_sec={:.1} rate={} hotwords={} auth={} resourceId={}",
+            pcm_data.len(),
+            audio_sec,
+            sample_rate,
+            hotwords.len(),
+            auth.mode_name(),
+            RESOURCE_ID
+        ),
+    );
 
     let mut request_params = serde_json::json!({
         "model_name": "bigmodel"
@@ -107,9 +129,10 @@ pub async fn transcribe(
         .timeout(std::time::Duration::from_secs(60))
         .send()
         .await
-        .map_err(|e| format!("HTTP 请求失败: {}", e))?;
+        .map_err(|e| diag::fail(SCOPE, "http_send", format!("HTTP 请求失败: {}", e)))?;
 
     let elapsed_ms = start.elapsed().as_millis() as u64;
+    let http_summary = diag::http_summary(resp.status(), resp.headers());
     doubao_auth::log_http_logid(
         &format!("flash auth={}", auth.mode_name()),
         resp.headers(),
@@ -133,33 +156,95 @@ pub async fn transcribe(
     if !resp.status().is_success() {
         let status = resp.status();
         let body_text = resp.text().await.unwrap_or_default();
-        return Err(format!(
-            "豆包 ASR 请求失败 HTTP {}: {}",
-            status,
-            truncate(&body_text, 200)
+        return Err(diag::fail(
+            SCOPE,
+            "http_status",
+            format!(
+                "豆包 ASR 请求失败 HTTP {} [{} status={} msg={}]: {}",
+                status,
+                http_summary,
+                if status_code.is_empty() { "-" } else { &status_code },
+                if api_message.is_empty() { "-" } else { &api_message },
+                diag::truncate(&body_text, 200)
+            ),
         ));
     }
 
-    let data: serde_json::Value = resp
-        .json()
+    let body_text = resp
+        .text()
         .await
-        .map_err(|e| format!("解析响应失败: {}", e))?;
+        .map_err(|e| diag::fail(SCOPE, "read_body", format!("读取响应失败: {}", e)))?;
+    let data: serde_json::Value = serde_json::from_str(&body_text).map_err(|e| {
+        diag::fail(
+            SCOPE,
+            "parse_json",
+            format!(
+                "解析响应失败: {} [{}] 响应片段: {}",
+                e,
+                http_summary,
+                diag::truncate(&body_text, 200)
+            ),
+        )
+    })?;
 
-    // 检查 API 状态码
-    if status_code != "20000000" && !status_code.is_empty() {
-        return Err(format!(
-            "豆包 ASR 错误 {}: {}",
-            status_code, api_message
+    // 检查 API 状态码。
+    // 之前的写法是 `status_code != "20000000" && !status_code.is_empty()` —— 状态头缺失时
+    // 整个检查被跳过，一个没有 result 的响应就这样一路走到「文本为空」，对外表现成
+    // 「未检测到有效声音」。现在头缺失就记一条，后面靠 result 是否存在来判定成败。
+    if !status_code.is_empty() && status_code != "20000000" {
+        // 附上人话解释：这条消息会经历史记录的「原因」直接给用户看
+        let hint = doubao_auth::explain_status_code(&status_code)
+            .map(|t| format!("（{}）", t))
+            .unwrap_or_default();
+        return Err(diag::fail(
+            SCOPE,
+            "api_status",
+            format!(
+                "豆包 ASR 错误 {}{}: {} [{}]",
+                status_code, hint, api_message, http_summary
+            ),
         ));
     }
+    if status_code.is_empty() {
+        diag::log(SCOPE, "missing_status_header", &http_summary);
+    }
 
-    // 提取识别文本
-    let text = data
-        .get("result")
-        .and_then(|r| r.get("text"))
+    // 提取识别文本。result 整个不存在 = 这不是一个正常的成功响应，
+    // 不能静默当成「没识别出内容」。
+    let Some(result) = data.get("result") else {
+        return Err(diag::fail(
+            SCOPE,
+            "no_result_field",
+            format!(
+                "豆包返回的响应里没有识别结果 [{} status={}] {}",
+                http_summary,
+                if status_code.is_empty() { "-" } else { &status_code },
+                diag::describe_json(&body_text)
+            ),
+        ));
+    };
+
+    let text = result
+        .get("text")
         .and_then(|t| t.as_str())
         .unwrap_or("")
         .to_string();
+
+    if text.is_empty() {
+        diag::empty_result(
+            SCOPE,
+            &format!(
+                "有 result 但 text 为空 audio_sec={:.1} elapsed={}ms [{} status={} msg={}]",
+                audio_sec,
+                elapsed_ms,
+                http_summary,
+                if status_code.is_empty() { "-" } else { &status_code },
+                if api_message.is_empty() { "-" } else { &api_message }
+            ),
+        );
+    } else {
+        diag::ok(SCOPE, elapsed_ms, text.chars().count());
+    }
 
     Ok(AsrResult { text, elapsed_ms })
 }
@@ -237,10 +322,15 @@ pub async fn test_connection(config: &AsrProviderConfig) -> TestResult {
                     detail: String::new(),
                 }
             } else {
+                let status = resp.status();
                 let body = resp.text().await.unwrap_or_default();
                 TestResult {
                     ok: false,
-                    message: format!("API 错误: {}", truncate(&body, 100)),
+                    message: diag::fail(
+                        "doubao/flash-test",
+                        "http_status",
+                        format!("API 错误 {}: {}", status, diag::truncate(&body, 100)),
+                    ),
                     elapsed_ms,
                     detail: String::new(),
                 }
@@ -248,17 +338,13 @@ pub async fn test_connection(config: &AsrProviderConfig) -> TestResult {
         }
         Err(e) => TestResult {
             ok: false,
-            message: format!("连接失败: {}", e),
+            message: diag::fail(
+                "doubao/flash-test",
+                "http_send",
+                format!("连接失败: {}", e),
+            ),
             elapsed_ms,
             detail: String::new(),
         },
-    }
-}
-
-fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len])
     }
 }

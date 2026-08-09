@@ -69,7 +69,7 @@ Everything runs on a single server with one GPU.
 ### 1. Clone and configure
 
 ```bash
-git clone https://github.com/your-org/SayIt.git
+git clone https://github.com/crosswk/SayIt.git
 cd SayIt
 cp .env.example .env
 cp config.example.yaml config.yaml

@@ -79,6 +79,91 @@ interface Notice {
   detail?: string
 }
 
+/**
+ * 一次识别测试的结果。`check` 无论成败都要写回卡片 —— 失败也得让卡上显示「不可用」，
+ * 而不是停在「未测试」让人以为没测过。
+ */
+type AsrTestOutcome =
+  | { ok: true; check: AsrCheck; text: string; latencyMs: number; audioSec: number }
+  | { ok: false; check: AsrCheck; message: string; detail?: string }
+
+/**
+ * 把内置测试音频准备成后端要的裸 PCM（base64）。
+ * 从测试逻辑里单独拆出来，是为了让批量测试**只准备一次**给 N 张卡共用。
+ */
+async function prepareTestPcm(): Promise<{ pcmB64: string; audioSec: number }> {
+  const wavB64 = await invoke<string>('get_test_audio_b64')
+  const wavBytes = Uint8Array.from(atob(wavB64), (c) => c.charCodeAt(0))
+  const pcmBytes = wavBytes.slice(44) // 去掉 44 字节 WAV 头，后端要的是裸 PCM
+  const audioSec = pcmBytes.length / 2 / 16000
+  let pcmB64 = ''
+  const chunk = 8192
+  for (let i = 0; i < pcmBytes.length; i += chunk) {
+    pcmB64 += String.fromCharCode(...pcmBytes.subarray(i, Math.min(i + chunk, pcmBytes.length)))
+  }
+  return { pcmB64: btoa(pcmB64), audioSec }
+}
+
+/**
+ * 真跑一次识别并把结果收成 outcome。
+ *
+ * 刻意不碰任何 state、也不写存储：单张测试与「测试全部」共用它，各自决定怎么落盘、
+ * 怎么提示。message 里不带供应商名字，由调用方按自己的语境加前缀。
+ */
+async function runAsrTest(
+  profile: AsrProfile,
+  audio: { pcmB64: string; audioSec: number },
+): Promise<AsrTestOutcome> {
+  const entry = findAsrProvider(profile.provider)
+  if (!entry) {
+    return { ok: false, check: { ok: false, at: Date.now(), reason: '未知的供应商' }, message: '未知的供应商' }
+  }
+  try {
+    const creds = effectiveAsrCredentials(profile)
+    const omniModel = resolveQwenOmniModel(profile.provider)
+    const start = performance.now()
+    const r = await invoke<{ text: string; elapsed_ms: number }>('cloud_transcribe', {
+      request: {
+        audio_b64: audio.pcmB64,
+        sample_rate: 16000,
+        asr_config: {
+          provider: entry.omni ? 'qwen_omni' : profile.provider,
+          api_key: creds.apiKey,
+          app_id: creds.appId,
+          ...(entry.omni && {
+            extra: { model: omniModel, instructions: profile.omniPrompt || undefined },
+          }),
+        },
+      },
+    })
+    const latencyMs = Math.round(performance.now() - start)
+    const text = r.text.trim()
+    if (!text) {
+      // 连通了但一个字都没出：多半是资源没开通或额度问题，不能算可用
+      return {
+        ok: false,
+        check: { ok: false, at: Date.now(), reason: '返回了空文本' },
+        message: '连通了，但没返回任何文字，请检查资源是否已开通。',
+      }
+    }
+    return {
+      ok: true,
+      check: { ok: true, at: Date.now(), latencyMs, audioSec: audio.audioSec },
+      text,
+      latencyMs,
+      audioSec: audio.audioSec,
+    }
+  } catch (err) {
+    const friendly = describeProviderError(err)
+    return {
+      ok: false,
+      check: { ok: false, at: Date.now(), reason: friendly.message },
+      message: `测试没通过：${friendly.message}`,
+      detail: friendly.detail,
+    }
+  }
+}
+
 /** 卡片标题：同一家有多份时补上密钥尾巴，否则两张卡长得一模一样 */
 function profileTitle(profile: AsrProfile, siblings: number): string {
   const entry = findAsrProvider(profile.provider)
@@ -95,6 +180,10 @@ export default function CloudAPISection() {
   const [testingId, setTestingId] = useState('')
   const [notice, setNotice] = useState<Notice | null>(null)
   const [pendingDeleteId, setPendingDeleteId] = useState('')
+  /** 「测试全部」的进度；null = 没在批量测试 */
+  const [batch, setBatch] = useState<{ done: number; total: number } | null>(null)
+  /** 批量测试是并发的，所以「正在测哪张」是一组而不是一张 */
+  const [testingIds, setTestingIds] = useState<string[]>([])
 
   /** 正在编辑的那份（新建也走这里）。null = 弹窗关着 */
   const [draft, setDraft] = useState<AsrProfile | null>(null)
@@ -102,7 +191,9 @@ export default function CloudAPISection() {
   const [draftBaseline, setDraftBaseline] = useState('')
   const [saving, setSaving] = useState(false)
 
-  const busy = testingId !== '' || saving
+  const busy = testingId !== '' || saving || batch !== null
+  /** 这张卡正在测吗 —— 单张测试和并发批量测试都要算上 */
+  const isTesting = (id: string) => testingId === id || testingIds.includes(id)
   const draftEntry = draft ? findAsrProvider(draft.provider) : undefined
   const draftPlatform = draftEntry?.platform ?? 'doubao'
   const draftIsDoubao = draftPlatform === 'doubao'
@@ -171,63 +262,114 @@ export default function CloudAPISection() {
     setTestingId(profile.id)
     setNotice(null)
     try {
-      const wavB64 = await invoke<string>('get_test_audio_b64')
-      const wavBytes = Uint8Array.from(atob(wavB64), (c) => c.charCodeAt(0))
-      const pcmBytes = wavBytes.slice(44) // 去掉 44 字节 WAV 头，后端要的是裸 PCM
-      const audioSec = pcmBytes.length / 2 / 16000
-      let pcmB64 = ''
-      const chunk = 8192
-      for (let i = 0; i < pcmBytes.length; i += chunk) {
-        pcmB64 += String.fromCharCode(...pcmBytes.subarray(i, Math.min(i + chunk, pcmBytes.length)))
-      }
-      pcmB64 = btoa(pcmB64)
-
-      const creds = effectiveAsrCredentials(profile)
-      const omniModel = resolveQwenOmniModel(profile.provider)
-      const start = performance.now()
-      const r = await invoke<{ text: string; elapsed_ms: number }>('cloud_transcribe', {
-        request: {
-          audio_b64: pcmB64,
-          sample_rate: 16000,
-          asr_config: {
-            provider: entry.omni ? 'qwen_omni' : profile.provider,
-            api_key: creds.apiKey,
-            app_id: creds.appId,
-            ...(entry.omni && {
-              extra: { model: omniModel, instructions: profile.omniPrompt || undefined },
-            }),
-          },
-        },
-      })
-      const latencyMs = Math.round(performance.now() - start)
-      const text = r.text.trim()
-      const check: AsrCheck = text
-        ? { ok: true, at: Date.now(), latencyMs, audioSec }
-        // 连通了但一个字都没出：多半是资源没开通或额度问题，不能算可用
-        : { ok: false, at: Date.now(), reason: '返回了空文本' }
-      await persist(profiles.map((p) => (p.id === profile.id ? { ...p, check } : p)), activeId)
-
-      if (!text) {
-        setNotice({ tone: 'error', message: `${entry.label} 连通了，但没返回任何文字，请检查资源是否已开通。` })
-        return
-      }
-      const grade = gradeAsrLatency(latencyMs, audioSec)
-      setNotice({
-        tone: grade.tone === 'bad' ? 'warning' : 'success',
-        message: `${entry.label} 可用，转写 ${audioSec.toFixed(1)}s 音频用了 ${formatLatency(latencyMs)}（${grade.label}）。`,
-        detail: `识别结果：${text}`,
-      })
-    } catch (err) {
-      const friendly = describeProviderError(err)
+      const outcome = await runAsrTest(profile, await prepareTestPcm())
       await persist(
-        profiles.map((p) => (p.id === profile.id
-          ? { ...p, check: { ok: false, at: Date.now(), reason: friendly.message } }
-          : p)),
+        profiles.map((p) => (p.id === profile.id ? { ...p, check: outcome.check } : p)),
         activeId,
       )
-      setNotice({ tone: 'error', message: `${entry.label} 测试没通过：${friendly.message}`, detail: friendly.detail })
+      if (!outcome.ok) {
+        setNotice({ tone: 'error', message: `${entry.label} ${outcome.message}`, detail: outcome.detail })
+        return
+      }
+      const grade = gradeAsrLatency(outcome.latencyMs, outcome.audioSec)
+      setNotice({
+        tone: grade.tone === 'bad' ? 'warning' : 'success',
+        message: `${entry.label} 可用，转写 ${outcome.audioSec.toFixed(1)}s 音频用了 ${formatLatency(outcome.latencyMs)}（${grade.label}）。`,
+        detail: `识别结果：${outcome.text}`,
+      })
+    } catch (err) {
+      // 只有准备测试音频这一步会漏到这里；识别本身的失败由 runAsrTest 收成 outcome
+      const friendly = describeProviderError(err)
+      setNotice({ tone: 'error', message: `${entry.label} 测试没跑起来：${friendly.message}`, detail: friendly.detail })
     } finally {
       setTestingId('')
+    }
+  }
+
+  /**
+   * 一键测试全部：**并发**真跑一次识别，一次点击直接开始（没有二次确认）。
+   *
+   * ⚠️ 并发的代价，改回串行前先想清楚：卡上的耗时是用来横向比较「哪个更快」的，
+   * 并发跑出来的数字互相污染 —— 同平台的卡尤其明显（千问那几个变体共用一把百炼
+   * 密钥，打的是同一个服务），还可能撞上限流被记成「不可用」。所以批量结果里会
+   * 注明这批耗时不宜横向比较；要拿准数字，用卡上的单张测试。
+   *
+   * 另外两个决定：
+   *  · **一次性落盘**，不逐张写。并发下每个回调拿到的都是同一份旧 profiles，
+   *    逐张 persist 会互相覆盖，只剩最后一个的结论。代价是中途关页面这批就没了 ——
+   *    并发之后整批只等最慢那张，这个窗口很短。
+   *  · **跳过没配完的**，不给它们写「不可用」。它们缺的是密钥而不是可用性，
+   *    写进结论只会污染卡片状态；跳过几张会在结果里说明。
+   */
+  async function handleTestAll() {
+    if (busy) return
+    const targets = profiles.filter((p) => !describeAsrMissing(p))
+    const skipped = profiles.length - targets.length
+    if (targets.length === 0) {
+      setNotice({
+        tone: 'warning',
+        message: '没有配置完整的服务可测。先把密钥填上，再来一键测试。',
+      })
+      return
+    }
+
+    setNotice(null)
+    setBatch({ done: 0, total: targets.length })
+    setTestingIds(targets.map((p) => p.id))
+
+    try {
+      // 测试音频只准备一次，N 张卡共用
+      const audio = await prepareTestPcm()
+      let done = 0
+      const results = await Promise.all(targets.map(async (target) => {
+        const outcome = await runAsrTest(target, audio)
+        // 每张自己测完就把图标停下、进度加一，不用等整批结束
+        done += 1
+        setBatch({ done, total: targets.length })
+        setTestingIds((prev) => prev.filter((id) => id !== target.id))
+        return { target, outcome }
+      }))
+
+      const checks = new Map(results.map((r) => [r.target.id, r.outcome.check]))
+      await persist(
+        profiles.map((p) => {
+          const check = checks.get(p.id)
+          return check ? { ...p, check } : p
+        }),
+        activeId,
+      )
+
+      let okCount = 0
+      let failCount = 0
+      const lines = results.map(({ target, outcome }) => {
+        const label = findAsrProvider(target.provider)?.label ?? target.provider
+        if (outcome.ok) {
+          okCount += 1
+          const grade = gradeAsrLatency(outcome.latencyMs, outcome.audioSec)
+          return `${label}：可用 · ${formatLatency(outcome.latencyMs)}（${grade.label}）`
+        }
+        failCount += 1
+        return `${label}：${outcome.message}`
+      })
+
+      const parts = [`${okCount} 张可用`]
+      if (failCount > 0) parts.push(`${failCount} 张不可用`)
+      if (skipped > 0) parts.push(`${skipped} 张没配完（已跳过）`)
+      if (targets.length > 1) {
+        lines.push('', '这批是并发测的，耗时互相有影响，不宜横向比较；要准确数字请单张测试。')
+      }
+      setNotice({
+        tone: failCount > 0 ? 'warning' : 'success',
+        message: `测试完成：${parts.join('，')}。`,
+        detail: lines.join('\n'),
+      })
+    } catch (err) {
+      // 只有准备测试音频这一步会漏到这里；识别本身的失败由 runAsrTest 收成 outcome
+      const friendly = describeProviderError(err)
+      setNotice({ tone: 'error', message: `测试没跑起来：${friendly.message}`, detail: friendly.detail })
+    } finally {
+      setTestingIds([])
+      setBatch(null)
     }
   }
 
@@ -349,7 +491,7 @@ export default function CloudAPISection() {
   }
 
   function describeCard(profile: AsrProfile): CardStatus {
-    if (testingId === profile.id) {
+    if (isTesting(profile.id)) {
       return { label: '测试中', tone: 'neutral', spoken: '正在测试', hint: '正在用测试音频跑一次识别' }
     }
     const missing = describeAsrMissing(profile)
@@ -458,7 +600,7 @@ export default function CloudAPISection() {
                 aria-label={`测试 ${title} 是否可用`}
                 className={cardIconButtonClass}
               >
-                <RefreshCw className={cn('h-3.5 w-3.5', testingId === profile.id && 'animate-spin')} aria-hidden />
+                <RefreshCw className={cn('h-3.5 w-3.5', isTesting(profile.id) && 'animate-spin')} aria-hidden />
               </button>
             </Tooltip>
             <Tooltip className="pointer-events-auto" content="编辑">
@@ -674,10 +816,24 @@ export default function CloudAPISection() {
               识别测出来的（会产生一次真实计费调用）。
             </p>
           </div>
-          <Button variant="outline" size="sm" className="h-8 shrink-0" onClick={handleNew} disabled={busy}>
-            <Plus className="mr-1 h-3.5 w-3.5" aria-hidden />
-            新建
-          </Button>
+          <div className="flex shrink-0 items-center gap-2">
+            {/* 并发跑，所以没有「停止」：invoke 发出去的请求没法撤回，
+                摆一颗停不掉任何东西的按钮比没有更糟。整批只等最慢那张，很快。 */}
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 shrink-0"
+              onClick={() => void handleTestAll()}
+              disabled={busy || profiles.length === 0}
+            >
+              <RefreshCw className={cn('mr-1 h-3.5 w-3.5', batch && 'animate-spin')} aria-hidden />
+              {batch ? `测试中（${batch.done}/${batch.total}）` : '测试全部'}
+            </Button>
+            <Button variant="outline" size="sm" className="h-8 shrink-0" onClick={handleNew} disabled={busy}>
+              <Plus className="mr-1 h-3.5 w-3.5" aria-hidden />
+              新建
+            </Button>
+          </div>
         </div>
 
         {!loaded ? (

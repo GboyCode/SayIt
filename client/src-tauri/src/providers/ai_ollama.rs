@@ -1,9 +1,12 @@
 // Ollama AI 供应商
 // 调用本地 Ollama 的 /api/generate 接口
 
+use super::diag;
 use super::prompt::wrap_user_text;
 use super::types::{AiProviderConfig, AiResult, TestResult};
 use std::time::Instant;
+
+const SCOPE: &str = "ai/ollama";
 
 /// 调用 Ollama 进行文本校对
 pub async fn polish(
@@ -39,6 +42,12 @@ pub async fn polish(
     let client = reqwest::Client::new();
     let start = Instant::now();
 
+    diag::log(
+        SCOPE,
+        "start",
+        &format!("model={} chars={} url={}", model, text.chars().count(), url),
+    );
+
     let resp = client
         .post(&url)
         .header("Content-Type", "application/json")
@@ -46,20 +55,41 @@ pub async fn polish(
         .timeout(std::time::Duration::from_secs(90))
         .send()
         .await
-        .map_err(|e| format!("Ollama 请求失败: {}", e))?;
+        .map_err(|e| diag::fail(SCOPE, "http_send", format!("Ollama 请求失败: {}", e)))?;
 
     let elapsed_ms = start.elapsed().as_millis() as u64;
+    let http_summary = diag::http_summary(resp.status(), resp.headers());
 
     if !resp.status().is_success() {
         let status = resp.status();
         let body_text = resp.text().await.unwrap_or_default();
-        return Err(format!("Ollama 返回错误 {}: {}", status, truncate(&body_text, 200)));
+        return Err(diag::fail(
+            SCOPE,
+            "http_status",
+            format!(
+                "Ollama 返回错误 {} [{}]: {}",
+                status,
+                http_summary,
+                diag::truncate(&body_text, 200)
+            ),
+        ));
     }
 
-    let data: serde_json::Value = resp
-        .json()
+    let body_text = resp
+        .text()
         .await
-        .map_err(|e| format!("解析 Ollama 响应失败: {}", e))?;
+        .map_err(|e| diag::fail(SCOPE, "read_body", format!("读取响应失败: {}", e)))?;
+    let data: serde_json::Value = serde_json::from_str(&body_text).map_err(|e| {
+        diag::fail(
+            SCOPE,
+            "parse_json",
+            format!(
+                "解析 Ollama 响应失败: {} 响应片段: {}",
+                e,
+                diag::truncate(&body_text, 200)
+            ),
+        )
+    })?;
 
     let result_text = data
         .get("response")
@@ -67,6 +97,21 @@ pub async fn polish(
         .unwrap_or("")
         .trim()
         .to_string();
+
+    // 空回复会静默回落成原文 —— 用户以为校对跑过了，其实没有。留证。
+    if result_text.is_empty() {
+        diag::log(
+            SCOPE,
+            "empty_response_fallback_to_input",
+            &format!(
+                "Ollama 没有返回内容，已回落为原文 model={} {}",
+                model,
+                diag::describe_json(&body_text)
+            ),
+        );
+    } else {
+        diag::ok(SCOPE, elapsed_ms, result_text.chars().count());
+    }
 
     Ok(AiResult {
         text: if result_text.is_empty() { text.to_string() } else { result_text },
@@ -131,14 +176,22 @@ pub async fn test_connection(config: &AiProviderConfig) -> TestResult {
             let body_text = resp.text().await.unwrap_or_default();
             TestResult {
                 ok: false,
-                message: format!("Ollama 返回 {} : {}", status, truncate(&body_text, 100)),
+                message: diag::fail(
+                    "ai/ollama-test",
+                    "http_status",
+                    format!(
+                        "Ollama 返回 {} : {}",
+                        status,
+                        diag::truncate(&body_text, 100)
+                    ),
+                ),
                 elapsed_ms,
                 detail: format!("模型: {}\n请求地址: {}", model, url),
             }
         }
         Err(e) => TestResult {
             ok: false,
-            message: format!("连接失败: {}", e),
+            message: diag::fail("ai/ollama-test", "http_send", format!("连接失败: {}", e)),
             elapsed_ms,
             detail: format!("模型: {}\n请求地址: {}", model, url),
         },
@@ -153,13 +206,5 @@ fn normalize_url(url: &str) -> String {
         format!("{}/generate", trimmed)
     } else {
         format!("{}/api/generate", trimmed)
-    }
-}
-
-fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len])
     }
 }
