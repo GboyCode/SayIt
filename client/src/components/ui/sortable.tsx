@@ -16,6 +16,7 @@
 
 import { useRef, useState, type ComponentPropsWithoutRef, type DragEvent, type KeyboardEvent } from 'react'
 import { GripVertical } from 'lucide-react'
+import { useT } from '@/i18n/useT'
 import { cn } from '@/lib/utils'
 
 export interface SortableOptions {
@@ -24,6 +25,7 @@ export interface SortableOptions {
 }
 
 export function useSortable({ onMove }: SortableOptions) {
+  const t = useT()
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [overIndex, setOverIndex] = useState<number | null>(null)
   const rowRefs = useRef<Array<HTMLElement | null>>([])
@@ -35,7 +37,7 @@ export function useSortable({ onMove }: SortableOptions) {
   /** 加在拖拽柄上 */
   const handleProps = (index: number, label: string) => ({
     draggable: true,
-    'aria-label': `${label}（可拖拽排序，或聚焦后按上下方向键移动）`,
+    'aria-label': t('ui.sortableAria', { label }),
     onDragStart: (event: DragEvent) => {
       setDragIndex(index)
       event.dataTransfer.effectAllowed = 'move'

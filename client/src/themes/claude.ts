@@ -1,4 +1,5 @@
 import type { ThemeDefinition } from './types'
+import { t } from '@/i18n'
 
 /**
  * Claude UI 风格主题
@@ -6,7 +7,7 @@ import type { ThemeDefinition } from './types'
  */
 const claude: ThemeDefinition = {
   id: 'claude',
-  name: '暖色',
+  get name() { return t('theme.warm') },
   isDark: false,
   previewColors: {
     bg: '#faf9f5',

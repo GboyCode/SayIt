@@ -11,6 +11,9 @@ import { useHotwordsManager } from '@/services/hotwords/useHotwordsManager'
 import TextReplacementSection from '@/components/TextReplacementSection'
 import TextFormatSection from '@/components/TextFormatSection'
 import { useSortable, DragHandle } from '@/components/ui/sortable'
+import { t } from '@/i18n'
+import { RichText } from '@/i18n/RichText'
+import { useT } from '@/i18n/useT'
 
 type Tab = 'hotwords' | 'replacement'
 
@@ -45,7 +48,7 @@ function WordChips({
             <button
               onClick={() => onRemove(word)}
               className="rounded-full p-0.5 transition-colors hover:bg-destructive/10 hover:text-destructive"
-              aria-label={`删除 ${word}`}
+              aria-label={t('dict.deleteWord', { word })}
             >
               <X className="h-2.5 w-2.5 text-muted-foreground" />
             </button>
@@ -58,7 +61,7 @@ function WordChips({
           onClick={() => setExpanded(!expanded)}
           className="text-xs text-muted-foreground transition-colors hover:text-foreground"
         >
-          {expanded ? '收起' : `展开全部（共 ${words.length} 个）`}
+          {expanded ? t('dict.collapse') : t('dict.expandAll', { count: words.length })}
         </button>
       )}
     </div>
@@ -66,6 +69,7 @@ function WordChips({
 }
 
 export default function Dictionary() {
+  useT()
   const [tab, setTab] = useState<Tab>('hotwords')
   const [exportMessage, setExportMessage] = useState('')
   const [warnDismissed, setWarnDismissed] = useState(false)
@@ -104,7 +108,7 @@ export default function Dictionary() {
 
   const handleExport = async () => {
     const result = await exportHotwords()
-    setExportMessage(result.canceled ? '已取消导出。' : `已保存到 ${result.filePath}`)
+    setExportMessage(result.canceled ? t('history.exportCanceled') : t('history.savedTo', { path: result.filePath ?? '' }))
   }
 
   return (
@@ -112,7 +116,7 @@ export default function Dictionary() {
       {/* 标题栏 + Tab */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-4">
-          <h1 className="text-2xl font-bold">热词</h1>
+          <h1 className="text-2xl font-bold">{t('nav.hotwords')}</h1>
           <div className="flex gap-1 rounded-lg border border-border p-0.5">
             <button
               type="button"
@@ -121,7 +125,7 @@ export default function Dictionary() {
                 'rounded-md px-3 py-1 text-xs transition-colors',
                 tab === 'hotwords' ? 'bg-accent font-medium text-foreground' : 'text-muted-foreground hover:text-foreground',
               )}
-            >热词</button>
+            >{t('dict.tabHotwords')}</button>
             <button
               type="button"
               onClick={() => setTab('replacement')}
@@ -129,7 +133,7 @@ export default function Dictionary() {
                 'rounded-md px-3 py-1 text-xs transition-colors',
                 tab === 'replacement' ? 'bg-accent font-medium text-foreground' : 'text-muted-foreground hover:text-foreground',
               )}
-            >文本处理</button>
+            >{t('dict.tabTextProcess')}</button>
           </div>
         </div>
 
@@ -144,17 +148,17 @@ export default function Dictionary() {
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="搜索热词"
+                placeholder={t('dict.searchPlaceholder')}
                 className="w-52 rounded-md border border-input-border bg-input-bg py-1.5 pl-8 pr-3 text-sm"
               />
             </div>
-            <Tooltip content="导出数据">
+            <Tooltip content={t('history.export')}>
               <Button
                 variant="ghost"
                 size="icon"
                 className="h-8 w-8 text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
                 onClick={() => void handleExport()}
-                aria-label="导出数据"
+                aria-label={t('history.export')}
               >
                 <Download className="h-4 w-4" />
               </Button>
@@ -179,27 +183,28 @@ export default function Dictionary() {
       {tab === 'hotwords' && (
         <>
           <p className="mb-4 flex items-center gap-1.5 text-sm text-muted-foreground">
-            <span>热词可提升语音识别对专有名词和行业术语的准确率。</span>
+            <span>{t('dict.intro')}</span>
             <Tooltip
               variant="light"
               content={
                 <div className="text-left">
-                  <p className="mb-1.5 font-medium">各模型对热词的支持</p>
+                  <p className="mb-1.5 font-medium">{t('dict.supportTitle')}</p>
                   <table className="border-collapse text-xs [&_td]:py-0.5 [&_td]:pr-3 [&_td]:align-top [&_th]:pb-1 [&_th]:pr-3 [&_th]:text-left [&_th]:font-normal [&_th]:text-muted-foreground/70">
                     <thead>
-                      <tr><th>模型</th><th>热词</th><th>说明</th></tr>
+                      <tr><th>{t('dict.tableModel')}</th><th>{t('dict.tableHotword')}</th><th>{t('dict.tableNote')}</th></tr>
                     </thead>
                     <tbody>
-                      <tr><td>豆包 Seed-ASR 2.0</td><td>支持</td><td>关实时字幕最准；开启时约仅前 100 token 生效</td></tr>
-                      <tr><td>千问 flash-realtime（实时）</td><td>支持</td><td>效果较好，约 10000 tokens</td></tr>
-                      <tr><td>千问 flash（非实时）</td><td>支持</td><td>效果一般</td></tr>
-                      <tr><td>本地 Qwen3-ASR</td><td>暂不支持</td><td>GGML 引擎暂未接入</td></tr>
-                      <tr><td>本地 SenseVoice / Fun-ASR Nano</td><td>不支持</td><td>可用 AI 整理辅助纠正</td></tr>
-                      <tr><td>服务器模式</td><td>支持</td><td>效果较好</td></tr>
+                      {/* 模型名是品牌 + 型号，两种语言下都用官方写法，只有"支持/说明"两列走翻译 */}
+                      <tr><td>Doubao Seed-ASR 2.0</td><td>{t('dict.support.yes')}</td><td>{t('dict.note.doubao')}</td></tr>
+                      <tr><td>{t('dict.model.qwenRealtime')}</td><td>{t('dict.support.yes')}</td><td>{t('dict.note.qwenRealtime')}</td></tr>
+                      <tr><td>{t('dict.model.qwenFlash')}</td><td>{t('dict.support.yes')}</td><td>{t('dict.note.qwenFlash')}</td></tr>
+                      <tr><td>{t('dict.model.localQwen')}</td><td>{t('dict.support.notYet')}</td><td>{t('dict.note.localQwen')}</td></tr>
+                      <tr><td>{t('dict.model.localOther')}</td><td>{t('dict.support.no')}</td><td>{t('dict.note.localOther')}</td></tr>
+                      <tr><td>{t('dict.model.server')}</td><td>{t('dict.support.yes')}</td><td>{t('dict.note.server')}</td></tr>
                     </tbody>
                   </table>
                   <p className="mt-2 max-w-[380px] leading-relaxed">
-                    热词只提高<span className="font-semibold">命中概率</span>，不保证 100% 准确；且<span className="font-semibold">并非越多越好</span>。使用暂不支持 ASR 热词的本地模型时，可开启「热词注入提示词」，由 AI 整理辅助纠正。
+                    <RichText text={t('dict.caveat')} />
                   </p>
                 </div>
               }
@@ -211,13 +216,13 @@ export default function Dictionary() {
           {hotwords.length > HOTWORD_SOFT_LIMIT && !warnDismissed && (
             <div className="mb-4 -mt-2 flex items-start gap-2 text-xs text-amber-500">
               <p>
-                当前已有 <span className="font-semibold">{hotwords.length}</span> 个热词，<span className="font-semibold">热词并非越多越好</span>，建议精选常用术语。
+                <RichText text={t('dict.countHint', { count: hotwords.length })} />
               </p>
               <button
                 type="button"
                 onClick={() => setWarnDismissed(true)}
                 className="shrink-0 rounded p-0.5 text-amber-500/70 transition-colors hover:bg-amber-500/10 hover:text-amber-500"
-                aria-label="关闭提示"
+                aria-label={t('dict.dismissHint')}
               >
                 <X className="h-3 w-3" />
               </button>
@@ -236,7 +241,7 @@ export default function Dictionary() {
                   void addTheme()
                 }
               }}
-              placeholder="新建分类，例如：项目A / 医疗术语 / 会议术语"
+              placeholder={t('dict.newCategoryPlaceholder')}
               className="flex-1 rounded-md border border-input-border bg-input-bg px-3 py-1.5 text-sm"
             />
             <Button
@@ -247,18 +252,18 @@ export default function Dictionary() {
               className="shrink-0 gap-1.5"
             >
               <Plus className="h-3.5 w-3.5" />
-              添加
+              {t('dict.add')}
             </Button>
           </div>
 
           {loading ? (
-            <p className="py-8 text-center text-muted-foreground">加载中...</p>
+            <p className="py-8 text-center text-muted-foreground">{t('dict.loading')}</p>
           ) : (
             <div className="space-y-4">
               {/* 自定义分类 */}
               {customThemes.length > 1 && !search && (
                 <p className="text-xs text-muted-foreground/70">
-                  分类顺序会影响热词的生效优先级：热词总数超过上限时按顺序截断，部分模型也只使用靠前的一部分，可拖动卡片左上角的手柄把常用分类往上调。
+                  {t('dict.orderHint')}
                 </p>
               )}
               {visibleCustomThemes.map((theme, themeIndex) => {
@@ -276,7 +281,7 @@ export default function Dictionary() {
                     <CardContent className="p-4">
                       <div className="mb-3 flex items-center justify-between gap-3">
                         <div className="flex items-center gap-3 min-w-0">
-                          {canSort && <DragHandle {...themeSortable.handleProps(themeIndex, `拖动分类 ${theme.name}`)} />}
+                          {canSort && <DragHandle {...themeSortable.handleProps(themeIndex, t('dict.dragCategory', { name: theme.name }))} />}
                           <Switch
                             checked={active}
                             onChange={() => void toggleCustomTheme(theme.id)}
@@ -285,17 +290,17 @@ export default function Dictionary() {
                           <div className="min-w-0">
                             <p className="text-sm font-medium">{theme.name}</p>
                             <p className="text-xs text-muted-foreground">
-                              自定义 · {activeWords.length} / {totalWords} 词
+                              {t('dict.customCount', { active: activeWords.length, total: totalWords })}
                             </p>
                           </div>
                         </div>
                         <div className="flex shrink-0 items-center">
-                          <Tooltip content="删除分类">
+                          <Tooltip content={t('dict.deleteCategory')}>
                             <button
                               type="button"
                               onClick={() => void removeTheme(theme.id)}
                               className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-                              aria-label={`删除主题 ${theme.name}`}
+                              aria-label={t('dict.deleteTheme', { name: theme.name })}
                             >
                               <Trash2 className="h-3.5 w-3.5" />
                             </button>
@@ -315,7 +320,7 @@ export default function Dictionary() {
                                   void addWordsToTheme(theme.id)
                                 }
                               }}
-                              placeholder={`添加热词（逗号、换行分隔）`}
+                              placeholder={t('dict.addWordsPlaceholder')}
                               className="flex-1 rounded-md border border-input-border bg-input-bg px-3 py-1.5 text-sm"
                             />
                             <Button
@@ -326,7 +331,7 @@ export default function Dictionary() {
                               className="shrink-0 gap-1.5"
                             >
                               <Plus className="h-3.5 w-3.5" />
-                              添加
+                              {t('dict.add')}
                             </Button>
                           </div>
 
@@ -363,7 +368,7 @@ export default function Dictionary() {
                           <div className="min-w-0">
                             <p className="text-sm font-medium">{setDef.label}</p>
                             <p className="text-xs text-muted-foreground">
-                              {setDef.description} · {activeWords.length} / {totalWords} 词
+                              {t('dict.builtinCount', { desc: setDef.description, active: activeWords.length, total: totalWords })}
                             </p>
                           </div>
                         </div>
@@ -373,7 +378,7 @@ export default function Dictionary() {
                           className="h-7 gap-1 px-2 text-xs"
                           onClick={() => void resetBuiltinSet(key)}
                         >
-                          <RotateCcw className="h-3 w-3" /> 重置
+                          <RotateCcw className="h-3 w-3" /> {t('dict.reset')}
                         </Button>
                       </div>
 
@@ -394,9 +399,9 @@ export default function Dictionary() {
                       onClick={() => setShowUnknown(!showUnknown)}
                     >
                       <div>
-                        <p className="text-sm font-medium">历史未分类词汇</p>
+                        <p className="text-sm font-medium">{t('dict.legacyTitle')}</p>
                         <p className="text-xs text-muted-foreground">
-                          这些词来自历史数据，不计入内置/自定义热词分类。
+                          {t('dict.legacyDesc')}
                         </p>
                       </div>
                       <div className="flex items-center gap-2">
@@ -415,13 +420,13 @@ export default function Dictionary() {
               {!search && hotwords.length === 0 && (
                 <div className="rounded-lg border border-dashed border-border py-8 text-center">
                   <p className="text-sm text-muted-foreground">
-                    还没有热词，先新建热词分类或点击内置分类激活。
+                    {t('dict.empty')}
                   </p>
                 </div>
               )}
 
               {search && filtered.length === 0 && (
-                <p className="py-8 text-center text-muted-foreground">没有匹配的热词。</p>
+                <p className="py-8 text-center text-muted-foreground">{t('dict.noMatch')}</p>
               )}
             </div>
           )}

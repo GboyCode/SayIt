@@ -22,7 +22,7 @@ function createProvider(mode: WorkMode): TranscriptionProvider {
     case 'local':
       return new LocalProvider()
     default:
-      addRuntimeEvent('warn', 'transcription', `未知工作模式 "${mode}"，回退到服务器模式`)
+      addRuntimeEvent('warn', 'transcription', `Unknown processing mode "${mode}"; falling back to server mode`)
       return new ServerProvider()
   }
 }
@@ -50,7 +50,7 @@ export async function switchProvider(mode: WorkMode): Promise<TranscriptionProvi
     return currentProvider
   }
 
-  addRuntimeEvent('info', 'transcription', '切换工作模式', { from: currentMode, to: mode })
+  addRuntimeEvent('info', 'transcription', 'Processing mode changed', { from: currentMode, to: mode })
 
   // 断开旧 Provider
   if (currentProvider) {
@@ -67,7 +67,7 @@ export async function switchProvider(mode: WorkMode): Promise<TranscriptionProvi
     try {
       await invoke('unload_local_model')
     } catch (err) {
-      addRuntimeEvent('warn', 'transcription', '释放本地模型失败', { error: String(err) })
+      addRuntimeEvent('warn', 'transcription', 'Failed to release local model', { error: String(err) })
     }
   }
 
@@ -82,5 +82,5 @@ export async function initProviderFromStore(): Promise<void> {
   const mode = (stored === 'server' || stored === 'cloud_api' || stored === 'local') ? stored : 'server'
   currentMode = mode as WorkMode
   currentProvider = createProvider(currentMode)
-  addRuntimeEvent('info', 'transcription', 'Provider 已初始化', { mode: currentMode })
+  addRuntimeEvent('info', 'transcription', 'Provider initialized', { mode: currentMode })
 }

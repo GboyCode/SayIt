@@ -1,5 +1,6 @@
 import { useEffect, useRef, type RefObject } from 'react'
 import { Loader2, Mic, Square } from 'lucide-react'
+import { useT } from '@/i18n/useT'
 import { cn } from '@/lib/utils'
 
 type StudioState = 'idle' | 'connecting' | 'recording' | 'processing'
@@ -53,6 +54,7 @@ export default function RecordingOrb({
   onStart,
   onStop,
 }: RecordingOrbProps) {
+  const t = useT()
   const isIdle = state === 'idle'
   const isRecording = state === 'recording'
   const isBusy = state === 'connecting' || state === 'processing'
@@ -110,7 +112,7 @@ export default function RecordingOrb({
           isBusy && 'cursor-not-allowed opacity-80',
           (isIdle || isRecording) && 'cursor-pointer',
         )}
-        aria-label={isRecording ? '停止录音' : isBusy ? '处理中' : '开始录音'}
+        aria-label={t(isRecording ? 'studio.stopRecording' : isBusy ? 'studio.processing' : 'studio.startRecording')}
       >
         {/* Blob SVG 背景（录音中） */}
         {isRecording && (
@@ -143,7 +145,7 @@ export default function RecordingOrb({
               <>
                 <Mic className="h-10 w-10 text-muted-foreground/50 transition-colors group-hover:text-primary/70" />
                 <span className="mt-2.5 text-sm text-muted-foreground/60 transition-colors group-hover:text-muted-foreground">
-                  点击录音
+                  {t('studio.clickRecord')}
                 </span>
               </>
             )}
@@ -175,7 +177,7 @@ export default function RecordingOrb({
                 <div className="mt-1 flex items-center gap-1.5">
                   <Square className="h-2 w-2 fill-rose-500 text-rose-500 opacity-0 transition-opacity group-hover:opacity-100" />
                   <span className="text-xs text-muted-foreground group-hover:text-rose-500">
-                    点击结束
+                    {t('studio.clickStop')}
                   </span>
                   <span className="h-1.5 w-1.5 rounded-full bg-rose-500 animate-pulse" />
                 </div>
@@ -186,7 +188,7 @@ export default function RecordingOrb({
               <>
                 <Loader2 className="h-7 w-7 animate-spin text-muted-foreground" />
                 <span className="mt-2 text-sm text-muted-foreground">
-                  {state === 'connecting' ? '连接中...' : '转录中...'}
+                  {t(state === 'connecting' ? 'studio.connecting' : 'studio.transcribing')}
                 </span>
               </>
             )}

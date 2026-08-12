@@ -221,6 +221,17 @@ pub fn get_client_runtime_info(storage: State<Storage>) -> Result<ClientRuntimeI
     })
 }
 
+/// 系统**显示语言**，返回前端 `Locale` 用的标签（`zh-CN` / `en`）。
+///
+/// 前端 `ui.language = 'auto'` 时靠这个定语言。刻意不让前端用
+/// `navigator.language` 自己判：那个跟的是 WebView 的语言，与托盘用的
+/// `GetUserDefaultUILanguage` 可能给出不同结论，会出现「托盘中文、界面英文」。
+/// 判定只保留一处（`locale::system_ui_lang`），两边都问它。
+#[tauri::command]
+pub fn get_system_ui_language() -> String {
+    crate::locale::system_ui_lang().tag().to_string()
+}
+
 #[tauri::command]
 pub fn get_auto_launch(app: AppHandle) -> Result<bool, String> {
     use tauri_plugin_autostart::ManagerExt;
@@ -296,7 +307,7 @@ pub async fn download_update(app: AppHandle, url: String) -> Result<String, Stri
     let client = reqwest::Client::builder()
         .user_agent(concat!("SayIt/", env!("CARGO_PKG_VERSION")))
         .build()
-        .map_err(|e| format!("初始化下载客户端失败: {}", e))?;
+        .map_err(|e| format!("Failed to initialize download client: {}", e))?;
 
     emit_update_progress(&app, 0, 0, "downloading", None);
 
@@ -306,13 +317,13 @@ pub async fn download_update(app: AppHandle, url: String) -> Result<String, Stri
         .send()
         .await
         .map_err(|e| {
-            let msg = format!("下载失败: {}", e);
+            let msg = format!("Download failed: {}", e);
             emit_update_progress(&app, 0, 0, "failed", Some(&msg));
             msg
         })?;
 
     if !resp.status().is_success() {
-        let msg = format!("下载失败: HTTP {}", resp.status());
+        let msg = format!("Download failed: HTTP {}", resp.status());
         emit_update_progress(&app, 0, 0, "failed", Some(&msg));
         return Err(msg);
     }
@@ -322,11 +333,11 @@ pub async fn download_update(app: AppHandle, url: String) -> Result<String, Stri
     // 从 URL 提取文件名
     let filename = url.split('/').last().unwrap_or("SayIt-Setup.exe").to_string();
     let temp_dir = std::env::temp_dir().join("sayit-update");
-    std::fs::create_dir_all(&temp_dir).map_err(|e| format!("创建临时目录失败: {}", e))?;
+    std::fs::create_dir_all(&temp_dir).map_err(|e| format!("Failed to create temporary directory: {}", e))?;
     let file_path = temp_dir.join(&filename);
 
     let mut file = std::fs::File::create(&file_path)
-        .map_err(|e| format!("创建文件失败: {}", e))?;
+        .map_err(|e| format!("Failed to create file: {}", e))?;
 
     let mut downloaded: u64 = 0;
     let mut stream = resp.bytes_stream();
@@ -334,11 +345,11 @@ pub async fn download_update(app: AppHandle, url: String) -> Result<String, Stri
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| {
-            let msg = format!("下载中断: {}", e);
+            let msg = format!("Download interrupted: {}", e);
             emit_update_progress(&app, downloaded, total, "failed", Some(&msg));
             msg
         })?;
-        file.write_all(&chunk).map_err(|e| format!("写入文件失败: {}", e))?;
+        file.write_all(&chunk).map_err(|e| format!("Failed to write file: {}", e))?;
         downloaded += chunk.len() as u64;
 
         // 每 200ms 发送一次进度，避免刷屏
@@ -348,7 +359,7 @@ pub async fn download_update(app: AppHandle, url: String) -> Result<String, Stri
         }
     }
 
-    file.flush().map_err(|e| format!("flush 失败: {}", e))?;
+    file.flush().map_err(|e| format!("Failed to flush file: {}", e))?;
     drop(file);
 
     emit_update_progress(&app, downloaded, total.max(downloaded), "completed", None);
@@ -361,7 +372,7 @@ pub async fn download_update(app: AppHandle, url: String) -> Result<String, Stri
 pub fn install_downloaded_update(file_path: String, app: AppHandle) -> Result<(), String> {
     let path = std::path::Path::new(&file_path);
     if !path.exists() {
-        return Err("安装包文件不存在".to_string());
+        return Err("The installer file does not exist".to_string());
     }
 
     // 启动 NSIS 安装程序（/S 静默安装）。静默模式下 NSIS 不会像交互式安装那样
@@ -376,7 +387,7 @@ pub fn install_downloaded_update(file_path: String, app: AppHandle) -> Result<()
         const CREATE_NO_WINDOW: u32 = 0x08000000;
 
         let current_exe = std::env::current_exe()
-            .map_err(|e| format!("获取当前程序路径失败: {}", e))?;
+            .map_err(|e| format!("Failed to get the current executable path: {}", e))?;
         let exe_str = current_exe.to_string_lossy().to_string();
 
         // 用一个临时 .bat 脚本接管"等安装完成再拉起新版本"。
@@ -399,18 +410,18 @@ pub fn install_downloaded_update(file_path: String, app: AppHandle) -> Result<()
         );
         let script_path = std::env::temp_dir().join("sayit-update-relaunch.bat");
         std::fs::write(&script_path, script)
-            .map_err(|e| format!("写入更新重启脚本失败: {}", e))?;
+            .map_err(|e| format!("Failed to write the update restart script: {}", e))?;
 
         Command::new("cmd")
             .args(["/C", &script_path.to_string_lossy()])
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
-            .map_err(|e| format!("启动安装看门人进程失败: {}", e))?;
+            .map_err(|e| format!("Failed to start the installer watchdog: {}", e))?;
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        return Err("当前平台不支持自动安装".to_string());
+        return Err("Automatic installation is not supported on this platform".to_string());
     }
 
     // 退出当前应用，让安装程序能够覆盖 exe 文件
@@ -473,17 +484,17 @@ pub fn append_debug_log(payload: Value) -> Result<(), String> {
 #[tauri::command]
 pub fn save_audio_to_downloads(base64_data: String, filename: String) -> Result<String, String> {
     let downloads = dirs::download_dir()
-        .ok_or_else(|| "无法获取下载目录".to_string())?;
+        .ok_or_else(|| "Could not locate the Downloads directory".to_string())?;
 
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(&base64_data)
-        .map_err(|e| format!("base64 解码失败: {}", e))?;
+        .map_err(|e| format!("Failed to decode base64 audio: {}", e))?;
 
     let dest = downloads.join(&filename);
-    std::fs::write(&dest, &bytes).map_err(|e| format!("写入文件失败: {}", e))?;
+    std::fs::write(&dest, &bytes).map_err(|e| format!("Failed to write file: {}", e))?;
 
     let path_str = dest.to_string_lossy().to_string();
-    write_log_line(&format!("[INFO] [audio] 音频已保存到 {}", path_str));
+    write_log_line(&format!("[INFO] [audio] Audio saved to {}", path_str));
     Ok(path_str)
 }
 
@@ -497,7 +508,7 @@ pub fn reveal_file_in_folder(file_path: String) -> Result<(), String> {
             .arg("/select,")
             .arg(&file_path)
             .spawn()
-            .map_err(|e| format!("打开文件夹失败: {}", e))?;
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
     }
     #[cfg(target_os = "macos")]
     {
@@ -505,7 +516,7 @@ pub fn reveal_file_in_folder(file_path: String) -> Result<(), String> {
             .arg("-R")
             .arg(&file_path)
             .spawn()
-            .map_err(|e| format!("打开文件夹失败: {}", e))?;
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
     }
     #[cfg(target_os = "linux")]
     {
@@ -514,7 +525,7 @@ pub fn reveal_file_in_folder(file_path: String) -> Result<(), String> {
         std::process::Command::new("xdg-open")
             .arg(dir.to_string_lossy().to_string())
             .spawn()
-            .map_err(|e| format!("打开文件夹失败: {}", e))?;
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
     }
     Ok(())
 }
@@ -524,26 +535,26 @@ pub fn reveal_file_in_folder(file_path: String) -> Result<(), String> {
 pub fn open_folder(folder_path: String) -> Result<(), String> {
     let path = std::path::PathBuf::from(&folder_path);
     if !path.is_dir() {
-        return Err(format!("文件夹不存在: {}", folder_path));
+        return Err(format!("Folder does not exist: {}", folder_path));
     }
 
     #[cfg(target_os = "windows")]
     std::process::Command::new("explorer")
         .arg(&path)
         .spawn()
-        .map_err(|e| format!("打开文件夹失败: {}", e))?;
+        .map_err(|e| format!("Failed to open folder: {}", e))?;
 
     #[cfg(target_os = "macos")]
     std::process::Command::new("open")
         .arg(&path)
         .spawn()
-        .map_err(|e| format!("打开文件夹失败: {}", e))?;
+        .map_err(|e| format!("Failed to open folder: {}", e))?;
 
     #[cfg(target_os = "linux")]
     std::process::Command::new("xdg-open")
         .arg(&path)
         .spawn()
-        .map_err(|e| format!("打开文件夹失败: {}", e))?;
+        .map_err(|e| format!("Failed to open folder: {}", e))?;
 
     Ok(())
 }

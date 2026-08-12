@@ -157,12 +157,12 @@ fn parse_log_line(line: &str) -> Option<TimelineEntry> {
 
 fn issue_window_label(occurrence: &str) -> &'static str {
     match occurrence {
-        "just_now" => "刚刚发生",
-        "within_1h" => "1 小时内",
-        "today" => "今天",
-        "yesterday" => "昨天",
-        "older" => "更早",
-        _ => "不确定",
+        "just_now" => "Just now",
+        "within_1h" => "Within 1 hour",
+        "today" => "Today",
+        "yesterday" => "Yesterday",
+        "older" => "Earlier",
+        _ => "Unknown",
     }
 }
 
@@ -401,9 +401,9 @@ pub fn read_diagnostics_zip(path: String) -> Result<Option<Vec<u8>>, String> {
 pub fn copy_diagnostics_zip(source: String, destination: String) -> Result<(), String> {
     let src = std::path::PathBuf::from(&source);
     if !src.exists() {
-        return Err("诊断文件不存在".to_string());
+        return Err("The diagnostics file does not exist".to_string());
     }
-    std::fs::copy(&src, &destination).map_err(|e| format!("复制失败: {}", e))?;
+    std::fs::copy(&src, &destination).map_err(|e| format!("Failed to copy diagnostics file: {}", e))?;
     // 清理临时文件
     let _ = std::fs::remove_file(&src);
     Ok(())
@@ -460,21 +460,21 @@ pub fn open_log_folder() -> Result<(), String> {
         std::process::Command::new("explorer")
             .arg(dir.to_string_lossy().to_string())
             .spawn()
-            .map_err(|e| format!("打开文件夹失败: {}", e))?;
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
     }
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
             .arg(dir.to_string_lossy().to_string())
             .spawn()
-            .map_err(|e| format!("打开文件夹失败: {}", e))?;
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
     }
     #[cfg(target_os = "linux")]
     {
         std::process::Command::new("xdg-open")
             .arg(dir.to_string_lossy().to_string())
             .spawn()
-            .map_err(|e| format!("打开文件夹失败: {}", e))?;
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
     }
     Ok(())
 }

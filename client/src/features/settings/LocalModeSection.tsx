@@ -15,10 +15,21 @@ import { getSetting, setSetting } from '@/services/store'
 import { refreshModeStatus } from '@/stores/modeStatus'
 import { reconnectProvider } from '@/services/recorder'
 import { describeDownloadError } from '@/lib/errorMessages'
+import { getLocale, t } from '@/i18n'
+import { useT } from '@/i18n/useT'
+import {
+  localModelDisplayDescription,
+  localModelDisplayLanguages,
+  localModelDisplayName,
+} from '@/i18n/displayNames'
 
 /** 模型存储位置变更的窗口事件：次级设置卡片（LocalModeAdvancedSection）里改了
  *  目录后，通知模型列表卡片刷新已下载状态——两个卡片各自持有状态、不在同一组件树。 */
 const MODELS_DIR_CHANGED_EVENT = 'sayit:models-dir-changed'
+
+function formatList(items: string[]): string {
+  return items.join(t('common.listSeparator'))
+}
 
 interface ModelFile {
   name: string
@@ -110,7 +121,7 @@ function formatMemory(mb: number): string {
 /** 下载源的展示名。同一个源在模型卡里叫「HF Mirror（国内推荐）」、在离线指引里叫
  *  「HF Mirror (China)」，收敛到一处。 */
 function sourceLabel(source: string): string {
-  return source === 'HuggingFace Mirror' ? 'HF Mirror（国内推荐）' : source
+  return source === 'HuggingFace Mirror' ? t('local.source.mirror') : source
 }
 
 /** 速度/准确度评级：10 分制细柱状条（无数字），与参数排同一行 */
@@ -133,10 +144,10 @@ function CopyLink({ url, label }: { url: string; label: string }) {
       <div className="flex items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">{label}</span>
         {/* 纯图标按钮必须自带 aria-label：Tooltip 只响应鼠标悬停，键盘和读屏用户拿不到它 */}
-        <Tooltip content={copied ? '已复制' : '复制链接'}>
+        <Tooltip content={copied ? t('record.copied') : t('common.copyLink')}>
           <button
             type="button"
-            aria-label={copied ? `已复制 ${label} 的链接` : `复制 ${label} 的链接`}
+            aria-label={copied ? t('common.copiedLink', { label }) : t('common.copyLinkAria', { label })}
             onClick={() => {
               void navigator.clipboard.writeText(url)
               setCopied(true)
@@ -162,17 +173,17 @@ function OfflineGuideDialog({ models, onClose }: { models: ModelInfo[]; onClose:
   const sourceNames = models[0]?.sources.map((s) => s.source) || []
 
   return (
-    <Modal title="离线下载指引" onClose={onClose} showCloseButton panelClassName="w-[640px]">
+    <Modal title={t('local.offlineGuideTitle')} onClose={onClose} showCloseButton panelClassName="w-[640px]">
       <>
         {/* 步骤 */}
         <div className="mt-3 space-y-1 text-xs text-muted-foreground">
-          <p>1. 点击模型名称旁的文件夹图标，打开对应模型目录</p>
-          <p>2. 复制下方链接，在浏览器中下载文件，放入该目录</p>
-          <p>3. 刷新页面即可自动识别</p>
+          <p>{t('local.offlineStep1')}</p>
+          <p>{t('local.offlineStep2')}</p>
+          <p>{t('local.offlineStep3')}</p>
         </div>
 
         {/* 源切换 */}
-        <div role="radiogroup" aria-label="下载源" className="mt-4 flex gap-1 rounded-lg border border-border p-0.5">
+        <div role="radiogroup" aria-label={t('local.downloadSourceAria')} className="mt-4 flex gap-1 rounded-lg border border-border p-0.5">
           {sourceNames.map((name, i) => (
             <button
               key={name}
@@ -193,6 +204,7 @@ function OfflineGuideDialog({ models, onClose }: { models: ModelInfo[]; onClose:
         {/* 模型文件链接 */}
         <div className="mt-4 space-y-4">
           {models.map((model) => {
+            const modelName = localModelDisplayName(model)
             // 某模型没有当前标签对应的源时，回退到它的第一个源（防御，正常不会发生：
             // catalog 的测试保证所有模型提供同一组源）
             const source = model.sources[selectedSource] ?? model.sources[0]
@@ -207,12 +219,12 @@ function OfflineGuideDialog({ models, onClose }: { models: ModelInfo[]; onClose:
             return (
               <div key={model.id}>
                 <div className="mb-2 flex items-center gap-2">
-                  <span className="text-sm font-medium">{model.name}</span>
+                  <span className="text-sm font-medium">{modelName}</span>
                   <code className="rounded bg-muted/50 px-1.5 py-0.5 text-xs text-muted-foreground">{model.id}/</code>
-                  <Tooltip content="打开模型文件夹">
+                  <Tooltip content={t('local.openModelFolder')}>
                     <button
                       type="button"
-                      aria-label={`打开 ${model.name} 的模型文件夹`}
+                      aria-label={t('local.openModelFolderAria', { name: modelName })}
                       onClick={() => void invoke<string>('open_model_folder', { modelId: model.id })}
                       className="rounded p-1 text-muted-foreground transition-colors hover:text-foreground"
                     >
@@ -228,9 +240,9 @@ function OfflineGuideDialog({ models, onClose }: { models: ModelInfo[]; onClose:
                   ) : (
                     <>
                       <p className="text-xs leading-relaxed text-muted-foreground">
-                        压缩包，下载后解压到上面的模型文件夹（解压出 .onnx 等文件直接放入该目录即可）。
+                        {t('local.archiveNote')}
                       </p>
-                      <CopyLink url={archiveUrl} label="模型压缩包 (.tar.bz2)" />
+                      <CopyLink url={archiveUrl} label={t('local.archiveLabel')} />
                     </>
                   )}
                 </div>
@@ -259,7 +271,7 @@ function ModelsDirSection({ onChanged }: { onChanged: () => void }) {
   async function pickDir() {
     setError('')
     try {
-      const selected = await open({ directory: true, multiple: false, title: '选择模型存储位置' })
+      const selected = await open({ directory: true, multiple: false, title: t('local.pickDirTitle') })
       if (typeof selected !== 'string') return // 取消
       if (info && selected === info.current) return // 未变化
       setPending({ dir: selected })
@@ -295,8 +307,8 @@ function ModelsDirSection({ onChanged }: { onChanged: () => void }) {
       <CardContent className="p-6">
         <div className="mb-2 flex items-center gap-2">
           <HardDrive className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-base font-semibold">模型存储位置</h2>
-          <Tooltip variant="light" content="本地模型体积较大，可以选择其他路径存放。已下载的模型在更换目录后会自动迁移。">
+          <h2 className="text-base font-semibold">{t('local.storageTitle')}</h2>
+          <Tooltip variant="light" content={t('local.storageHelp')}>
             <Info className="h-3.5 w-3.5 cursor-help text-muted-foreground/50 transition-colors hover:text-muted-foreground" />
           </Tooltip>
         </div>
@@ -304,15 +316,15 @@ function ModelsDirSection({ onChanged }: { onChanged: () => void }) {
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex min-w-[12rem] flex-1 items-center gap-1.5 rounded-md bg-muted/30 px-3 py-2">
             <code className="min-w-0 flex-1 select-all truncate text-xs text-muted-foreground" title={info?.current}>
-              {info?.current || '加载中…'}
+              {info?.current || t('common.loading')}
             </code>
             {info?.is_custom && (
-              <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">自定义</span>
+              <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">{t('local.storageCustom')}</span>
             )}
-            <Tooltip content="打开目录">
+            <Tooltip content={t('local.openDir')}>
               <button
                 type="button"
-                aria-label="打开模型存储目录"
+                aria-label={t('local.openDirAria')}
                 onClick={() => void invoke<string>('open_models_folder')}
                 className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               >
@@ -321,36 +333,36 @@ function ModelsDirSection({ onChanged }: { onChanged: () => void }) {
             </Tooltip>
           </div>
           <Button size="sm" variant="outline" onClick={() => void pickDir()} disabled={busy}>
-            更改位置
+            {t('local.changeLocation')}
           </Button>
           {info?.is_custom && (
             <Button size="sm" variant="ghost" onClick={requestResetDefault} disabled={busy}>
-              恢复默认
+              {t('local.restoreDefault')}
             </Button>
           )}
         </div>
 
-        {error && <Feedback className="mt-3" tone="error" message="模型目录操作失败。" detail={error} />}
+        {error && <Feedback className="mt-3" tone="error" message={t('local.dirOpFailed')} detail={error} />}
       </CardContent>
 
       {pending && (
         <Modal
-          title={pending.dir === null ? '恢复默认模型位置' : '更改模型存储位置'}
+          title={pending.dir === null ? t('local.restoreDefaultTitle') : t('local.changeLocationTitle')}
           onClose={() => setPending(null)}
           locked={busy}
           panelClassName="w-[420px]"
         >
           <>
             <p className="mt-2 break-all text-sm text-muted-foreground">
-              新位置：{pending.dir === null ? (info?.default_dir || '默认目录') : pending.dir}
+              {t('local.newLocation', { dir: pending.dir === null ? (info?.default_dir || t('local.defaultDir')) : pending.dir })}
             </p>
             <p className="mt-3 text-xs text-muted-foreground">
-              已下载的模型会自动迁移到新位置，跨磁盘移动大文件可能需要一些时间，请勿中途退出。
+              {t('local.migrateNote')}
             </p>
             <div className="mt-5 flex justify-end gap-2">
-              <Button size="sm" variant="outline" onClick={() => setPending(null)} disabled={busy}>取消</Button>
+              <Button size="sm" variant="outline" onClick={() => setPending(null)} disabled={busy}>{t('common.cancel')}</Button>
               <Button size="sm" onClick={() => void applyChange()} disabled={busy}>
-                {busy ? (<><Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden />处理中…</>) : '确定'}
+                {busy ? (<><Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden />{t('common.processing')}</>) : t('common.confirm')}
               </Button>
             </div>
           </>
@@ -361,10 +373,13 @@ function ModelsDirSection({ onChanged }: { onChanged: () => void }) {
 }
 
 export default function LocalModeSection() {
+  useT()
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([])
   const [downloadedModels, setDownloadedModels] = useState<LocalModelInfo[]>([])
   const [selectedModelId, setSelectedModelId] = useState('')
-  const [downloadSource, setDownloadSource] = useState('HuggingFace Mirror')
+  const [downloadSource, setDownloadSource] = useState(
+    () => getLocale() === 'en' ? 'HuggingFace' : 'HuggingFace Mirror',
+  )
   const [preloadingModelId, setPreloadingModelId] = useState('')
   const [downloading, setDownloading] = useState<Record<string, DownloadProgress>>({})
   // 「更多模型」折叠。默认只展示 featured 的小/中/大三个，其余点开才看到。
@@ -419,9 +434,8 @@ export default function LocalModeSection() {
       const diag = await invoke<GgufDiagnostics>('gguf_asr_diagnostics')
       const gpus = diag.devices.filter((d) => d.kind !== 'cpu')
       setGpuSummary(gpus.length > 0
-        ? gpus
-          .map((d) => `${d.name.replace(/\((R|TM)\)/gi, '')}${d.memory_mb > 0 ? `（${(d.memory_mb / 1024).toFixed(0)} GB 显存）` : ''}`)
-          .join('、')
+        ? formatList(gpus
+          .map((d) => `${d.name.replace(/\((R|TM)\)/gi, '')}${d.memory_mb > 0 ? t('local.vram', { gb: (d.memory_mb / 1024).toFixed(0) }) : ''}`))
         : '')
     } catch {
       setGpuSummary(null)
@@ -429,7 +443,8 @@ export default function LocalModeSection() {
 
     const selected = await getSetting('localAsr.modelId', 'sensevoice-small-gguf') as string
     setSelectedModelId(selected)
-    setDownloadSource(await getSetting('localAsr.downloadSource', 'HuggingFace Mirror') as string)
+    const defaultSource = getLocale() === 'en' ? 'HuggingFace' : 'HuggingFace Mirror'
+    setDownloadSource(await getSetting('localAsr.downloadSource', defaultSource) as string)
 
     // 当前选中的模型在折叠区时自动展开，避免"当前模型在列表里找不到"
     const selectedInfo = available.find((m) => m.id === selected)
@@ -551,11 +566,11 @@ export default function LocalModeSection() {
       <Card>
         <CardContent className="p-6">
           <div className="mb-4 flex items-center justify-between gap-3">
-            <h2 className="text-lg font-semibold">语音识别模型</h2>
-            <Tooltip content="打开模型所在文件夹">
+            <h2 className="text-lg font-semibold">{t('local.modelTitle')}</h2>
+            <Tooltip content={t('local.openModelDir')}>
               <button
                 type="button"
-                aria-label="打开模型所在文件夹"
+                aria-label={t('local.openModelDir')}
                 onClick={() => void invoke<string>('open_models_folder')}
                 className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               >
@@ -566,14 +581,14 @@ export default function LocalModeSection() {
 
           {selectedModelId && downloadedIds.has(selectedModelId) && (
             <p className="mb-2 text-sm text-muted-foreground">
-              当前模型：{availableModels.find((m) => m.id === selectedModelId)?.name || selectedModelId}
+              {t('local.currentModel', { name: availableModels.find((m) => m.id === selectedModelId)?.name || selectedModelId })}
             </p>
           )}
           {selectedModelId && !downloadedIds.has(selectedModelId) && listState === 'ready' && (
             <Feedback
               className="mb-3"
               tone="warning"
-              message="当前选中的模型还没下载，按下快捷键不会有反应。先下载它，或选一个已下载的模型。"
+              message={t('local.notDownloadedWarning')}
             />
           )}
 
@@ -582,13 +597,13 @@ export default function LocalModeSection() {
           {gpuSummary !== null && (
             <p className="mb-4 text-xs text-muted-foreground">
               {gpuSummary
-                ? `检测到显卡：${gpuSummary}。识别会优先用 GPU，下面几个模型都能跑。`
-                : '没检测到可用显卡，识别会用 CPU。越靠上的模型越快，建议从第一个开始试。'}
+                ? t('local.gpuDetected', { gpu: gpuSummary })
+                : t('local.noGpu')}
             </p>
           )}
 
           <div className="mb-3 flex flex-wrap items-center gap-3">
-            <span id="download-source-label" className="text-sm text-muted-foreground">下载源</span>
+            <span id="download-source-label" className="text-sm text-muted-foreground">{t('local.downloadSource')}</span>
             <Segmented
               labelledBy="download-source-label"
               size="sm"
@@ -599,25 +614,28 @@ export default function LocalModeSection() {
           </div>
 
           {listState === 'loading' && (
-            <p className="py-4 text-sm text-muted-foreground">正在读取模型清单…</p>
+            <p className="py-4 text-sm text-muted-foreground">{t('local.loadingCatalog')}</p>
           )}
           {listState === 'error' && (
             <Feedback
               tone="error"
-              message="读不到模型清单，所以下面是空的。这通常是客户端内部通信出了问题，重启 SayIt 一般能恢复。"
+              message={t('local.catalogError')}
               detail={listError}
-              actions={[{ label: '重新读取', onClick: () => void loadData() }]}
+              actions={[{ label: t('local.reload'), onClick: () => void loadData() }]}
             />
           )}
           {listState === 'ready' && availableModels.length === 0 && (
             <Feedback
               tone="warning"
-              message="这个版本没有附带可下载的模型清单。请更新到最新版，或改用云 API / 服务器模式。"
+              message={t('local.catalogEmpty')}
             />
           )}
 
           <div className="space-y-2">
             {visibleModels.map((model) => {
+              const modelName = localModelDisplayName(model)
+              const modelDescription = localModelDisplayDescription(model)
+              const modelLanguages = localModelDisplayLanguages(model)
               const isDownloaded = downloadedIds.has(model.id)
               const isSelected = selectedModelId === model.id
               const progress = downloading[model.id]
@@ -631,22 +649,22 @@ export default function LocalModeSection() {
                 >
                   <div className="flex-1">
                     <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium">{model.name}</span>
+                      <span className="text-sm font-medium">{modelName}</span>
                       {model.recommended && (
-                        <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">推荐</span>
+                        <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">{t('local.recommended')}</span>
                       )}
                       {isDownloaded && (
                         <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                          <Check className="h-3 w-3" />已下载
+                          <Check className="h-3 w-3" />{t('local.downloaded')}
                         </span>
                       )}
                     </div>
-                    <p className="mt-0.5 text-xs text-muted-foreground">{model.description}</p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">{modelDescription}</p>
                     {/* 参数行：评分柱状条 + 下载体积（硬盘图标）+ 内存占用 + 语种，一行小字。
                         量化档（Q8_0 之类）不展示——普通用户看不懂，文件名里查得到 */}
                     <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-muted-foreground">
-                      {model.speed ? <MiniRating label="速度" value={model.speed} /> : null}
-                      {model.accuracy ? <MiniRating label="准确度" value={model.accuracy} /> : null}
+                      {model.speed ? <MiniRating label={t('local.speed')} value={model.speed} /> : null}
+                      {model.accuracy ? <MiniRating label={t('local.accuracy')} value={model.accuracy} /> : null}
                       {model.total_size_bytes > 0 && (
                         <span className="flex items-center gap-1">
                           <HardDrive className="h-3 w-3" />
@@ -654,17 +672,17 @@ export default function LocalModeSection() {
                         </span>
                       )}
                       {model.memory_mb ? (
-                        <><span aria-hidden>·</span><span>内存占用 {formatMemory(model.memory_mb)}</span></>
+                        <><span aria-hidden>·</span><span>{t('local.memoryUsage', { size: formatMemory(model.memory_mb) })}</span></>
                       ) : null}
-                      {model.languages_label ? (
-                        <><span aria-hidden>·</span><span>{model.languages_label}</span></>
+                      {modelLanguages ? (
+                        <><span aria-hidden>·</span><span>{modelLanguages}</span></>
                       ) : null}
                     </div>
                     {isDownloading && progress && (
                       <div className="mt-2">
                         <div
                           role="progressbar"
-                          aria-label={`正在下载 ${model.name}`}
+                          aria-label={t('local.downloadingAria', { name: modelName })}
                           aria-valuenow={Math.round(progress.percent)}
                           aria-valuemin={0}
                           aria-valuemax={100}
@@ -678,12 +696,15 @@ export default function LocalModeSection() {
                         {/* aria-live：下载过去对读屏用户是完全静默的 */}
                         <p className="mt-1 text-xs text-muted-foreground" aria-live="polite">
                           {progress.file_count > 1
-                            ? `文件 ${progress.file_index}/${progress.file_count} — `
+                            ? t('local.fileProgress', { index: progress.file_index, count: progress.file_count })
                             : ''}
                           {progress.file_name} — {progress.percent.toFixed(1)}%
                           {progress.total_bytes > 0
-                            ? `（${formatSize(progress.downloaded_bytes)} / ${formatSize(progress.total_bytes)}）`
-                            : `（${formatSize(progress.downloaded_bytes)}）`}
+                            ? t('local.downloadProgressBytes', {
+                              downloaded: formatSize(progress.downloaded_bytes),
+                              total: formatSize(progress.total_bytes),
+                            })
+                            : t('local.downloadedBytes', { downloaded: formatSize(progress.downloaded_bytes) })}
                         </p>
                       </div>
                     )}
@@ -702,11 +723,11 @@ export default function LocalModeSection() {
                           actions={[
                             ...(friendly.action === 'switch_source' && hasOtherSource
                               ? [{
-                                label: `换用 ${sourceLabel(sourceOptions.find((s) => s !== effectiveSource) ?? '')} 重试`,
+                                label: t('local.switchSourceRetry', { source: sourceLabel(sourceOptions.find((s) => s !== effectiveSource) ?? '') }),
                                 onClick: () => void retryWithOtherSource(model.id),
                               }]
-                              : [{ label: '重试', onClick: () => void handleDownload(model.id) }]),
-                            { label: '手动下载指引', onClick: () => setOfflineGuideOpen(true) },
+                              : [{ label: t('common.retry'), onClick: () => void handleDownload(model.id) }]),
+                            { label: t('local.manualGuide'), onClick: () => setOfflineGuideOpen(true) },
                           ]}
                         />
                       )
@@ -721,11 +742,11 @@ export default function LocalModeSection() {
                             disabled={preloadingModelId !== ''}
                             onClick={() => void handleSelectModel(model.id)}
                           >
-                            {preloadingModelId === model.id ? '加载中…' : '选择'}
+                            {preloadingModelId === model.id ? t('local.loadingModel') : t('local.select')}
                           </Button>
                         )}
                         <Button size="sm" variant="ghost" onClick={() => setConfirmDeleteId(model.id)}>
-                          删除
+                          {t('common.delete')}
                         </Button>
                       </>
                     ) : (
@@ -734,7 +755,7 @@ export default function LocalModeSection() {
                         onClick={() => void handleDownload(model.id)}
                         disabled={isDownloading}
                       >
-                        {isDownloading ? '下载中…' : '下载'}
+                        {isDownloading ? t('local.downloading') : t('local.download')}
                       </Button>
                     )}
                   </div>
@@ -758,8 +779,11 @@ export default function LocalModeSection() {
             >
               <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-info-strong" aria-hidden />
               <p className="text-sm leading-relaxed text-foreground">
-                正在加载「{availableModels.find((m) => m.id === preloadingModelId)?.name || preloadingModelId}」…
-                要读完整个模型文件再预热一次，大模型可能要几十秒，这是正常的。
+                {/* 显式 {' '}：两个表达式之间的换行会被 JSX 整个吃掉，
+                    英文下就会粘成 "…Loading" 这种没有空格的样子 */}
+                {t('local.preloading', { name: availableModels.find((m) => m.id === preloadingModelId)?.name || preloadingModelId })}
+                {' '}
+                {t('local.preloadingNote')}
               </p>
             </div>
           )}
@@ -772,7 +796,7 @@ export default function LocalModeSection() {
               onClick={() => setShowMore(!showMore)}
               className="mt-3 flex w-full items-center justify-center gap-1 rounded-md border border-dashed border-border py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             >
-              {showMore ? '收起' : `更多模型（${moreModels.length}）`}
+              {showMore ? t('common.collapse') : t('local.moreModels', { count: moreModels.length })}
               <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showMore ? 'rotate-180' : ''}`} aria-hidden />
             </button>
           )}
@@ -783,7 +807,7 @@ export default function LocalModeSection() {
               onClick={() => setOfflineGuideOpen(true)}
               className="mt-3 text-xs text-muted-foreground underline decoration-muted-foreground/40 underline-offset-2 transition-colors hover:text-foreground hover:decoration-foreground/60"
             >
-              下载太慢或失败？查看手动下载指引
+              {t('local.slowDownloadHint')}
             </button>
           )}
         </CardContent>
@@ -795,14 +819,14 @@ export default function LocalModeSection() {
 
       {/* 删除确认对话框 */}
       {confirmDeleteId && (
-        <Modal title="确认删除模型" onClose={() => setConfirmDeleteId(null)} panelClassName="w-80">
+        <Modal title={t('local.deleteModelTitle')} onClose={() => setConfirmDeleteId(null)} panelClassName="w-80">
           <>
             <p className="mt-2 text-sm text-muted-foreground">
-              删除后需要重新下载才能使用，确定要删除「{availableModels.find((m) => m.id === confirmDeleteId)?.name || confirmDeleteId}」吗？
+              {t('local.deleteModelBody', { name: availableModels.find((m) => m.id === confirmDeleteId)?.name || confirmDeleteId })}
             </p>
             <div className="mt-5 flex justify-end gap-2">
-              <Button size="sm" variant="outline" onClick={() => setConfirmDeleteId(null)}>取消</Button>
-              <Button size="sm" variant="destructive" onClick={() => void handleDelete(confirmDeleteId)}>删除</Button>
+              <Button size="sm" variant="outline" onClick={() => setConfirmDeleteId(null)}>{t('common.cancel')}</Button>
+              <Button size="sm" variant="destructive" onClick={() => void handleDelete(confirmDeleteId)}>{t('common.delete')}</Button>
             </div>
           </>
         </Modal>
@@ -815,6 +839,7 @@ export default function LocalModeSection() {
  *  单独一个导出，由 VoiceEnginePage 放在「识别测试」之后——选模型是主操作，
  *  这些是偶尔动一次的，不该排在测试入口前面。 */
 export function LocalModeAdvancedSection() {
+  useT()
   const [asrLanguage, setAsrLanguage] = useState('auto')
   const [accelerator, setAccelerator] = useState('auto')
   const [unloadIdleMinutes, setUnloadIdleMinutes] = useState(0)
@@ -851,9 +876,8 @@ export function LocalModeAdvancedSection() {
 
   const gpuDevices = devices.filter((d) => d.kind !== 'cpu')
   const hasGpu = gpuDevices.length > 0
-  const gpuSummary = gpuDevices
-    .map((d) => `${d.name.replace(/\((R|TM)\)/gi, '')}${d.memory_mb > 0 ? `（${(d.memory_mb / 1024).toFixed(0)} GB）` : ''}`)
-    .join('、')
+  const gpuSummary = formatList(gpuDevices
+    .map((d) => `${d.name.replace(/\((R|TM)\)/gi, '')}${d.memory_mb > 0 ? t('local.vram', { gb: (d.memory_mb / 1024).toFixed(0) }) : ''}`))
 
   /** 切换计算后端。引擎按 (模型, 后端) 缓存，换后端要重载模型——
    *  就地重新预加载当前模型，让切换立刻生效而不是等下次口述。
@@ -884,14 +908,14 @@ export function LocalModeAdvancedSection() {
     <>
       <Card>
         <CardContent className="p-6">
-          <h2 id="local-language-heading" className="mb-3 text-lg font-semibold">识别语言</h2>
+          <h2 id="local-language-heading" className="mb-3 text-lg font-semibold">{t('local.languageTitle')}</h2>
           <Segmented
             labelledBy="local-language-heading"
             value={asrLanguage}
             options={[
-              { value: 'auto', label: '自动' },
-              { value: 'zh', label: '中文' },
-              { value: 'en', label: '英文' },
+              { value: 'auto', label: t('common.auto') },
+              { value: 'zh', label: t('local.lang.zh') },
+              { value: 'en', label: t('local.lang.en') },
             ]}
             onChange={(value) => { setAsrLanguage(value); void setSetting('localAsr.language', value) }}
           />
@@ -900,7 +924,7 @@ export function LocalModeAdvancedSection() {
                 传给引擎，auto = 让模型自己检测），云 API 模式没有这个选项，服务器模式
                 有它自己的一份。固定语种的实际价值是压掉短句上的语种误判 —— 实测
                 Qwen3 1.7B 会把 3 秒普通话判成粤语，见 gguf_asr.rs 的 language_detect_report。 */}
-            只影响本地识别。大部分场景选「自动」；固定只说一种语言时选对应项更稳——短句上自动检测偶尔会认错语种（比如把普通话认成粤语）。
+            {t('local.languageNote')}
           </p>
         </CardContent>
       </Card>
@@ -908,13 +932,13 @@ export function LocalModeAdvancedSection() {
       <Card>
         <CardContent className="p-6">
           <div className="mb-3 flex items-center justify-between gap-3">
-            <h2 id="accelerator-heading" className="text-lg font-semibold">计算后端</h2>
+            <h2 id="accelerator-heading" className="text-lg font-semibold">{t('local.backendTitle')}</h2>
             <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-1 text-xs ${diagnosticsState === 'ready' && hasGpu
               ? 'border-success/30 bg-success/10 text-success-strong'
               : 'border-border bg-muted/40 text-muted-foreground'
               }`}>
               <span className={`h-1.5 w-1.5 rounded-full ${diagnosticsState === 'ready' && hasGpu ? 'bg-success' : 'bg-muted-foreground'}`} aria-hidden />
-              {diagnosticsState === 'loading' ? '检测中' : diagnosticsState === 'error' ? '检测失败' : hasGpu ? 'GPU 已检测' : '仅 CPU'}
+              {diagnosticsState === 'loading' ? t('local.backendChecking') : diagnosticsState === 'error' ? t('local.backendCheckFailed') : hasGpu ? t('local.backendGpuReady') : t('local.backendCpuOnly')}
             </span>
           </div>
           <Segmented
@@ -922,7 +946,7 @@ export function LocalModeAdvancedSection() {
             value={accelerator}
             disabled={rebinding}
             options={[
-              { value: 'auto', label: '自动' },
+              { value: 'auto', label: t('common.auto') },
               { value: 'gpu', label: 'GPU' },
               { value: 'cpu', label: 'CPU' },
             ]}
@@ -933,45 +957,46 @@ export function LocalModeAdvancedSection() {
               {gpuSummary}
               {/* 加载中就说加载中：后端是在模型加载时才绑定的，这期间 currentBackend
                   一定是空，原来这里会什么都不显示，看着像检测失败。 */}
-              {loadingModel ? ' · 正在加载模型…' : currentBackend ? ` · 当前使用 ${currentBackend.toUpperCase()}` : ''}
+              {loadingModel ? t('local.backendLoadingModel') : currentBackend ? t('local.backendCurrent', { backend: currentBackend.toUpperCase() }) : ''}
             </p>
           )}
           <p className="mt-1.5 text-xs text-muted-foreground">
             {diagnosticsState === 'loading'
-              ? '正在检测可用计算设备…'
+              ? t('local.backendHintLoading')
               : diagnosticsState === 'error'
-                ? '暂时无法读取计算设备状态，可保持「自动」并稍后重试。'
+                ? t('local.backendHintError')
                 : hasGpu
-                  ? '建议保持「自动」，识别会优先使用 GPU；仅在兼容性或稳定性问题时切换到 CPU。'
-                  : '没有可用 GPU 时会自动使用 CPU，不影响功能，仅识别速度稍慢。'}
+                  ? t('local.backendHintGpu')
+                  : t('local.backendHintCpu')}
           </p>
         </CardContent>
       </Card>
 
       <Card>
         <CardContent className="p-6">
-          <h2 id="unload-idle-heading" className="mb-1 text-lg font-semibold">模型驻留</h2>
+          <h2 id="unload-idle-heading" className="mb-1 text-lg font-semibold">{t('local.unloadTitle')}</h2>
           {/* 这四个选项是在"占着内存"和"下次说话要等模型重新加载"之间取舍，
               原来的说明只讲"会怎样"，不讲"你该不该关心" */}
           <p className="mb-3 text-xs text-muted-foreground">
-            模型留在内存里能省掉下次口述前的加载时间，代价是一直占着几百 MB 到几 GB。
-            内存吃紧就选一个时长，不缺内存保持默认。
+            {t('local.unloadDesc')}
           </p>
           <Segmented
             labelledBy="unload-idle-heading"
             value={unloadIdleMinutes}
             options={[
-              { value: 0, label: '不自动卸载' },
-              { value: 10, label: '10 分钟' },
-              { value: 30, label: '30 分钟' },
-              { value: 60, label: '1 小时' },
+              { value: 0, label: t('local.unload.never') },
+              { value: 10, label: t('local.unload.10m') },
+              { value: 30, label: t('local.unload.30m') },
+              { value: 60, label: t('local.unload.1h') },
             ]}
             onChange={(value) => void handleSelectUnloadIdle(value)}
           />
           <p className="mt-2 text-xs text-muted-foreground">
             {unloadIdleMinutes === 0
-              ? '当前：模型常驻内存，下一次识别无需重新加载。'
-              : `当前：连续 ${unloadIdleMinutes === 60 ? '1 小时' : `${unloadIdleMinutes} 分钟`} 未使用后释放内存；下次识别会重新加载模型。`}
+              ? t('local.unloadNever')
+              : t('local.unloadAfter', {
+                duration: unloadIdleMinutes === 60 ? t('local.unload.1h') : t('local.minutes', { count: unloadIdleMinutes }),
+              })}
           </p>
         </CardContent>
       </Card>

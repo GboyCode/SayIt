@@ -54,7 +54,8 @@
         "installMode": "currentUser",
         "displayLanguageSelector": false,
         "languages": [
-          "SimpChinese"
+          "SimpChinese",
+          "English"
         ],
         "installerIcon": "icons/icon.ico"
       },

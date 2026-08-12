@@ -7,14 +7,17 @@ import { createDefaultUserStats } from '@/services/personalization/defaults'
 import { getUserStats } from '@/services/personalization/store'
 import type { UserStats } from '@/services/personalization/types'
 import { pickVoiceDurationSec } from '@/services/timeModel'
+import { getLocale, t, type TranslationKey } from '@/i18n'
+import { useT } from '@/i18n/useT'
+import { recordedAppDisplayName, recordedPromptPresetDisplayName } from '@/i18n/displayNames'
 
 type TimeRange = 'today' | '7d' | '30d' | 'all'
 
-const RANGE_OPTIONS: { value: TimeRange; label: string }[] = [
-  { value: 'today', label: '今天' },
-  { value: '7d', label: '7 天' },
-  { value: '30d', label: '30 天' },
-  { value: 'all', label: '全部' },
+const RANGE_OPTIONS: { value: TimeRange; labelKey: TranslationKey }[] = [
+  { value: 'today', labelKey: 'range.today' },
+  { value: '7d', labelKey: 'range.7d' },
+  { value: '30d', labelKey: 'range.30d' },
+  { value: 'all', labelKey: 'range.all' },
 ]
 
 function getStartOfDay(date: Date): Date {
@@ -32,16 +35,16 @@ function getRangeCutoff(range: TimeRange): number {
 }
 
 function formatDuration(sec: number) {
-  if (sec < 60) return `${sec} 秒`
-  if (sec < 3600) return `${Math.floor(sec / 60)} 分 ${sec % 60} 秒`
+  if (sec < 60) return t('stats.durationSeconds', { sec })
+  if (sec < 3600) return t('stats.durationMinutes', { min: Math.floor(sec / 60), sec: sec % 60 })
   const h = Math.floor(sec / 3600)
   const m = Math.floor((sec % 3600) / 60)
-  return `${h} 小时 ${m} 分`
+  return t('stats.durationHours', { hour: h, min: m })
 }
 
 function formatDate(ts: number | undefined) {
   if (!ts) return '-'
-  return new Date(ts).toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })
+  return new Date(ts).toLocaleDateString(getLocale(), { year: 'numeric', month: 'long', day: 'numeric' })
 }
 
 /** 计算两个时间戳之间的天数 */
@@ -49,10 +52,10 @@ function daysBetween(a: number, b: number) {
   return Math.max(1, Math.ceil(Math.abs(b - a) / 86400000))
 }
 
-const WORK_MODE_LABELS: Record<string, string> = {
-  server: '服务器',
-  cloud_api: '云 API',
-  local: '本地',
+const WORK_MODE_LABEL_KEYS: Record<string, TranslationKey> = {
+  server: 'record.modeServer',
+  cloud_api: 'record.modeCloudApi',
+  local: 'record.modeLocal',
 }
 
 interface FullStats {
@@ -88,11 +91,15 @@ function computeFullStats(records: HistoryRecord[], rangeDays: number): FullStat
     hourBuckets[d.getHours()]++
 
     if (r.workMode) workModeCount.set(r.workMode, (workModeCount.get(r.workMode) || 0) + 1)
-    if (r.promptPresetName) presetCount.set(r.promptPresetName, (presetCount.get(r.promptPresetName) || 0) + 1)
+    if (r.promptPresetName) {
+      const presetName = recordedPromptPresetDisplayName(r.promptPresetId, r.promptPresetName)
+      presetCount.set(presetName, (presetCount.get(presetName) || 0) + 1)
+    }
 
     // 应用统计放在 isEmpty 之前，确保所有记录都计入
     if (r.appName || r.appId) {
-      const name = (r.appName || r.appId || '未知').replace(/\.exe$/i, '')
+      const fallback = r.appName || r.appId || t('stats.unknown')
+      const name = recordedAppDisplayName(r.appId, fallback).replace(/\.exe$/i, '')
       appUsage.set(name, (appUsage.get(name) || 0) + 1)
     }
 
@@ -127,10 +134,10 @@ function computeFullStats(records: HistoryRecord[], rangeDays: number): FullStat
 function HourChart({ buckets }: { buckets: number[] }) {
   const max = Math.max(...buckets, 1)
   const periods = [
-    { label: '凌晨', sum: buckets.slice(0, 6).reduce((a, b) => a + b, 0) },
-    { label: '上午', sum: buckets.slice(6, 12).reduce((a, b) => a + b, 0) },
-    { label: '下午', sum: buckets.slice(12, 18).reduce((a, b) => a + b, 0) },
-    { label: '晚上', sum: buckets.slice(18, 24).reduce((a, b) => a + b, 0) },
+    { label: t('stats.bucket.night'), sum: buckets.slice(0, 6).reduce((a, b) => a + b, 0) },
+    { label: t('stats.bucket.morning'), sum: buckets.slice(6, 12).reduce((a, b) => a + b, 0) },
+    { label: t('stats.bucket.afternoon'), sum: buckets.slice(12, 18).reduce((a, b) => a + b, 0) },
+    { label: t('stats.bucket.evening'), sum: buckets.slice(18, 24).reduce((a, b) => a + b, 0) },
   ]
   const totalSum = periods.reduce((a, p) => a + p.sum, 0) || 1
 
@@ -144,7 +151,7 @@ function HourChart({ buckets }: { buckets: number[] }) {
               style={{ height: `${Math.max(count > 0 ? 4 : 1, (count / max) * 60)}px` }}
             />
             <div className="pointer-events-none absolute -top-7 left-1/2 -translate-x-1/2 rounded bg-foreground px-1.5 py-0.5 text-[10px] text-background opacity-0 transition-opacity group-hover:opacity-100 whitespace-nowrap">
-              {hour}时 {count}次
+              {t('stats.hourTooltip', { hour, count })}
             </div>
           </div>
         ))}
@@ -181,7 +188,7 @@ function DistributionList({ entries }: { entries: [string, number][] }) {
             />
           </div>
           <span className="w-16 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
-            {count} 次
+            {t('stats.timesValue', { count })}
           </span>
         </div>
       ))}
@@ -190,6 +197,7 @@ function DistributionList({ entries }: { entries: [string, number][] }) {
 }
 
 export default function PersonalizationPage() {
+  useT()
   const [range, setRange] = useState<TimeRange>('all')
   const [allStats, setAllStats] = useState<Stats>({ totalDurationSec: 0, totalChars: 0 })
   const [userStats, setUserStats] = useState<UserStats>(createDefaultUserStats())
@@ -224,7 +232,7 @@ export default function PersonalizationPage() {
   }, [stats.appUsage, range, userStats.appUsageCount])
 
   const workModeEntries: [string, number][] = [...stats.workModeCount.entries()]
-    .map(([k, v]) => [WORK_MODE_LABELS[k] || k, v] as [string, number])
+    .map(([k, v]) => [WORK_MODE_LABEL_KEYS[k] ? t(WORK_MODE_LABEL_KEYS[k]) : k, v] as [string, number])
     .sort(([, a], [, b]) => b - a)
 
   const presetEntries = [...stats.presetCount.entries()].sort(([, a], [, b]) => b - a)
@@ -235,19 +243,18 @@ export default function PersonalizationPage() {
   return (
     <div className="mx-auto max-w-4xl p-8">
       <div className="mb-6">
-        <h1 className="text-2xl font-bold">使用统计</h1>
+        <h1 className="text-2xl font-bold">{t('stats.title')}</h1>
         <div className="mt-3 inline-flex gap-1 rounded-lg border border-border p-0.5">
           {RANGE_OPTIONS.map((opt) => (
             <button
               key={opt.value}
               onClick={() => setRange(opt.value)}
-              className={`rounded-md px-3 py-1 text-xs transition-all ${
-                range === opt.value
-                  ? 'bg-accent text-foreground font-medium'
-                  : 'text-muted-foreground hover:text-foreground'
-              }`}
+              className={`rounded-md px-3 py-1 text-xs transition-all ${range === opt.value
+                ? 'bg-accent text-foreground font-medium'
+                : 'text-muted-foreground hover:text-foreground'
+                }`}
             >
-              {opt.label}
+              {t(opt.labelKey)}
             </button>
           ))}
         </div>
@@ -260,45 +267,45 @@ export default function PersonalizationPage() {
             {/* 首次使用提示（仅全部模式，融入顶部） */}
             {range === 'all' && userStats.firstUsedAt && (
               <p className="mb-4 text-xs text-muted-foreground">
-                自 {formatDate(userStats.firstUsedAt)} 起，已使用 {usageDays} 天
+                {t('stats.sinceHint', { date: formatDate(userStats.firstUsedAt), days: usageDays })}
               </p>
             )}
 
             <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
               <div>
-                <p className="text-xs text-muted-foreground">累计字数</p>
+                <p className="text-xs text-muted-foreground">{t('stats.totalChars')}</p>
                 <p className="mt-0.5 text-xl font-semibold">{stats.totalChars.toLocaleString()}</p>
               </div>
               <div>
-                <p className="text-xs text-muted-foreground">历史记录</p>
-                <p className="mt-0.5 text-xl font-semibold">{stats.recordCount.toLocaleString()} 条</p>
+                <p className="text-xs text-muted-foreground">{t('stats.historyRecords')}</p>
+                <p className="mt-0.5 text-xl font-semibold">{t('stats.recordsValue', { count: stats.recordCount.toLocaleString() })}</p>
               </div>
               <div>
-                <p className="text-xs text-muted-foreground">口述时长</p>
+                <p className="text-xs text-muted-foreground">{t('stats.dictationTime')}</p>
                 <p className="mt-0.5 text-xl font-semibold">{formatDuration(stats.totalDurationSec)}</p>
               </div>
               <div>
-                <p className="text-xs text-muted-foreground">节省时间</p>
+                <p className="text-xs text-muted-foreground">{t('stats.savedTime')}</p>
                 <p className="mt-0.5 text-xl font-semibold">{formatDuration(stats.savedTimeSec)}</p>
               </div>
             </div>
 
             <div className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3 border-t border-border pt-4 sm:grid-cols-4">
               <div>
-                <span className="text-xs text-muted-foreground">平均每次字数</span>
+                <span className="text-xs text-muted-foreground">{t('stats.avgChars')}</span>
                 <p className="text-sm font-medium">{stats.avgCharsPerSession}</p>
               </div>
               <div>
-                <span className="text-xs text-muted-foreground">平均口述速度</span>
-                <p className="text-sm font-medium">{stats.avgSpeed} 字/分</p>
+                <span className="text-xs text-muted-foreground">{t('stats.avgSpeed')}</span>
+                <p className="text-sm font-medium">{t('stats.speedValue', { value: stats.avgSpeed })}</p>
               </div>
               <div>
-                <span className="text-xs text-muted-foreground">单次最长录音</span>
+                <span className="text-xs text-muted-foreground">{t('stats.longestTake')}</span>
                 <p className="text-sm font-medium">{stats.maxDurationSec > 0 ? formatDuration(stats.maxDurationSec) : '-'}</p>
               </div>
               <div>
-                <span className="text-xs text-muted-foreground">日均使用</span>
-                <p className="text-sm font-medium">{stats.dailyAvgRecords} 次 / {stats.dailyAvgChars} 字</p>
+                <span className="text-xs text-muted-foreground">{t('stats.dailyAverage')}</span>
+                <p className="text-sm font-medium">{t('stats.dailyAverageValue', { records: stats.dailyAvgRecords, chars: stats.dailyAvgChars })}</p>
               </div>
             </div>
           </CardContent>
@@ -308,7 +315,7 @@ export default function PersonalizationPage() {
         {stats.recordCount > 0 && (
           <Card>
             <CardContent className="p-6">
-              <h2 className="mb-4 text-lg font-semibold">使用时段</h2>
+              <h2 className="mb-4 text-lg font-semibold">{t('stats.timeOfDay')}</h2>
               <HourChart buckets={stats.hourBuckets} />
             </CardContent>
           </Card>
@@ -320,7 +327,7 @@ export default function PersonalizationPage() {
             {workModeEntries.length > 0 && (
               <Card>
                 <CardContent className="p-6">
-                  <h2 className="mb-3 text-lg font-semibold">工作模式</h2>
+                  <h2 className="mb-3 text-lg font-semibold">{t('stats.workMode')}</h2>
                   <DistributionList entries={workModeEntries} />
                 </CardContent>
               </Card>
@@ -328,7 +335,7 @@ export default function PersonalizationPage() {
             {presetEntries.length > 0 && (
               <Card>
                 <CardContent className="p-6">
-                  <h2 className="mb-3 text-lg font-semibold">Prompt 预设</h2>
+                  <h2 className="mb-3 text-lg font-semibold">{t('stats.promptPreset')}</h2>
                   <DistributionList entries={presetEntries} />
                 </CardContent>
               </Card>
@@ -340,7 +347,7 @@ export default function PersonalizationPage() {
         {appUsageEntries.length > 0 && (
           <Card>
             <CardContent className="p-6">
-              <h2 className="mb-3 text-lg font-semibold">应用使用次数</h2>
+              <h2 className="mb-3 text-lg font-semibold">{t('stats.appUsage')}</h2>
               <div className="space-y-2">
                 {appUsageEntries.map(([appName, count]) => {
                   const maxCount = appUsageEntries[0][1]
@@ -356,7 +363,7 @@ export default function PersonalizationPage() {
                         />
                       </div>
                       <span className="w-16 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
-                        {count} 次
+                        {t('stats.timesValue', { count })}
                       </span>
                     </div>
                   )

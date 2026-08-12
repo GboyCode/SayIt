@@ -45,11 +45,18 @@ pub struct ConfigExportSelection {
 #[serde(rename_all = "camelCase")]
 pub struct ConfigImportSectionPreview {
     kind: String,
-    label: String,
     total: usize,
     added: usize,
     updated: usize,
     skipped: usize,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigImportWarning {
+    code: String,
+    current: Option<usize>,
+    limit: Option<usize>,
 }
 
 #[derive(Clone, Serialize)]
@@ -59,7 +66,7 @@ pub struct ConfigImportPreview {
     format_version: i64,
     import_token: String,
     sections: Vec<ConfigImportSectionPreview>,
-    warnings: Vec<String>,
+    warnings: Vec<ConfigImportWarning>,
     requires_restart: bool,
 }
 
@@ -77,7 +84,7 @@ struct SelectedImportPlan {
     app_settings: Map<String, Value>,
     prompt_presets: Option<Vec<Value>>,
     sections: Vec<ConfigImportSectionPreview>,
-    warnings: Vec<String>,
+    warnings: Vec<ConfigImportWarning>,
     added: usize,
     updated: usize,
     skipped: usize,
@@ -245,7 +252,7 @@ fn build_selected_config_value(
     }
 
     if items.is_empty() {
-        return Err("请至少选择一项要导出的配置".to_string());
+        return Err("Select at least one configuration item to export".to_string());
     }
 
     Ok(json!({
@@ -276,7 +283,7 @@ fn build_full_value(storage: &Storage) -> Value {
 fn check_kind_and_version(data: &Value, expected_kind: &str, max_version: i64) -> Result<i64, String> {
     let kind = data.get("kind").and_then(Value::as_str).unwrap_or("");
     if kind != expected_kind {
-        return Err(format!("这不是有效的 SayIt {}文件", if expected_kind == "full" { "全部数据备份" } else { "配置" }));
+        return Err(format!("This is not a valid SayIt {} file", if expected_kind == "full" { "full-data backup" } else { "configuration" }));
     }
     let version = data
         .get("formatVersion")
@@ -284,7 +291,7 @@ fn check_kind_and_version(data: &Value, expected_kind: &str, max_version: i64) -
         .unwrap_or(0);
     if version > max_version {
         return Err(format!(
-            "备份文件版本（{}）高于当前应用支持的版本（{}），请升级 SayIt 后再导入。",
+            "The backup version ({}) is newer than this app supports ({}). Update SayIt before importing it.",
             version, max_version
         ));
     }
@@ -324,7 +331,7 @@ fn apply_config_part(
             prompt_presets,
             app_prompt_rules,
         )
-        .map_err(|error| format!("写入配置失败: {}", error))
+        .map_err(|error| format!("Failed to write configuration: {}", error))
 }
 
 /// 重写单条历史记录的音频路径：把目录段换成本机 audio 目录，文件名不变。
@@ -364,9 +371,9 @@ fn unique_import_name(base: &str, used_names: &mut HashSet<String>) -> String {
     let mut index = 1usize;
     loop {
         let candidate = if index == 1 {
-            format!("{}（导入）", base)
+            format!("{} (Imported)", base)
         } else {
-            format!("{}（导入 {}）", base, index)
+            format!("{} (Imported {})", base, index)
         };
         if used_names.insert(candidate.to_lowercase()) {
             return candidate;
@@ -379,7 +386,7 @@ fn build_selected_import_plan(storage: &Storage, data: &Value) -> Result<Selecte
     let items = data
         .get("items")
         .and_then(Value::as_object)
-        .ok_or_else(|| "配置文件缺少 items，可能已损坏".to_string())?;
+        .ok_or_else(|| "The configuration file is missing items and may be damaged".to_string())?;
     let mut app_settings = Map::new();
     let mut prompt_presets = None;
     let mut sections = Vec::new();
@@ -392,7 +399,7 @@ fn build_selected_import_plan(storage: &Storage, data: &Value) -> Result<Selecte
     if let Some(group_value) = items.get("hotwordGroups") {
         let imported_groups = group_value
             .as_array()
-            .ok_or_else(|| "热词组格式不正确".to_string())?;
+            .ok_or_else(|| "Invalid hotword group format".to_string())?;
         let mut local_groups = storage
             .get("customHotwordThemes", None)
             .as_array()
@@ -475,18 +482,17 @@ fn build_selected_import_plan(storage: &Storage, data: &Value) -> Result<Selecte
             active_words.extend(normalized_strings(group.get("words")));
         }
         if active_words.len() > MAX_HOTWORDS {
-            warnings.push(format!(
-                "启用的自定义热词将达到 {} 个，超过 {} 个后实际生效数量会受限制。",
-                active_words.len(),
-                MAX_HOTWORDS
-            ));
+            warnings.push(ConfigImportWarning {
+                code: "hotwordLimit".to_string(),
+                current: Some(active_words.len()),
+                limit: Some(MAX_HOTWORDS),
+            });
         }
 
         app_settings.insert("customHotwordThemes".to_string(), Value::Array(local_groups));
         app_settings.insert("customThemeActive".to_string(), Value::Object(active_map));
         sections.push(ConfigImportSectionPreview {
             kind: "hotwords".to_string(),
-            label: "热词组".to_string(),
             total: imported_groups.len(),
             added,
             updated,
@@ -500,7 +506,7 @@ fn build_selected_import_plan(storage: &Storage, data: &Value) -> Result<Selecte
     if let Some(rules_value) = items.get("textReplacements") {
         let imported_rules = rules_value
             .as_array()
-            .ok_or_else(|| "文本替换格式不正确".to_string())?;
+            .ok_or_else(|| "Invalid text replacement format".to_string())?;
         let mut local_rules = storage
             .get("textReplacements", None)
             .as_array()
@@ -560,7 +566,6 @@ fn build_selected_import_plan(storage: &Storage, data: &Value) -> Result<Selecte
         app_settings.insert("textReplacements".to_string(), Value::Array(local_rules));
         sections.push(ConfigImportSectionPreview {
             kind: "textReplacements".to_string(),
-            label: "文本替换".to_string(),
             total: imported_rules.len(),
             added,
             updated,
@@ -574,7 +579,7 @@ fn build_selected_import_plan(storage: &Storage, data: &Value) -> Result<Selecte
     if let Some(presets_value) = items.get("promptPresets") {
         let imported_presets = presets_value
             .as_array()
-            .ok_or_else(|| "润色模式格式不正确".to_string())?;
+            .ok_or_else(|| "Invalid prompt preset format".to_string())?;
         let mut local_presets = storage
             .get("promptPresets", None)
             .as_array()
@@ -636,7 +641,6 @@ fn build_selected_import_plan(storage: &Storage, data: &Value) -> Result<Selecte
         prompt_presets = Some(local_presets);
         sections.push(ConfigImportSectionPreview {
             kind: "promptPresets".to_string(),
-            label: "润色模式".to_string(),
             total: imported_presets.len(),
             added,
             updated: 0,
@@ -647,7 +651,7 @@ fn build_selected_import_plan(storage: &Storage, data: &Value) -> Result<Selecte
     }
 
     if sections.is_empty() {
-        return Err("配置文件中没有可导入的内容".to_string());
+        return Err("The configuration file contains nothing that can be imported".to_string());
     }
 
     Ok(SelectedImportPlan {
@@ -725,7 +729,7 @@ fn audio_progress_percent(processed_bytes: u64, total_bytes: u64) -> f64 {
 #[tauri::command]
 pub fn get_backup_directory() -> Result<String, String> {
     let directory = backup_dir();
-    fs::create_dir_all(&directory).map_err(|e| format!("创建备份目录失败: {}", e))?;
+    fs::create_dir_all(&directory).map_err(|e| format!("Failed to create backup directory: {}", e))?;
     Ok(directory.to_string_lossy().to_string())
 }
 
@@ -736,15 +740,15 @@ pub async fn export_config(
 ) -> Result<String, String> {
     let out_path = timestamped_backup_path("sayit-config", "json");
     if let Some(parent) = out_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("创建备份目录失败: {}", e))?;
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create backup directory: {}", e))?;
     }
     let payload = match selection.mode.as_str() {
         "full" => build_config_value(storage.inner()),
         "selected" => build_selected_config_value(storage.inner(), &selection)?,
-        _ => return Err("不支持的配置导出方式".to_string()),
+        _ => return Err("Unsupported configuration export mode".to_string()),
     };
     let content = serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?;
-    fs::write(&out_path, content).map_err(|e| format!("写入文件失败: {}", e))?;
+    fs::write(&out_path, content).map_err(|e| format!("Failed to write file: {}", e))?;
     let path = out_path.to_string_lossy().to_string();
     log::info!("Config backup exported to {}", path);
     Ok(path)
@@ -780,7 +784,7 @@ pub async fn export_full(
 
     let export_result = (|| -> Result<(), String> {
         if let Some(parent) = output.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("创建导出目录失败: {}", e))?;
+            fs::create_dir_all(parent).map_err(|e| format!("Failed to create export directory: {}", e))?;
         }
 
         let payload = build_full_value(storage.inner());
@@ -801,7 +805,7 @@ pub async fn export_full(
             },
         );
 
-        let file = fs::File::create(&temp_path).map_err(|e| format!("创建文件失败: {}", e))?;
+        let file = fs::File::create(&temp_path).map_err(|e| format!("Failed to create file: {}", e))?;
         let mut zip = zip::ZipWriter::new(file);
         let text_opts = zip::write::FileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated);
@@ -822,12 +826,12 @@ pub async fn export_full(
             zip.start_file(format!("audio/{}", audio.name), audio_opts)
                 .map_err(|e| e.to_string())?;
             let mut source = fs::File::open(&audio.path)
-                .map_err(|e| format!("读取音频 {} 失败: {}", audio.name, e))?;
+                .map_err(|e| format!("Failed to read audio file {}: {}", audio.name, e))?;
 
             loop {
                 let read = source
                     .read(&mut buffer)
-                    .map_err(|e| format!("读取音频 {} 失败: {}", audio.name, e))?;
+                    .map_err(|e| format!("Failed to read audio file {}: {}", audio.name, e))?;
                 if read == 0 {
                     break;
                 }
@@ -890,9 +894,9 @@ pub async fn export_full(
         zip.finish().map_err(|e| e.to_string())?;
 
         if output.exists() {
-            fs::remove_file(&output).map_err(|e| format!("替换旧备份失败: {}", e))?;
+            fs::remove_file(&output).map_err(|e| format!("Failed to replace the previous backup: {}", e))?;
         }
-        fs::rename(&temp_path, &output).map_err(|e| format!("完成备份文件失败: {}", e))?;
+        fs::rename(&temp_path, &output).map_err(|e| format!("Failed to finalize the backup file: {}", e))?;
         Ok(())
     })();
 
@@ -950,9 +954,9 @@ fn content_fingerprint(content: &str) -> String {
 }
 
 fn read_config_file(in_path: &str) -> Result<(Value, String), String> {
-    let content = fs::read_to_string(in_path).map_err(|e| format!("读取文件失败: {}", e))?;
+    let content = fs::read_to_string(in_path).map_err(|e| format!("Failed to read file: {}", e))?;
     let data = serde_json::from_str(&content)
-        .map_err(|e| format!("解析失败（文件可能损坏或格式不正确）: {}", e))?;
+        .map_err(|e| format!("Failed to parse the file; it may be damaged or have an invalid format: {}", e))?;
     Ok((data, content_fingerprint(&content)))
 }
 
@@ -973,7 +977,7 @@ fn config_import_token(
         "promptPresets": storage.get("promptPresets", None),
     });
     let serialized = serde_json::to_string(&context)
-        .map_err(|error| format!("生成导入校验信息失败: {}", error))?;
+        .map_err(|error| format!("Failed to prepare import validation data: {}", error))?;
     Ok(content_fingerprint(&serialized))
 }
 
@@ -982,15 +986,34 @@ fn validate_config_collection(key: &str, items: &[Value]) -> Result<(), String> 
     for (index, item) in items.iter().enumerate() {
         let object = item
             .as_object()
-            .ok_or_else(|| format!("配置文件中的 {} 第 {} 项格式不正确", key, index + 1))?;
+            .ok_or_else(|| format!("Item {} in {} has an invalid format", index + 1, key))?;
         let id = object
             .get("id")
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| format!("配置文件中的 {} 第 {} 项缺少 id", key, index + 1))?;
-        if !ids.insert(id.to_string()) {
-            return Err(format!("配置文件中的 {} 存在重复 id：{}", key, id));
+            .ok_or_else(|| format!("Item {} in {} is missing id", index + 1, key))?;
+
+        // 内置 Prompt 的中英文自定义内容共存在 promptPresets 中，因此同一个稳定 id
+        // 可以出现两次，但同一语言仍只能有一份。旧备份没有语言字段，只能是中文。
+        let unique_id = if key == "promptPresets" && BUILTIN_PRESET_IDS.contains(&id) {
+            let language = object
+                .get("builtinPromptLanguage")
+                .and_then(Value::as_str)
+                .unwrap_or("zh-CN");
+            if language != "zh-CN" && language != "en" {
+                return Err(format!(
+                    "Item {} in {} has an invalid language",
+                    index + 1,
+                    key
+                ));
+            }
+            format!("{}:{}", id, language)
+        } else {
+            id.to_string()
+        };
+        if !ids.insert(unique_id) {
+            return Err(format!("{} contains a duplicate id: {}", key, id));
         }
 
         let required_fields: &[&str] = match key {
@@ -1005,9 +1028,9 @@ fn validate_config_collection(key: &str, items: &[Value]) -> Result<(), String> 
                 .is_some_and(|value| !value.trim().is_empty());
             if !valid {
                 return Err(format!(
-                    "配置文件中的 {} 第 {} 项缺少 {}",
-                    key,
+                    "Item {} in {} is missing {}",
                     index + 1,
+                    key,
                     field
                 ));
             }
@@ -1022,11 +1045,10 @@ fn full_config_preview_sections(data: &Value) -> Result<Vec<ConfigImportSectionP
     if let Some(value) = data.get("appSettings") {
         let settings = value
             .as_object()
-            .ok_or_else(|| "配置文件中的 appSettings 格式不正确".to_string())?;
+            .ok_or_else(|| "appSettings has an invalid format".to_string())?;
         if !settings.is_empty() {
             sections.push(ConfigImportSectionPreview {
                 kind: "appSettings".to_string(),
-                label: "应用设置".to_string(),
                 total: settings.len(),
                 added: 0,
                 updated: settings.len(),
@@ -1035,18 +1057,17 @@ fn full_config_preview_sections(data: &Value) -> Result<Vec<ConfigImportSectionP
         }
     }
 
-    for (key, kind, label) in [
-        ("promptPresets", "promptPresets", "润色模式"),
-        ("appPromptRules", "appPromptRules", "应用 Prompt 规则"),
+    for (key, kind) in [
+        ("promptPresets", "promptPresets"),
+        ("appPromptRules", "appPromptRules"),
     ] {
         if let Some(value) = data.get(key) {
             let items = value
                 .as_array()
-                .ok_or_else(|| format!("配置文件中的 {} 格式不正确", key))?;
+                .ok_or_else(|| format!("{} has an invalid format", key))?;
             validate_config_collection(key, items)?;
             sections.push(ConfigImportSectionPreview {
                 kind: kind.to_string(),
-                label: label.to_string(),
                 total: items.len(),
                 added: 0,
                 updated: items.len(),
@@ -1056,7 +1077,7 @@ fn full_config_preview_sections(data: &Value) -> Result<Vec<ConfigImportSectionP
     }
 
     if sections.is_empty() {
-        return Err("配置文件中没有可导入的完整配置".to_string());
+        return Err("The file contains no complete configuration to import".to_string());
     }
     Ok(sections)
 }
@@ -1087,7 +1108,7 @@ pub async fn inspect_config_import(
     }
 
     if data.get("scope").is_some() || version > FORMAT_VERSION {
-        return Err("不支持的配置文件范围或版本".to_string());
+        return Err("Unsupported configuration scope or version".to_string());
     }
 
     let sections = full_config_preview_sections(&data)?;
@@ -1096,10 +1117,11 @@ pub async fn inspect_config_import(
         format_version: version,
         import_token: file_fingerprint,
         sections,
-        warnings: vec![
-            "完整配置会覆盖文件中包含的设置、供应商配置与密钥、热词和 Prompt。"
-                .to_string(),
-        ],
+        warnings: vec![ConfigImportWarning {
+            code: "fullOverwrite".to_string(),
+            current: None,
+            limit: None,
+        }],
         requires_restart: true,
     })
 }
@@ -1120,7 +1142,7 @@ pub async fn import_config(
     if is_selected_config(&data) {
         let actual_token = config_import_token(storage.inner(), &data, &file_fingerprint)?;
         if actual_token != expected_import_token {
-            return Err("配置文件或本地配置已发生变化，请重新选择文件并确认".to_string());
+            return Err("The configuration file or local settings changed; select the file again and reconfirm".to_string());
         }
 
         let plan = build_selected_import_plan(storage.inner(), &data)?;
@@ -1128,7 +1150,7 @@ pub async fn import_config(
             .sections
             .iter()
             .filter(|section| section.added + section.updated > 0)
-            .map(|section| section.label.clone())
+            .map(|section| section.kind.clone())
             .collect::<Vec<_>>();
         storage
             .apply_config_transaction(
@@ -1137,7 +1159,7 @@ pub async fn import_config(
                 plan.prompt_presets.as_deref(),
                 None,
             )
-            .map_err(|error| format!("写入配置失败: {}", error))?;
+            .map_err(|error| format!("Failed to write configuration: {}", error))?;
         return Ok(ConfigImportResult {
             changed_sections,
             added: plan.added,
@@ -1148,17 +1170,17 @@ pub async fn import_config(
     }
 
     if data.get("scope").is_some() || version > FORMAT_VERSION {
-        return Err("不支持的配置文件范围或版本".to_string());
+        return Err("Unsupported configuration scope or version".to_string());
     }
     full_config_preview_sections(&data)?;
     if file_fingerprint != expected_import_token {
-        return Err("配置文件已发生变化，请重新选择文件并确认".to_string());
+        return Err("The configuration file changed; select it again and reconfirm".to_string());
     }
 
     // 完整配置导入排除 stats，避免覆盖本机使用统计。
     apply_config_part(storage.inner(), &data, CONFIG_EXCLUDE)?;
     Ok(ConfigImportResult {
-        changed_sections: vec!["完整配置".to_string()],
+        changed_sections: vec!["fullConfig".to_string()],
         added: 0,
         updated: 1,
         skipped: 0,
@@ -1168,23 +1190,23 @@ pub async fn import_config(
 
 #[tauri::command]
 pub async fn import_full(in_path: String, storage: State<'_, Storage>) -> Result<(), String> {
-    let file = fs::File::open(&in_path).map_err(|e| format!("打开文件失败: {}", e))?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("不是有效的备份压缩包: {}", e))?;
+    let file = fs::File::open(&in_path).map_err(|e| format!("Failed to open file: {}", e))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("Not a valid backup archive: {}", e))?;
 
     // 1. 读取并校验 backup.json
     let mut json_str = String::new();
     {
         let mut entry = archive
             .by_name("backup.json")
-            .map_err(|_| "备份包缺少 backup.json，可能不是 SayIt 全量备份。".to_string())?;
+            .map_err(|_| "The archive is missing backup.json and may not be a SayIt full backup".to_string())?;
         entry.read_to_string(&mut json_str).map_err(|e| e.to_string())?;
     }
-    let data: Value = serde_json::from_str(&json_str).map_err(|e| format!("解析 backup.json 失败: {}", e))?;
+    let data: Value = serde_json::from_str(&json_str).map_err(|e| format!("Failed to parse backup.json: {}", e))?;
     check_kind_and_version(&data, "full", FORMAT_VERSION)?;
 
     // 2. 释放音频文件到本机 audio 目录
     let adir = audio_dir();
-    fs::create_dir_all(&adir).map_err(|e| format!("创建音频目录失败: {}", e))?;
+    fs::create_dir_all(&adir).map_err(|e| format!("Failed to create audio directory: {}", e))?;
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
         let name = entry.name().to_string();
@@ -1198,7 +1220,7 @@ pub async fn import_full(in_path: String, storage: State<'_, Storage>) -> Result
             }
             let mut buf = Vec::new();
             entry.read_to_end(&mut buf).map_err(|e| e.to_string())?;
-            fs::write(adir.join(&base), &buf).map_err(|e| format!("写入音频 {} 失败: {}", base, e))?;
+            fs::write(adir.join(&base), &buf).map_err(|e| format!("Failed to write audio file {}: {}", base, e))?;
         }
     }
 
@@ -1210,16 +1232,16 @@ pub async fn import_full(in_path: String, storage: State<'_, Storage>) -> Result
         let rewritten: Vec<Value> = history.iter().map(|rec| rewrite_audio_path(rec, &adir)).collect();
         storage
             .set("history", &Value::Array(rewritten))
-            .map_err(|e| format!("写入历史失败: {}", e))?;
+            .map_err(|e| format!("Failed to write history: {}", e))?;
     }
     if let Some(arr) = data.get("manualCorrections") {
         if arr.is_array() {
-            storage.set("manualCorrections", arr).map_err(|e| format!("写入人工校正失败: {}", e))?;
+            storage.set("manualCorrections", arr).map_err(|e| format!("Failed to write manual corrections: {}", e))?;
         }
     }
     if let Some(arr) = data.get("feedbackQueue") {
         if arr.is_array() {
-            storage.set("feedbackQueue", arr).map_err(|e| format!("写入反馈队列失败: {}", e))?;
+            storage.set("feedbackQueue", arr).map_err(|e| format!("Failed to write feedback queue: {}", e))?;
         }
     }
     Ok(())
@@ -1229,4 +1251,44 @@ pub async fn import_full(in_path: String, storage: State<'_, Storage>) -> Result
 #[tauri::command]
 pub fn restart_app(app: tauri::AppHandle) {
     app.restart();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prompt_overrides_allow_one_entry_per_builtin_language() {
+        let items = vec![
+            json!({
+                "id": "intent",
+                "name": "Intent cleanup",
+                "systemPrompt": "中文自定义",
+                "builtinPromptLanguage": "zh-CN",
+            }),
+            json!({
+                "id": "intent",
+                "name": "Intent cleanup",
+                "systemPrompt": "English custom",
+                "builtinPromptLanguage": "en",
+            }),
+        ];
+
+        assert!(validate_config_collection("promptPresets", &items).is_ok());
+    }
+
+    #[test]
+    fn prompt_overrides_reject_duplicate_builtin_language() {
+        let items = vec![
+            json!({ "id": "intent", "name": "Intent cleanup", "systemPrompt": "First" }),
+            json!({
+                "id": "intent",
+                "name": "Intent cleanup",
+                "systemPrompt": "Second",
+                "builtinPromptLanguage": "zh-CN",
+            }),
+        ];
+
+        assert!(validate_config_collection("promptPresets", &items).is_err());
+    }
 }

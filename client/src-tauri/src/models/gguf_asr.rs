@@ -179,7 +179,7 @@ pub async fn gguf_asr_diagnostics() -> Result<GgufDiagnostics, String> {
         process_memory_mb: process_memory_mb(),
     })
     .await
-    .map_err(|e| format!("读取本地引擎状态失败: {}", e))
+    .map_err(|e| format!("Failed to read local engine state: {}", e))
 }
 
 /// 当前进程的工作集，MB。用来回答"这个模型到底吃多少内存"——权重体积不等于
@@ -233,10 +233,10 @@ pub fn describe_devices() -> Vec<GgufDevice> {
 /// 所以不需要用户/前端记住文件名，避免换量化档时两头都要改。
 fn find_gguf(dir: &Path) -> Result<PathBuf, String> {
     if !dir.exists() {
-        return Err("模型尚未下载".into());
+        return Err("The model has not been downloaded".into());
     }
     let mut hits: Vec<PathBuf> = std::fs::read_dir(dir)
-        .map_err(|e| format!("读取模型目录失败: {}", e))?
+        .map_err(|e| format!("Failed to read model directory: {}", e))?
         .flatten()
         .map(|e| e.path())
         .filter(|p| {
@@ -246,14 +246,14 @@ fn find_gguf(dir: &Path) -> Result<PathBuf, String> {
         })
         .collect();
     match hits.len() {
-        0 => Err("模型目录里没有 .gguf 文件".into()),
+        0 => Err("The model directory contains no .gguf file".into()),
         1 => Ok(hits.remove(0)),
         _ => {
             // 多个量化档共存时取最大的（通常是精度最高的那个），并留日志。
             hits.sort_by_key(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0));
             let pick = hits.pop().unwrap();
             log::warn!(
-                "模型目录有多个 .gguf，选了最大的: {}",
+                "The model directory contains multiple .gguf files; selected the largest: {}",
                 pick.file_name().unwrap_or_default().to_string_lossy()
             );
             Ok(pick)
@@ -272,7 +272,7 @@ fn resolve_backend(pref: &str) -> Backend {
                     return b;
                 }
             }
-            log::warn!("设置要求 GPU，但没有可用的 GPU 后端，回落 Auto");
+            log::warn!("GPU was requested but no GPU backend is available; falling back to Auto");
             Backend::Auto
         }
         _ => Backend::Auto,
@@ -282,7 +282,7 @@ fn resolve_backend(pref: &str) -> Backend {
 /// 加载模型（若 key 未变则复用）。`accelerator` 取 "auto" | "cpu" | "gpu"。
 /// 换加速器要重建：后端是 Model::load_with 时绑定的，之后改不了。
 fn ensure_loaded(model_id: &str, accelerator: &str) -> Result<(), String> {
-    let mut cache = CACHE.lock().map_err(|e| format!("锁获取失败: {}", e))?;
+    let mut cache = CACHE.lock().map_err(|e| format!("Failed to acquire model cache lock: {}", e))?;
 
     if let Some(ref c) = *cache {
         if c.model_id == model_id && c.accelerator == accelerator {
@@ -310,7 +310,7 @@ fn ensure_loaded(model_id: &str, accelerator: &str) -> Result<(), String> {
         gpu_device: 0, // 0 = 自动/首个匹配
     };
     let model = Model::load_with(&path, &options)
-        .map_err(|e| format!("加载模型失败 ({}): {}", model_id, e))?;
+        .map_err(|e| format!("Failed to load model ({}): {}", model_id, e))?;
 
     let backend = model.backend();
     let caps = model.capabilities();
@@ -320,7 +320,7 @@ fn ensure_loaded(model_id: &str, accelerator: &str) -> Result<(), String> {
     let supports_pnc = model.supports(Feature::Pnc);
     let session = model
         .session_with(&SessionOptions::default())
-        .map_err(|e| format!("创建 session 失败 ({}): {}", model_id, e))?;
+        .map_err(|e| format!("Failed to create session ({}): {}", model_id, e))?;
 
     let max_audio_ms = session
         .limits()
@@ -393,7 +393,7 @@ fn warmup(entry: &mut Loaded) -> u128 {
     // 预热只为建 pipeline，语言无所谓，用自动检测即可
     let opts = run_options("auto", entry.supports_itn, entry.supports_pnc);
     if let Err(e) = entry.session.run(&pcm, &opts) {
-        log::warn!("预热推理失败（不影响功能，只是第一次会慢）: {}", e);
+        log::warn!("Warm-up inference failed; functionality is unaffected, but the first run will be slower: {}", e);
     }
     t0.elapsed().as_millis()
 }
@@ -424,8 +424,8 @@ fn transcribe_with_cache(
     sample_rate: usize,
     language: &str,
 ) -> Result<String, String> {
-    let mut cache = CACHE.lock().map_err(|e| format!("锁获取失败: {}", e))?;
-    let entry = cache.as_mut().ok_or("模型未加载")?;
+    let mut cache = CACHE.lock().map_err(|e| format!("Failed to acquire model cache lock: {}", e))?;
+    let entry = cache.as_mut().ok_or("Model is not loaded")?;
     // 守卫会在所有成功/错误返回路径上、释放 CACHE 锁之前刷新最后活动时间。
     let _activity_guard = ActivityGuard;
     touch_activity();
@@ -442,12 +442,12 @@ fn transcribe_with_cache(
             .session
             .run(samples, &opts)
             .map(|t| t.text.trim().to_string())
-            .map_err(|e| format!("推理失败: {}", e));
+            .map_err(|e| format!("Inference failed: {}", e));
     }
 
     // 极长音频（超过模型上下文）才走分段。日常口述不会走到这里。
     log::warn!(
-        "音频 {:.1}s 超过模型上限 {:.1}s，按上限分段解码",
+        "Audio length {:.1}s exceeds the model limit {:.1}s; decoding in segments",
         samples.len() as f64 / sample_rate as f64,
         limit as f64 / sample_rate as f64
     );
@@ -456,7 +456,7 @@ fn transcribe_with_cache(
         let text = entry
             .session
             .run(chunk, &opts)
-            .map_err(|e| format!("推理失败: {}", e))?;
+            .map_err(|e| format!("Inference failed: {}", e))?;
         let t = text.text.trim();
         if t.is_empty() {
             continue;
@@ -545,9 +545,9 @@ static IDLE_UNLOADER_STARTED: std::sync::Once = std::sync::Once::new();
 pub fn set_idle_unload_minutes(idle_minutes: u64) {
     IDLE_UNLOAD_MINUTES.store(idle_minutes, std::sync::atomic::Ordering::SeqCst);
     if idle_minutes == 0 {
-        log::info!("本地模型空闲卸载已关闭，模型将常驻内存");
+        log::info!("Local model idle unload is disabled; the model will remain in memory");
     } else {
-        log::info!("本地模型空闲卸载已设为 {} 分钟", idle_minutes);
+        log::info!("Local model idle unload interval set to {} minutes", idle_minutes);
     }
 }
 
@@ -571,7 +571,7 @@ pub fn spawn_idle_unloader(initial_idle_minutes: u64) {
             let mut cache = match CACHE.lock() {
                 Ok(cache) => cache,
                 Err(error) => {
-                    log::warn!("本地模型空闲检查获取锁失败: {}", error);
+                    log::warn!("Failed to acquire lock during local model idle check: {}", error);
                     continue;
                 }
             };
@@ -592,7 +592,7 @@ pub fn spawn_idle_unloader(initial_idle_minutes: u64) {
 
             if let Some(entry) = cache.take() {
                 log::info!(
-                    "本地模型空闲 {} 分钟，卸载释放内存: {}",
+                    "Local model was idle for {} minutes; unloaded to free memory: {}",
                     idle_minutes,
                     entry.model_id
                 );

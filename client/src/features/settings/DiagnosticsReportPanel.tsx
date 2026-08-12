@@ -15,12 +15,8 @@ import { getWorkMode } from '@/services/transcription'
 import { save } from '@tauri-apps/plugin-dialog'
 import * as bridge from '@/services/bridge'
 import type { DiagnosticOccurrence, DiagnosticsPreview } from '@/types/appApi'
-
-const OCCURRENCE_OPTIONS: Array<{ value: DiagnosticOccurrence; label: string }> = [
-  { value: 'within_1h', label: '1 小时内' },
-  { value: 'today', label: '今天' },
-  { value: 'older', label: '更早' },
-]
+import { t } from '@/i18n'
+import { useLocale } from '@/i18n/useT'
 
 interface DiagnosticsReportPanelProps {
   embedded?: boolean
@@ -36,6 +32,7 @@ function SummaryRow({ label, value }: { label: string; value: string }) {
 }
 
 export default function DiagnosticsReportPanel({ embedded = false }: DiagnosticsReportPanelProps) {
+  const locale = useLocale()
   const [description, setDescription] = useState('')
   const [issueOccurrence, setIssueOccurrence] = useState<DiagnosticOccurrence>('within_1h')
   const [images, setImages] = useState<File[]>([])
@@ -48,7 +45,12 @@ export default function DiagnosticsReportPanel({ embedded = false }: Diagnostics
   const [loadingPreview, setLoadingPreview] = useState(false)
 
   const isServerMode = getWorkMode() === 'server'
-  const imageValidation = useMemo(() => validateDiagnosticImages(images), [images])
+  const imageValidation = useMemo(() => validateDiagnosticImages(images), [images, locale])
+  const occurrenceOptions: Array<{ value: DiagnosticOccurrence; label: string }> = [
+    { value: 'within_1h', label: t('diagnosticsReport.withinHour') },
+    { value: 'today', label: t('diagnosticsReport.today') },
+    { value: 'older', label: t('diagnosticsReport.older') },
+  ]
 
   useEffect(() => {
     let cancelled = false
@@ -101,11 +103,11 @@ export default function DiagnosticsReportPanel({ embedded = false }: Diagnostics
 
   const handleSubmit = async () => {
     if (!description.trim()) {
-      setErrorMessage('请先描述问题现象和影响。')
+      setErrorMessage(t('diagnosticsReport.descriptionRequired'))
       return
     }
     if (!imageValidation.valid) {
-      setErrorMessage(imageValidation.errors[0] || '截图校验失败。')
+      setErrorMessage(imageValidation.errors[0] || t('diagnosticsReport.imageValidationFailed'))
       return
     }
 
@@ -132,11 +134,11 @@ export default function DiagnosticsReportPanel({ embedded = false }: Diagnostics
 
   const handleDownload = async () => {
     if (!description.trim()) {
-      setErrorMessage('请先描述问题现象和影响。')
+      setErrorMessage(t('diagnosticsReport.descriptionRequired'))
       return
     }
     if (!imageValidation.valid) {
-      setErrorMessage(imageValidation.errors[0] || '截图校验失败。')
+      setErrorMessage(imageValidation.errors[0] || t('diagnosticsReport.imageValidationFailed'))
       return
     }
 
@@ -152,7 +154,7 @@ export default function DiagnosticsReportPanel({ embedded = false }: Diagnostics
 
       const dest = await save({
         defaultPath: `sayit-diagnostics-${new Date().toISOString().slice(0, 10)}.zip`,
-        filters: [{ name: '诊断包', extensions: ['zip'] }],
+        filters: [{ name: t('diagnosticsReport.archiveFilter'), extensions: ['zip'] }],
       })
 
       if (!dest) {
@@ -179,40 +181,40 @@ export default function DiagnosticsReportPanel({ embedded = false }: Diagnostics
   const downloadBtn = (
     <Button variant="outline" size="sm" disabled={busy || missingDescription} onClick={handleDownload}>
       <Download className="mr-2 h-4 w-4" />
-      {downloading ? '正在打包...' : '下载诊断包'}
+      {downloading ? t('diagnosticsReport.packing') : t('diagnosticsReport.download')}
     </Button>
   )
   const sendBtn = isServerMode ? (
     <Button size="sm" disabled={busy || missingDescription} onClick={handleSubmit}>
       <Send className="mr-2 h-4 w-4" />
-      {submitting ? '正在发送...' : '发送诊断'}
+      {submitting ? t('diagnosticsReport.sending') : t('diagnosticsReport.send')}
     </Button>
   ) : null
 
   return (
     <div className={containerClassName}>
-      {!embedded && <h1 className="mb-6 text-2xl font-bold">诊断</h1>}
+      {!embedded && <h1 className="mb-6 text-2xl font-bold">{t('diagnostics.title')}</h1>}
 
       <Card>
         <CardContent className="p-6">
           <div className="mb-5 flex items-start justify-between gap-4">
             <div>
-              <h2 className="text-lg font-semibold">问题反馈与诊断</h2>
+              <h2 className="text-lg font-semibold">{t('diagnosticsReport.title')}</h2>
               <p className="mt-1 text-sm text-muted-foreground">
-                提交问题描述、诊断摘要和相关截图，帮助我们更快定位问题。
+                {t('diagnosticsReport.desc')}
               </p>
             </div>
             <Button variant="outline" size="sm" onClick={refreshPreview} disabled={loadingPreview}>
               <RefreshCw className={`mr-2 h-3.5 w-3.5 ${loadingPreview ? 'animate-spin' : ''}`} />
-              刷新摘要
+              {t('diagnosticsReport.refresh')}
             </Button>
           </div>
 
           <div className="space-y-5">
             <div>
-              <label className="mb-2 block text-sm font-medium">问题什么时候发生</label>
+              <label className="mb-2 block text-sm font-medium">{t('diagnosticsReport.when')}</label>
               <div className="flex flex-wrap gap-4">
-                {OCCURRENCE_OPTIONS.map((option) => (
+                {occurrenceOptions.map((option) => (
                   <button
                     key={option.value}
                     type="button"
@@ -233,20 +235,20 @@ export default function DiagnosticsReportPanel({ embedded = false }: Diagnostics
             </div>
 
             <div>
-              <label className="mb-2 block text-sm font-medium">问题描述<span className="ml-0.5 text-red-500">*</span></label>
+              <label className="mb-2 block text-sm font-medium">{t('diagnosticsReport.description')}<span className="ml-0.5 text-red-500">*</span></label>
               <textarea
                 value={description}
                 onChange={(event) => setDescription(event.target.value)}
                 rows={2}
-                placeholder={'请描述你做了什么、预期结果是什么、实际出现了什么。\n例如：按住说话后识别成功，但没有自动粘贴到 Teams、Outlook 或记事本。'}
+                placeholder={t('diagnosticsReport.descriptionPlaceholder')}
                 className="min-h-[56px] max-h-[240px] w-full resize-y rounded-md border border-input-border bg-input-bg px-3 py-2 text-sm leading-relaxed focus:border-input-focus-border focus:outline-none"
               />
             </div>
 
             <div>
               <div className="mb-2 flex items-center justify-between">
-                <label className="block text-sm font-medium">截图</label>
-                <span className="text-xs text-muted-foreground">单张不超过 5MB，最多 {MAX_DIAGNOSTIC_IMAGES} 张</span>
+                <label className="block text-sm font-medium">{t('diagnosticsReport.screenshots')}</label>
+                <span className="text-xs text-muted-foreground">{t('diagnosticsReport.imageLimits', { count: MAX_DIAGNOSTIC_IMAGES })}</span>
               </div>
 
               {images.length > 0 && (
@@ -259,7 +261,7 @@ export default function DiagnosticsReportPanel({ embedded = false }: Diagnostics
                         onClick={() => removeImage(index)}
                         className="absolute right-2 top-2 rounded-full bg-black/65 px-2 py-1 text-xs text-white opacity-0 transition-opacity group-hover:opacity-100"
                       >
-                        删除
+                        {t('diagnosticsReport.delete')}
                       </button>
                       <div className="truncate px-2 py-2 text-xs text-muted-foreground">{image.name}</div>
                     </div>
@@ -270,7 +272,7 @@ export default function DiagnosticsReportPanel({ embedded = false }: Diagnostics
               {images.length < MAX_DIAGNOSTIC_IMAGES && (
                 <label className="flex cursor-pointer items-center gap-2 rounded-md border border-dashed border-border bg-muted px-4 py-3 text-sm transition-colors hover:border-muted-foreground/40 hover:bg-accent">
                   <ImageIcon className="h-4 w-4 text-muted-foreground" />
-                  <span className="text-muted-foreground">点击上传截图</span>
+                  <span className="text-muted-foreground">{t('diagnosticsReport.upload')}</span>
                   <input type="file" accept="image/*" multiple onChange={handleImageSelect} className="hidden" />
                 </label>
               )}
@@ -279,30 +281,34 @@ export default function DiagnosticsReportPanel({ embedded = false }: Diagnostics
             <div className="rounded-md border border-border bg-muted p-4">
               <div className="mb-3 flex items-center gap-2 text-sm font-medium text-foreground">
                 <FileArchive className="h-4 w-4" />
-                本次提交内容
+                {t('diagnosticsReport.contents')}
               </div>
 
               {preview ? (
                 <div className="rounded-md border border-border/50 bg-card p-4 shadow-sm">
-                  <SummaryRow label="应用版本" value={preview.systemInfo.appVersion} />
-                  <SummaryRow label="系统平台" value={preview.systemInfo.platform} />
-                  <SummaryRow label="诊断时间" value={preview.generatedAt} />
+                  <SummaryRow label={t('diagnosticsReport.appVersion')} value={preview.systemInfo.appVersion} />
+                  <SummaryRow label={t('diagnosticsReport.platform')} value={preview.systemInfo.platform} />
+                  <SummaryRow label={t('diagnosticsReport.time')} value={preview.generatedAt} />
                   <SummaryRow
-                    label="时间范围"
-                    value={OCCURRENCE_OPTIONS.find((option) => option.value === issueOccurrence)?.label || '1 小时内'}
+                    label={t('diagnosticsReport.range')}
+                    value={occurrenceOptions.find((option) => option.value === issueOccurrence)?.label || t('diagnosticsReport.withinHour')}
                   />
-                  <SummaryRow label="扫描日志文件" value={`${preview.filesScanned} 个`} />
-                  <SummaryRow label="覆盖记录起点" value={preview.rangeStart || '暂无'} />
-                  <SummaryRow label="覆盖记录终点" value={preview.rangeEnd || '暂无'} />
-                  <SummaryRow label="截图数量" value={`${images.length} 张`} />
+                  <SummaryRow label={t('diagnosticsReport.filesScanned')} value={t('diagnosticsReport.fileCount', { count: preview.filesScanned })} />
+                  <SummaryRow label={t('diagnosticsReport.rangeStart')} value={preview.rangeStart || t('diagnosticsReport.none')} />
+                  <SummaryRow label={t('diagnosticsReport.rangeEnd')} value={preview.rangeEnd || t('diagnosticsReport.none')} />
+                  <SummaryRow label={t('diagnosticsReport.imageCount')} value={t('diagnosticsReport.images', { count: images.length })} />
                   <SummaryRow
-                    label="摘要内容"
-                    value={`关键事件 ${preview.totalTimelineEntries} 条，错误 ${preview.summary.errors} 条，警告 ${preview.summary.warnings} 条`}
+                    label={t('diagnosticsReport.summary')}
+                    value={t('diagnosticsReport.summaryValue', {
+                      events: preview.totalTimelineEntries,
+                      errors: preview.summary.errors,
+                      warnings: preview.summary.warnings,
+                    })}
                   />
                 </div>
               ) : (
                 <div className="text-sm text-muted-foreground">
-                  {loadingPreview ? '正在整理诊断摘要...' : '暂时无法生成诊断摘要。'}
+                  {loadingPreview ? t('diagnosticsReport.loading') : t('diagnosticsReport.unavailable')}
                 </div>
               )}
             </div>
@@ -318,8 +324,8 @@ export default function DiagnosticsReportPanel({ embedded = false }: Diagnostics
               <div className="flex items-start gap-2 rounded-md bg-success/10 p-3 text-sm">
                 <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success" />
                 <div>
-                  <div className="font-medium text-success">诊断包已发送</div>
-                  <div className="mt-1 text-xs text-success/80">工单号：{ticketId}</div>
+                  <div className="font-medium text-success">{t('diagnosticsReport.sent')}</div>
+                  <div className="mt-1 text-xs text-success/80">{t('diagnosticsReport.ticket', { id: ticketId })}</div>
                 </div>
               </div>
             )}
@@ -328,8 +334,8 @@ export default function DiagnosticsReportPanel({ embedded = false }: Diagnostics
               <div className="flex items-start gap-2 rounded-md bg-success/10 p-3 text-sm">
                 <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success" />
                 <div>
-                  <div className="font-medium text-success">诊断包已保存</div>
-                  <div className="mt-1 text-xs text-success/80">请将文件发送给技术支持人员。</div>
+                  <div className="font-medium text-success">{t('diagnosticsReport.saved')}</div>
+                  <div className="mt-1 text-xs text-success/80">{t('diagnosticsReport.sendToSupport')}</div>
                 </div>
               </div>
             )}
@@ -346,17 +352,22 @@ export default function DiagnosticsReportPanel({ embedded = false }: Diagnostics
                   setErrorMessage('')
                 }}
               >
-                清空
+                {t('diagnosticsReport.clear')}
               </Button>
-              {missingDescription ? <Tooltip content="请先填写问题描述">{downloadBtn}</Tooltip> : downloadBtn}
-              {sendBtn && (missingDescription ? <Tooltip content="请先填写问题描述">{sendBtn}</Tooltip> : sendBtn)}
+              {missingDescription ? <Tooltip content={t('diagnosticsReport.fillDescription')}>{downloadBtn}</Tooltip> : downloadBtn}
+              {sendBtn && (missingDescription ? <Tooltip content={t('diagnosticsReport.fillDescription')}>{sendBtn}</Tooltip> : sendBtn)}
             </div>
           </div>
         </CardContent>
       </Card>
 
       <div className="mt-4 text-xs text-muted-foreground">
-        当前截图校验状态：{imageValidation.valid ? '通过' : imageValidation.errors[0] || '未通过'}。单张上限 {(MAX_DIAGNOSTIC_IMAGE_SIZE / 1024 / 1024).toFixed(0)}MB。
+        {t('diagnosticsReport.validationStatus', {
+          status: imageValidation.valid
+            ? t('diagnosticsReport.validationPassed')
+            : imageValidation.errors[0] || t('diagnosticsReport.validationFailed'),
+          limit: (MAX_DIAGNOSTIC_IMAGE_SIZE / 1024 / 1024).toFixed(0),
+        })}
       </div>
     </div>
   )

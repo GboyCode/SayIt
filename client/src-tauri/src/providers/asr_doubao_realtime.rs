@@ -7,6 +7,7 @@
 //    后台 reader 持续读取并通过 `asr-partial` 事件上抛给前端做悬浮窗实时上屏。
 //    识别完成后，finish 返回累计的最终文本，仍会照常交给 AI 处理。
 
+use super::diag;
 use super::doubao_auth::{self, DoubaoAuth};
 use super::doubao_protocol;
 use super::types::AsrProviderConfig;
@@ -120,7 +121,7 @@ fn build_handshake_request(
     }
     builder
         .body(())
-        .map_err(|e| format!("构建请求失败: {}", e))
+        .map_err(|e| format!("Failed to build request: {}", e))
 }
 
 /// 把 WebSocket 握手错误展开成可读字符串；HTTP 错误会带上状态码和响应体，方便定位 400 的真实原因。
@@ -165,7 +166,12 @@ pub async fn doubao_stream_open(
 
     let auth = DoubaoAuth::from_config(&config);
     if let Some(missing) = auth.missing_field() {
-        return Err(format!("豆包 ASR 缺少{}，请在设置里填好", missing));
+        return Err(diag::fail_code(
+            "doubao/realtime",
+            "credentials",
+            "provider_bad_key",
+            format!("Doubao ASR is missing {}; complete it in Settings", missing),
+        ));
     }
     let uid = auth.uid().to_string();
 
@@ -187,9 +193,10 @@ pub async fn doubao_stream_open(
 
     let mut connected: Option<WsStream> = None;
     let mut chosen_url = WS_URL_NOSTREAM;
-    let mut last_err = String::from("未知错误");
+    let mut last_err = String::from("Unknown error");
     for (url, resource_id) in candidates {
-        let request = build_handshake_request(url, &auth, resource_id)?;
+        let request = build_handshake_request(url, &auth, resource_id)
+            .map_err(|e| diag::fail("doubao/realtime", "build_request", e))?;
         match tokio_tungstenite::connect_async(request).await {
             Ok((sock, response)) => {
                 doubao_auth::log_ws_logid(
@@ -215,22 +222,23 @@ pub async fn doubao_stream_open(
             }
         }
     }
-    let mut ws = connected.ok_or_else(|| format!("WebSocket 连接失败: {}", last_err))?;
+    let mut ws = connected.ok_or_else(|| diag::fail("doubao/realtime", "connect", format!("WebSocket connection failed: {}", last_err)))?;
 
     // 发送 full client request
     let client_request = build_client_request_json(&uid, sample_rate, &hotwords);
     let frame = doubao_protocol::build_full_client_request(&client_request);
     ws.send(tungstenite::Message::Binary(frame.into()))
         .await
-        .map_err(|e| format!("发送请求失败: {}", e))?;
+        .map_err(|e| diag::fail("doubao/realtime", "send_request", format!("Failed to send request: {}", e)))?;
 
     // 等待服务端确认（第一包 server response）
     if let Some(msg) = ws.next().await {
-        let msg = msg.map_err(|e| format!("接收确认失败: {}", e))?;
+        let msg = msg.map_err(|e| diag::fail("doubao/realtime", "recv_ack", format!("Failed to receive acknowledgement: {}", e)))?;
         if let tungstenite::Message::Binary(data) = msg {
-            let resp = doubao_protocol::parse_server_response(&data)?;
+            let resp = doubao_protocol::parse_server_response(&data)
+                .map_err(|e| diag::fail("doubao/realtime", "parse_ack", e))?;
             if resp.is_error {
-                return Err(format!("服务端错误: {}", resp.payload));
+                return Err(diag::fail("doubao/realtime", "server_error_on_ack", format!("Server error: {}", resp.payload)));
             }
         }
     }
@@ -358,24 +366,24 @@ async fn cleanup_realtime() {
 #[tauri::command]
 pub async fn doubao_stream_send(pcm_b64: String) -> Result<(), String> {
     let pcm = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &pcm_b64)
-        .map_err(|e| format!("base64 解码失败: {}", e))?;
+        .map_err(|e| diag::fail("doubao/realtime", "decode_b64", format!("Failed to decode base64 audio: {}", e)))?;
 
     let frame = doubao_protocol::build_audio_request(&pcm, false);
 
     if RT_ACTIVE.load(Ordering::SeqCst) {
         let mut sink = RT_SINK.lock().await;
-        let s = sink.as_mut().ok_or("会话未建立")?;
+        let s = sink.as_mut().ok_or_else(|| diag::fail("doubao/realtime", "send_without_session", "Session is not open".to_string()))?;
         s.send(tungstenite::Message::Binary(frame.into()))
             .await
-            .map_err(|e| format!("发送音频失败: {}", e))?;
+            .map_err(|e| diag::fail("doubao/realtime", "send_audio", format!("Failed to send audio: {}", e)))?;
         return Ok(());
     }
 
     let mut session = SESSION.lock().await;
-    let ws = session.as_mut().ok_or("会话未建立")?;
+    let ws = session.as_mut().ok_or_else(|| diag::fail("doubao/realtime", "send_without_session", "Session is not open".to_string()))?;
     ws.send(tungstenite::Message::Binary(frame.into()))
         .await
-        .map_err(|e| format!("发送音频失败: {}", e))?;
+        .map_err(|e| diag::fail("doubao/realtime", "send_audio", format!("Failed to send audio: {}", e)))?;
 
     Ok(())
 }
@@ -409,7 +417,7 @@ pub async fn doubao_stream_finish() -> Result<String, String> {
                     if let Some(err) = st.error.clone() {
                         drop(st);
                         cleanup_realtime().await;
-                        return Err(format!("识别错误: {}", err));
+                        return Err(diag::fail("doubao/realtime", "recognition_error", format!("Recognition error: {}", err)));
                     }
                     let text = st.text.clone();
                     drop(st);
@@ -431,27 +439,28 @@ pub async fn doubao_stream_finish() -> Result<String, String> {
 
     // 普通模式（nostream）：整条会话同步收结果
     let mut session = SESSION.lock().await;
-    let ws = session.as_mut().ok_or("会话未建立")?;
+    let ws = session.as_mut().ok_or_else(|| diag::fail("doubao/realtime", "finish_without_session", "Session is not open".to_string()))?;
 
     // 发送空的最后一包（负包）
     let frame = doubao_protocol::build_audio_request(&[], true);
     ws.send(tungstenite::Message::Binary(frame.into()))
         .await
-        .map_err(|e| format!("发送最后一包失败: {}", e))?;
+        .map_err(|e| diag::fail("doubao/realtime", "send_final_audio", format!("Failed to send the final audio packet: {}", e)))?;
 
     // 接收最终结果
     let mut final_text = String::new();
 
     while let Some(msg) = ws.next().await {
-        let msg = msg.map_err(|e| format!("接收结果失败: {}", e))?;
+        let msg = msg.map_err(|e| diag::fail("doubao/realtime", "recv", format!("Failed to receive result: {}", e)))?;
         match msg {
             tungstenite::Message::Binary(data) => {
-                let resp = doubao_protocol::parse_server_response(&data)?;
+                let resp = doubao_protocol::parse_server_response(&data)
+                    .map_err(|e| diag::fail("doubao/realtime", "parse_result", e))?;
                 if resp.is_error {
                     // 关闭会话
                     let _ = ws.close(None).await;
                     *session = None;
-                    return Err(format!("识别错误: {}", resp.payload));
+                    return Err(diag::fail("doubao/realtime", "recognition_error", format!("Recognition error: {}", resp.payload)));
                 }
 
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&resp.payload) {

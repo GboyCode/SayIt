@@ -1,6 +1,7 @@
 // Local storage service — Tauri IPC store
 
 import * as bridge from './bridge'
+import { BUILTIN_PROMPTS_EN } from './builtinPromptsEn'
 
 const api = () => bridge
 
@@ -34,6 +35,8 @@ export interface HistoryRecord {
    * 老记录没有这个字段，渲染处必须容错。
    */
   failReason?: string
+  /** 新记录保存稳定分类，展示时再翻译；没有该字段的老记录继续显示 failReason 原文。 */
+  failReasonCode?: HistoryFailReasonCode
   audioFilePath?: string
   appId?: string
   appName?: string
@@ -55,6 +58,16 @@ export interface HistoryRecord {
   aiModel?: string       // 例如 "deepseek-chat" / "qwen2.5:7b"
 }
 
+export type HistoryFailReasonCode =
+  | 'no_transcript'
+  | 'empty_after_processing'
+  | 'provider_timeout'
+  | 'provider_unreachable'
+  | 'provider_bad_key'
+  | 'provider_rate_limit'
+  | 'provider_no_model'
+  | 'provider_failed'
+
 export interface Stats {
   totalDurationSec: number
   totalChars: number
@@ -65,7 +78,16 @@ export interface PromptPreset {
   name: string
   systemPrompt: string
   builtin?: boolean  // built-in presets can't be deleted
+  /** 内置 Prompt 的内容语言；用户自建模式没有这个字段。 */
+  builtinPromptLanguage?: BuiltinPromptLanguage
+  /** 保存内置修改时对应的官方 Prompt 指纹，用于识别后续内置更新。 */
+  builtinPromptBaseHash?: string
+  /** 以下两个只在读取后的视图模型中存在，不写入自建模式。 */
+  builtinPromptModified?: boolean
+  builtinPromptUpdateAvailable?: boolean
 }
+
+export type BuiltinPromptLanguage = 'zh-CN' | 'en'
 
 export type FeedbackIssueType = 'asr_error' | 'llm_error' | 'duration_mismatch' | 'other'
 
@@ -106,13 +128,14 @@ export interface ManualCorrectionRecord {
 }
 
 // Fixed user prompt prefix - prepended to ASR text when sending to LLM
-export const USER_PROMPT_PREFIX = '请处理以下语音转写文本：\n\n'
+export const USER_PROMPT_PREFIX = '请处理以下语音转写文本：\n\n' // i18n-allow: 中文口述整理 Prompt
 
 // Built-in presets
+// i18n-allow-start: 内置中文口述整理 Prompt；界面名称由稳定 id 单独翻译
 export const BUILTIN_PRESETS: PromptPreset[] = [
   {
     id: 'intent',
-    name: '意图整理',
+    name: 'Intent cleanup',
     builtin: true,
     systemPrompt: `你是语音文本精炼助手。输入是 ASR 语音识别的原始转写，你的任务是将其清洗为逻辑清晰、准确且简洁的干净文本。
 
@@ -152,7 +175,7 @@ export const BUILTIN_PRESETS: PromptPreset[] = [
   },
   {
     id: 'faithful',
-    name: '忠实校对',
+    name: 'Faithful cleanup',
     builtin: true,
     systemPrompt: `你是语音转文字"忠实校对"助手。输入是 ASR（语音识别）的原始转写，你的任务是修正错误、清理格式并规范专业术语，同时极其严格地保留用户的原始表达和语序。
 
@@ -183,7 +206,7 @@ export const BUILTIN_PRESETS: PromptPreset[] = [
   },
   {
     id: 'zh2en',
-    name: '中翻英忠实校对',
+    name: 'Chinese to English',
     builtin: true,
     systemPrompt: `你是语音转文字"中翻英忠实校对"助手。输入是中文 ASR（语音识别）的原始转写，你的任务是先在理解层面修正中文识别错误、过滤口语废话，然后将其忠实地翻译为地道、专业的英文。
 
@@ -219,7 +242,7 @@ export const BUILTIN_PRESETS: PromptPreset[] = [
   },
   {
     id: 'casual',
-    name: '口语化整理',
+    name: 'Conversational cleanup',
     builtin: true,
     systemPrompt: `你是语音转文字"口语化整理"助手。输入是 ASR 语音识别的转写（通常已经带标点），它本来就是一个人随口说出来的话——很多时候是在跟 AI 编程助手（Codex、Kiro、Claude Code 等）说话、让它写代码或干活。你的任务是帮他把话顺得更通顺、条理更清楚，同时保留原本的口语味，不要整理成正式书面语。
 
@@ -249,6 +272,18 @@ export const BUILTIN_PRESETS: PromptPreset[] = [
 只输出整理后的文本。`,
   },
 ]
+// i18n-allow-end
+
+/** 根据 Prompt 内容语言取得一份新的内置定义，避免调用方意外改写模块级常量。 */
+export function getBuiltinPromptPresets(language: BuiltinPromptLanguage): PromptPreset[] {
+  return BUILTIN_PRESETS.map((preset) => ({
+    ...preset,
+    systemPrompt: language === 'en'
+      ? BUILTIN_PROMPTS_EN[preset.id] || preset.systemPrompt
+      : preset.systemPrompt,
+    builtinPromptLanguage: language,
+  }))
+}
 
 
 export async function getHistory(): Promise<HistoryRecord[]> {
@@ -352,15 +387,70 @@ export async function setSetting(key: string, value: unknown): Promise<void> {
 
 // Prompt presets
 
-export async function getPromptPresets(): Promise<PromptPreset[]> {
-  const custom = ((await api().storeGet('promptPresets')) as PromptPreset[]) || []
+export function normalizeBuiltinPromptLanguage(value: unknown): BuiltinPromptLanguage {
+  return value === 'en' ? 'en' : 'zh-CN'
+}
 
-  const builtins = BUILTIN_PRESETS.map((bp) => {
-    const override = custom.find((c) => c.id === bp.id)
-    return override ? { ...override, builtin: true } : bp
+/** 轻量稳定指纹；不用于安全校验，只判断内置 Prompt 是否换过版本。 */
+export function builtinPromptContentHash(content: string): string {
+  let hash = 0x811c9dc5
+  for (let index = 0; index < content.length; index += 1) {
+    hash ^= content.charCodeAt(index)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return (hash >>> 0).toString(36)
+}
+
+export async function getBuiltinPromptLanguage(): Promise<BuiltinPromptLanguage> {
+  return normalizeBuiltinPromptLanguage(await getSetting('ai.builtinPromptLanguage', 'zh-CN'))
+}
+
+export async function setBuiltinPromptLanguage(language: BuiltinPromptLanguage): Promise<void> {
+  await setSetting('ai.builtinPromptLanguage', language)
+}
+
+function overrideLanguage(preset: PromptPreset): BuiltinPromptLanguage {
+  // 旧版本没有语言字段，当时只有中文 Prompt，因此安全地归到中文。
+  return normalizeBuiltinPromptLanguage(preset.builtinPromptLanguage)
+}
+
+export async function getPromptPresets(languageOverride?: BuiltinPromptLanguage): Promise<PromptPreset[]> {
+  let custom = ((await api().storeGet('promptPresets')) as PromptPreset[]) || []
+  const language = languageOverride ?? await getBuiltinPromptLanguage()
+  const definitions = getBuiltinPromptPresets(language)
+  const builtinIds = new Set(BUILTIN_PRESETS.map((preset) => preset.id))
+  const definitionById = new Map(definitions.map((definition) => [definition.id, definition]))
+
+  // 旧版本“打开内置模式、一个字没改也保存”会留下整份快照。内容与当前官方定义
+  // 逐字相同时可无损删除；若不清，下一次官方定义更新后它又会反过来覆盖新版。
+  const cleaned = custom.filter((candidate) => {
+    if (!builtinIds.has(candidate.id) || overrideLanguage(candidate) !== language) return true
+    return candidate.systemPrompt !== definitionById.get(candidate.id)?.systemPrompt
+  })
+  if (cleaned.length !== custom.length) {
+    custom = cleaned
+    await api().storeSet('promptPresets', custom)
+  }
+
+  const builtins = definitions.map((definition) => {
+    const override = custom.find((candidate) => (
+      candidate.id === definition.id && overrideLanguage(candidate) === language
+    ))
+    // 内置 name 永远来自稳定 id 的定义；override 只覆盖 Prompt 内容。
+    if (!override || override.systemPrompt === definition.systemPrompt) return definition
+    const currentBaseHash = builtinPromptContentHash(definition.systemPrompt)
+    return {
+      ...definition,
+      systemPrompt: override.systemPrompt,
+      builtinPromptModified: true,
+      // 旧版没有指纹，不能武断地说官方版已更新；只标记“已修改”。
+      builtinPromptUpdateAvailable: Boolean(
+        override.builtinPromptBaseHash
+        && override.builtinPromptBaseHash !== currentBaseHash
+      ),
+    }
   })
 
-  const builtinIds = new Set(BUILTIN_PRESETS.map((p) => p.id))
   const userCreated = custom.filter((c) => !builtinIds.has(c.id))
 
   return [...builtins, ...userCreated]
@@ -387,15 +477,43 @@ export async function setPresetShortcuts(map: Record<string, string>): Promise<v
 export async function getActivePreset(): Promise<PromptPreset> {
   const id = await getActivePresetId()
   const all = await getPromptPresets()
-  return all.find((p) => p.id === id) || BUILTIN_PRESETS[0]
+  return all.find((p) => p.id === id) || all[0] || BUILTIN_PRESETS[0]
 }
 
 export async function savePromptPreset(preset: PromptPreset): Promise<void> {
   const custom = ((await api().storeGet('promptPresets')) as PromptPreset[]) || []
+
+  if (preset.builtin) {
+    const language = preset.builtinPromptLanguage ?? await getBuiltinPromptLanguage()
+    const definition = getBuiltinPromptPresets(language).find((item) => item.id === preset.id)
+    if (!definition) return
+
+    const withoutCurrentOverride = custom.filter((item) => !(
+      item.id === preset.id && overrideLanguage(item) === language
+    ))
+
+    // 没改 Prompt 就不保存 override，避免一次无改动保存永久冻结旧内置内容。
+    if (preset.systemPrompt !== definition.systemPrompt) {
+      withoutCurrentOverride.push({
+        id: preset.id,
+        name: definition.name,
+        systemPrompt: preset.systemPrompt,
+        builtinPromptLanguage: language,
+        builtinPromptBaseHash: builtinPromptContentHash(definition.systemPrompt),
+      })
+    }
+    await api().storeSet('promptPresets', withoutCurrentOverride)
+    return
+  }
+
   const idx = custom.findIndex((p) => p.id === preset.id)
 
   const toSave = { ...preset }
   delete toSave.builtin
+  delete toSave.builtinPromptLanguage
+  delete toSave.builtinPromptBaseHash
+  delete toSave.builtinPromptModified
+  delete toSave.builtinPromptUpdateAvailable
 
   if (idx >= 0) {
     custom[idx] = toSave

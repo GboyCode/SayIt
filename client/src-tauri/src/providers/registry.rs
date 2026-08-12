@@ -2,6 +2,7 @@
 
 use super::types::*;
 use super::{ai_openai_compat, ai_ollama, asr_doubao, asr_doubao_stream, asr_qwen, asr_qwen_omni, asr_mimo};
+use crate::error_protocol;
 
 /// 云端 AI 校对（Tauri command）
 #[tauri::command]
@@ -24,7 +25,7 @@ pub async fn cloud_polish(request: CloudPolishRequest) -> Result<AiResult, Strin
             )
             .await
         }
-        other => Err(format!("未知的 AI 供应商: {}", other)),
+        other => Err(error_protocol::encode("connect_failed", format!("Unknown AI provider: {}", other))),
     }
 }
 
@@ -38,7 +39,7 @@ pub async fn test_ai_connection(config: AiProviderConfig) -> Result<TestResult, 
         "ollama" => {
             Ok(ai_ollama::test_connection(&config).await)
         }
-        other => Err(format!("未知的 AI 供应商: {}", other)),
+        other => Err(error_protocol::encode("connect_failed", format!("Unknown AI provider: {}", other))),
     }
 }
 
@@ -92,7 +93,7 @@ pub async fn cloud_transcribe(request: CloudTranscribeRequest) -> Result<AsrResu
             )
             .await
         }
-        other => Err(format!("ASR 供应商 \"{}\" 尚未实现", other)),
+        other => Err(error_protocol::encode("connect_failed", format!("ASR provider \"{}\" is not implemented", other))),
     }
 }
 
@@ -105,6 +106,6 @@ pub async fn test_asr_connection(config: AsrProviderConfig) -> Result<TestResult
         "qwen" | "aliyun" | "qwen_realtime" => Ok(asr_qwen::test_connection(&config).await),
         "qwen_omni" => Ok(asr_qwen_omni::test_connection(&config).await),
         "mimo" => Ok(asr_mimo::test_connection(&config).await),
-        other => Err(format!("ASR 供应商 \"{}\" 尚未实现", other)),
+        other => Err(error_protocol::encode("connect_failed", format!("ASR provider \"{}\" is not implemented", other))),
     }
 }

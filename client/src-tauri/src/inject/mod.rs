@@ -344,7 +344,7 @@ unsafe fn do_inject(target: HWND, focus: HWND, text: &str, restore_clipboard: bo
             strategy: Some("clipboard".to_string()),
             reason: Some("clipboard_blocked".to_string()),
             detail: Some(format!(
-                "pasteId={} 重试 5 次仍写不进剪贴板 inputGuards={}",
+                "pasteId={} failed to write to the clipboard after 5 attempts inputGuards={}",
                 paste_id, guards
             )),
             uncertain: false,

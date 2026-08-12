@@ -6,6 +6,7 @@
 
 import { useState } from 'react'
 import { Eye, EyeOff } from 'lucide-react'
+import { useT } from '@/i18n/useT'
 
 interface PasswordInputProps {
   /** 必填：与外部 <label htmlFor> 配对，读屏才能念出这个框叫什么 */
@@ -29,6 +30,7 @@ export function PasswordInput({
   placeholder,
   className,
 }: PasswordInputProps) {
+  const t = useT()
   const [visible, setVisible] = useState(false)
 
   return (
@@ -45,7 +47,7 @@ export function PasswordInput({
       <button
         type="button"
         onClick={() => setVisible(!visible)}
-        aria-label={visible ? `隐藏${label}` : `显示${label}`}
+        aria-label={t(visible ? 'ui.hidePassword' : 'ui.showPassword', { label })}
         aria-pressed={visible}
         className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
       >

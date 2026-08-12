@@ -75,7 +75,7 @@ export class CloudAPIProvider implements TranscriptionProvider {
 
   start(opts: StartOptions): boolean {
     if (!this.ready) {
-      addRuntimeEvent('error', 'cloud_api', 'start 失败：Provider 未就绪')
+      addRuntimeEvent('error', 'cloud_api', 'Start failed: provider is not ready')
       return false
     }
 
@@ -193,7 +193,7 @@ export class CloudAPIProvider implements TranscriptionProvider {
       partialCount++
       // 只记录第一条，避免刷屏；证明前端确实收到了 Rust 上抛的中间结果
       if (partialCount === 1) {
-        addRuntimeEvent('info', 'cloud_api', '收到首个流式中间结果', { textLen: text.length })
+      addRuntimeEvent('info', 'cloud_api', 'First streaming partial received', { textLen: text.length })
       }
       this.callbacks.onPartialASR?.(text)
     })
@@ -202,7 +202,7 @@ export class CloudAPIProvider implements TranscriptionProvider {
       return
     }
     this.partialUnlisten = unlisten
-    addRuntimeEvent('info', 'cloud_api', '已订阅 asr-partial 事件')
+      addRuntimeEvent('info', 'cloud_api', 'Subscribed to asr-partial events')
   }
 
   private teardownPartials(): void {
@@ -280,7 +280,7 @@ export class CloudAPIProvider implements TranscriptionProvider {
       const settingOn = Boolean(await getSetting('streamingDisplayEnabled', false))
       if (!this.isRunCurrent(runId)) return
       const realtime = (settingOn || Boolean(startOpts.streamingDisplay)) && isStreamingDisplayReady(asrProvider, qwenWorkspaceId)
-      addRuntimeEvent('info', 'cloud_api', '流式实时显示判定', { asrProvider, settingOn, startOpt: Boolean(startOpts.streamingDisplay), hasWorkspace: Boolean(qwenWorkspaceId), realtime, runId })
+    addRuntimeEvent('info', 'cloud_api', 'Streaming display decision', { asrProvider, settingOn, startOpt: Boolean(startOpts.streamingDisplay), hasWorkspace: Boolean(qwenWorkspaceId), realtime, runId })
       if (realtime) {
         // 先订阅中间结果，避免建连后、订阅前丢帧
         await this.subscribePartials(runId)
@@ -294,7 +294,7 @@ export class CloudAPIProvider implements TranscriptionProvider {
         const asrAppId = await getSetting('cloudAsr.appId', '') as string
         if (!this.isRunCurrent(runId)) return
 
-        addRuntimeEvent('info', 'cloud_api', '豆包流式：建立连接', { realtime })
+        addRuntimeEvent('info', 'cloud_api', 'Doubao streaming: connecting', { realtime })
         const opened = await this.invokeNativeOpen(runId, 'doubao_stream_open', {
           config: { provider: 'doubao_v2', api_key: asrApiKey, app_id: asrAppId },
           sampleRate: 16000,
@@ -303,7 +303,7 @@ export class CloudAPIProvider implements TranscriptionProvider {
         })
         if (!opened || !this.isRunCurrent(runId)) return
         this.doubaoStreamReady = true
-        addRuntimeEvent('info', 'cloud_api', '豆包流式：连接就绪')
+        addRuntimeEvent('info', 'cloud_api', 'Doubao streaming: ready')
       } else if (asrProvider === 'qwen_realtime' && realtime) {
         // 千问实时（qwen3-asr-flash-realtime）：仅在开启实时显示且配置了 WorkspaceId 时才走流式 WebSocket。
         // qwen3-asr-flash（非实时）与未配置/未开启时都不进此分支，走下面的一次性识别。
@@ -311,7 +311,7 @@ export class CloudAPIProvider implements TranscriptionProvider {
         const asrApiKey = await getSetting('cloudAsr.apiKey', '') as string
         if (!this.isRunCurrent(runId)) return
 
-        addRuntimeEvent('info', 'cloud_api', '千问实时：建立连接', { hasWorkspace: Boolean(qwenWorkspaceId) })
+        addRuntimeEvent('info', 'cloud_api', 'Qwen Realtime: connecting', { hasWorkspace: Boolean(qwenWorkspaceId) })
         const opened = await this.invokeNativeOpen(runId, 'qwen_stream_open', {
           config: { provider: 'qwen', api_key: asrApiKey, app_id: '' },
           hotwords: startOpts.hotwords ?? [],
@@ -320,7 +320,7 @@ export class CloudAPIProvider implements TranscriptionProvider {
         })
         if (!opened || !this.isRunCurrent(runId)) return
         this.qwenStreamReady = true
-        addRuntimeEvent('info', 'cloud_api', '千问实时：连接就绪')
+        addRuntimeEvent('info', 'cloud_api', 'Qwen Realtime: ready')
       } else {
         // 其他情况（含未配置 WorkspaceId 的千问）走录完再发的一次性识别
         this.teardownPartials()
@@ -341,7 +341,7 @@ export class CloudAPIProvider implements TranscriptionProvider {
       }, 200)
     } catch (err) {
       if (!this.isRunCurrent(runId)) return
-      addRuntimeEvent('warn', 'cloud_api', '流式建连失败，回退到录完再发', { error: String(err) })
+      addRuntimeEvent('warn', 'cloud_api', 'Streaming connection failed; falling back to buffered upload', { error: String(err) })
       this.isDoubaoStream = false
       this.isQwenStream = false
       this.doubaoStreamReady = false
@@ -375,7 +375,7 @@ export class CloudAPIProvider implements TranscriptionProvider {
           await invoke('qwen_stream_send', { pcmB64: b64 })
         }
       } catch (err) {
-        addRuntimeEvent('warn', 'cloud_api', '流式发送失败', { error: String(err) })
+      addRuntimeEvent('warn', 'cloud_api', 'Streaming send failed', { error: String(err) })
       }
     }
     // 接到发送链尾部，串行执行（无论前一个成功或失败都继续）
@@ -403,7 +403,7 @@ export class CloudAPIProvider implements TranscriptionProvider {
 
       const durationSec = (totalBytes / 2) / 16000
       if (durationSec < 0.3) {
-        addRuntimeEvent('info', 'cloud_api', '音频过短，跳过处理', { durationSec })
+      addRuntimeEvent('info', 'cloud_api', 'Audio too short; skipped processing', { durationSec })
         this.teardownPartials()
         this.callbacks.onDone?.()
         return
@@ -427,21 +427,21 @@ export class CloudAPIProvider implements TranscriptionProvider {
         if (!this.isRunCurrent(runId)) return
 
         if (this.isDoubaoStream) {
-          addRuntimeEvent('info', 'cloud_api', '豆包流式：发送 finish')
+        addRuntimeEvent('info', 'cloud_api', 'Doubao streaming: sending finish')
           const finishStart = performance.now()
           const text = await this.invokeNativeFinish(runId, 'doubao_stream_finish')
           if (text === undefined || !this.isRunCurrent(runId)) return
           asrText = text
           asrMs = Math.round(performance.now() - finishStart)
-          addRuntimeEvent('info', 'cloud_api', '豆包流式：识别完成', { asrMs, textLen: asrText.length })
+        addRuntimeEvent('info', 'cloud_api', 'Doubao streaming: recognition complete', { asrMs, textLen: asrText.length })
         } else {
-          addRuntimeEvent('info', 'cloud_api', '千问流式：发送 finish')
+        addRuntimeEvent('info', 'cloud_api', 'Qwen streaming: sending finish')
           const finishStart = performance.now()
           const text = await this.invokeNativeFinish(runId, 'qwen_stream_finish')
           if (text === undefined || !this.isRunCurrent(runId)) return
           asrText = text
           asrMs = Math.round(performance.now() - finishStart)
-          addRuntimeEvent('info', 'cloud_api', '千问流式：识别完成', { asrMs, textLen: asrText.length })
+        addRuntimeEvent('info', 'cloud_api', 'Qwen streaming: recognition complete', { asrMs, textLen: asrText.length })
         }
       } else {
         // 非豆包 / 豆包建连失败：录完再发
@@ -474,7 +474,7 @@ export class CloudAPIProvider implements TranscriptionProvider {
           }),
         }
 
-        addRuntimeEvent('info', 'cloud_api', '开始 ASR', { provider: asrProvider, durationSec })
+      addRuntimeEvent('info', 'cloud_api', 'ASR started', { provider: asrProvider, durationSec })
         const asrResult = await invoke<AsrResult>('cloud_transcribe', {
           request: {
             audio_b64: audioB64,
@@ -522,7 +522,7 @@ export class CloudAPIProvider implements TranscriptionProvider {
           const aiConfig: AiProviderConfig = {
             provider: aiProvider, api_url: aiApiUrl, api_key: aiApiKey, model: aiModel,
           }
-          addRuntimeEvent('info', 'cloud_api', '开始 AI 校对', { provider: aiProvider, model: aiModel })
+        addRuntimeEvent('info', 'cloud_api', 'AI cleanup started', { provider: aiProvider, model: aiModel })
 
           try {
             const aiResult = await invoke<AiResult>('cloud_polish', {
@@ -533,14 +533,14 @@ export class CloudAPIProvider implements TranscriptionProvider {
             llmMs = aiResult.elapsed_ms
           } catch (err) {
             if (!this.isRunCurrent(runId)) return
-            addRuntimeEvent('warn', 'cloud_api', 'AI 校对失败，使用 ASR 原文', { error: String(err) })
+        addRuntimeEvent('warn', 'cloud_api', 'AI cleanup failed; using raw ASR text', { error: String(err) })
           }
         }
       }
 
       if (!this.isRunCurrent(runId)) return
       const totalMs = Math.round(performance.now() - startTime)
-      addRuntimeEvent('info', 'cloud_api', '处理完成', { durationSec, asrMs, llmMs, totalMs, runId })
+    addRuntimeEvent('info', 'cloud_api', 'Processing complete', { durationSec, asrMs, llmMs, totalMs, runId })
 
       const omniModel = isQwenOmni ? resolveQwenOmniModel(asrProvider) : undefined
 
@@ -551,7 +551,7 @@ export class CloudAPIProvider implements TranscriptionProvider {
       this.callbacks.onDone?.()
     } catch (err) {
       if (!this.isRunCurrent(runId)) return
-      addRuntimeEvent('error', 'cloud_api', '处理异常', { error: String(err) })
+      addRuntimeEvent('error', 'cloud_api', 'Processing failed', { error: String(err) })
       this.teardownPartials()
       this.callbacks.onError?.(String(err))
       this.callbacks.onDone?.()

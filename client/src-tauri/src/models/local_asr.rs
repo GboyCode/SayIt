@@ -28,11 +28,11 @@ fn decode_pcm(audio_b64: &str) -> Result<Vec<f32>, String> {
         &base64::engine::general_purpose::STANDARD,
         audio_b64,
     )
-    .map_err(|e| format!("base64 解码失败: {}", e))?;
+    .map_err(|e| format!("Failed to decode base64 audio: {}", e))?;
 
     if pcm_bytes.len() % 2 != 0 {
         return Err(format!(
-            "PCM 数据长度必须是 16-bit 样本的整数倍，实际为 {} 字节",
+            "PCM data length must be a multiple of a 16-bit sample; received {} bytes",
             pcm_bytes.len()
         ));
     }
@@ -54,7 +54,7 @@ pub async fn local_transcribe(
         crate::providers::diag::fail("local/asr", "decode_pcm", e)
     })?;
     if samples.is_empty() {
-        crate::providers::diag::empty_result("local/asr", "客户端送来的音频是空的，没有跑模型");
+        crate::providers::diag::empty_result("local/asr", "Input audio was empty; model inference was skipped");
         return Ok(LocalAsrResult { text: String::new(), elapsed_ms: 0 });
     }
 
@@ -80,7 +80,7 @@ pub async fn local_transcribe(
                 // 「未检测到有效声音」，只有日志能区分
                 diag::empty_result(
                     "local/asr",
-                    &format!("VAD 未检测到人声，没跑模型 audio_sec={:.1}", audio_sec),
+                    &format!("VAD detected no speech; model inference was skipped audio_sec={:.1}", audio_sec),
                 );
                 return Ok(LocalAsrResult {
                     text: String::new(),
@@ -93,7 +93,7 @@ pub async fn local_transcribe(
                 return Err(diag::fail(
                     "local/asr",
                     "vad",
-                    format!("语音检测失败，已取消本次识别: {e}"),
+                    format!("Voice activity detection failed; recognition was canceled: {e}"),
                 ));
             }
         };
@@ -105,7 +105,7 @@ pub async fn local_transcribe(
             diag::empty_result(
                 "local/asr",
                 &format!(
-                    "VAD 判定有人声但模型没有输出 model={} accel={} audio_sec={:.1} elapsed={}ms",
+                    "VAD detected speech but the model produced no output model={} accel={} audio_sec={:.1} elapsed={}ms",
                     model_id, accel, audio_sec, elapsed_ms
                 ),
             );
@@ -116,7 +116,7 @@ pub async fn local_transcribe(
     })
     .await
     .map_err(|e| {
-        crate::providers::diag::fail("local/asr", "join", format!("推理异常: {}", e))
+        crate::providers::diag::fail("local/asr", "join", format!("Inference task failed: {}", e))
     })?
 }
 
@@ -129,10 +129,10 @@ pub async fn preload_local_model(
         let start = Instant::now();
         let accel = accelerator.as_deref().unwrap_or("auto");
         gguf_asr::preload(&model_id, accel)?;
-        Ok(format!("模型已加载 ({}ms)", start.elapsed().as_millis()))
+        Ok(format!("Model loaded ({}ms)", start.elapsed().as_millis()))
     })
     .await
-    .map_err(|e| format!("预加载异常: {}", e))?
+    .map_err(|e| format!("Preload task failed: {}", e))?
 }
 
 /// 释放本地 ASR 模型占用的内存。切换到云 API / 服务器模式时调用，
@@ -141,7 +141,7 @@ pub async fn preload_local_model(
 pub async fn unload_local_model() -> Result<(), String> {
     tokio::task::spawn_blocking(gguf_asr::unload)
         .await
-        .map_err(|e| format!("释放异常: {}", e))
+        .map_err(|e| format!("Release task failed: {}", e))
 }
 
 /// 动态调整本地模型的空闲卸载时间。0 = 常驻；其余值由设置页限制为
@@ -149,7 +149,7 @@ pub async fn unload_local_model() -> Result<(), String> {
 #[tauri::command]
 pub fn set_local_model_idle_unload(idle_minutes: u64) -> Result<(), String> {
     if !matches!(idle_minutes, 0 | 10 | 30 | 60) {
-        return Err(format!("不支持的模型空闲卸载时间: {idle_minutes}"));
+        return Err(format!("Unsupported model idle unload interval: {idle_minutes}"));
     }
     gguf_asr::set_idle_unload_minutes(idle_minutes);
     Ok(())
@@ -239,12 +239,12 @@ pub fn reclaim_legacy_models() -> u64 {
             Ok(()) => {
                 freed += size;
                 log::info!(
-                    "回收旧引擎模型 {} ({:.1} MB)",
+                    "Removed legacy engine model {} ({:.1} MB)",
                     id,
                     size as f64 / 1024.0 / 1024.0
                 );
             }
-            Err(e) => log::warn!("回收旧引擎模型 {} 失败: {}", id, e),
+            Err(e) => log::warn!("Failed to remove legacy engine model {}: {}", id, e),
         }
     }
 
@@ -254,12 +254,12 @@ pub fn reclaim_legacy_models() -> u64 {
         let size = std::fs::metadata(&vad).map(|m| m.len()).unwrap_or(0);
         if std::fs::remove_file(&vad).is_ok() {
             freed += size;
-            log::info!("回收旧 VAD 权重 silero_vad.onnx");
+            log::info!("Removed legacy VAD weights silero_vad.onnx");
         }
     }
 
     if freed > 0 {
-        log::info!("旧引擎模型共回收 {:.1} MB", freed as f64 / 1024.0 / 1024.0);
+        log::info!("Removed {:.1} MB of legacy engine models", freed as f64 / 1024.0 / 1024.0);
     }
     freed
 }

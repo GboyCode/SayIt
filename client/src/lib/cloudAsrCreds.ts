@@ -3,6 +3,7 @@
 // 为什么单独一个模块：这些规则原来散在 CloudAPISection 与 stores/modeStatus 两处，
 // 后者还留着一句「与 CloudAPISection.asrKeyGroup 保持一致」的注释——靠注释同步的东西
 // 迟早会不一致。豆包新增控制台代次后要同步的规则又多一条，所以先收成一处。
+import { t } from '@/i18n'
 
 /** 豆包控制台代次。火山有两代控制台，鉴权方式不同，密钥也不是同一个东西。 */
 export type DoubaoConsole = 'new' | 'legacy'
@@ -72,9 +73,9 @@ export function doubaoKeyLabel(console: DoubaoConsole): string {
  */
 export function describeDoubaoMissing(creds: DoubaoCredentials): string {
   if (creds.console === 'new') {
-    return creds.consoleKey.trim() ? '' : '还没填 API Key'
+    return creds.consoleKey.trim() ? '' : t('asrProvider.missingKey')
   }
-  if (!creds.accessToken.trim()) return '还没填 Access Token'
-  if (!creds.appId.trim()) return '还没填 App ID'
+  if (!creds.accessToken.trim()) return t('asrProvider.missingAccessToken')
+  if (!creds.appId.trim()) return t('asrProvider.missingAppId')
   return ''
 }

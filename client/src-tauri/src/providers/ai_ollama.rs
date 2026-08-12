@@ -55,7 +55,7 @@ pub async fn polish(
         .timeout(std::time::Duration::from_secs(90))
         .send()
         .await
-        .map_err(|e| diag::fail(SCOPE, "http_send", format!("Ollama 请求失败: {}", e)))?;
+        .map_err(|e| diag::fail(SCOPE, "http_send", format!("Ollama request failed: {}", e)))?;
 
     let elapsed_ms = start.elapsed().as_millis() as u64;
     let http_summary = diag::http_summary(resp.status(), resp.headers());
@@ -67,7 +67,7 @@ pub async fn polish(
             SCOPE,
             "http_status",
             format!(
-                "Ollama 返回错误 {} [{}]: {}",
+                "Ollama returned error {} [{}]: {}",
                 status,
                 http_summary,
                 diag::truncate(&body_text, 200)
@@ -78,13 +78,13 @@ pub async fn polish(
     let body_text = resp
         .text()
         .await
-        .map_err(|e| diag::fail(SCOPE, "read_body", format!("读取响应失败: {}", e)))?;
+        .map_err(|e| diag::fail(SCOPE, "read_body", format!("Failed to read response: {}", e)))?;
     let data: serde_json::Value = serde_json::from_str(&body_text).map_err(|e| {
         diag::fail(
             SCOPE,
             "parse_json",
             format!(
-                "解析 Ollama 响应失败: {} 响应片段: {}",
+                "Failed to parse Ollama response: {} response excerpt: {}",
                 e,
                 diag::truncate(&body_text, 200)
             ),
@@ -104,7 +104,7 @@ pub async fn polish(
             SCOPE,
             "empty_response_fallback_to_input",
             &format!(
-                "Ollama 没有返回内容，已回落为原文 model={} {}",
+                "Ollama returned no content; returned the original text model={} {}",
                 model,
                 diag::describe_json(&body_text)
             ),
@@ -129,7 +129,7 @@ pub async fn test_connection(config: &AiProviderConfig) -> TestResult {
         &config.model
     };
 
-    let prompt = "只回复「连接正常」四个字，不要输出任何其他内容。";
+    let prompt = "Reply with OK only. Do not output anything else.";
 
     let body = serde_json::json!({
         "model": model,
@@ -160,13 +160,13 @@ pub async fn test_connection(config: &AiProviderConfig) -> TestResult {
                 .trim()
                 .to_string();
             let detail = format!(
-                "耗时: {}ms\n模型: {}\n发送: \"{}\"\n回复: {}",
+                "Elapsed: {}ms\nModel: {}\nSent: \"{}\"\nReply: {}",
                 elapsed_ms, model, prompt,
-                if reply.is_empty() { "(空)" } else { &reply }
+                if reply.is_empty() { "(empty)" } else { &reply }
             );
             TestResult {
                 ok: true,
-                message: format!("连接成功 ({}ms)", elapsed_ms),
+                message: format!("Connection successful ({}ms)", elapsed_ms),
                 elapsed_ms,
                 detail,
             }
@@ -180,20 +180,20 @@ pub async fn test_connection(config: &AiProviderConfig) -> TestResult {
                     "ai/ollama-test",
                     "http_status",
                     format!(
-                        "Ollama 返回 {} : {}",
+                        "Ollama returned {}: {}",
                         status,
                         diag::truncate(&body_text, 100)
                     ),
                 ),
                 elapsed_ms,
-                detail: format!("模型: {}\n请求地址: {}", model, url),
+                detail: format!("Model: {}\nRequest URL: {}", model, url),
             }
         }
         Err(e) => TestResult {
             ok: false,
-            message: diag::fail("ai/ollama-test", "http_send", format!("连接失败: {}", e)),
+            message: diag::fail("ai/ollama-test", "http_send", format!("Connection failed: {}", e)),
             elapsed_ms,
-            detail: format!("模型: {}\n请求地址: {}", model, url),
+            detail: format!("Model: {}\nRequest URL: {}", model, url),
         },
     }
 }

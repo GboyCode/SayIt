@@ -12,12 +12,14 @@ export interface TextReplacementRule {
 const STORAGE_KEY = 'textReplacements'
 
 /** 内置默认文本替换规则（新用户首次使用时填充） */
+// i18n-allow-start: 中文 ASR 默认替换数据，不是界面文案
 export const BUILTIN_REPLACEMENTS: TextReplacementRule[] = [
   { id: 'builtin_1', from: '安卓说话', to: '按住说话', enabled: true },
   { id: 'builtin_2', from: '我的邮箱', to: 'test@example.com', enabled: true },
   { id: 'builtin_3', from: 'pump', to: 'Prompt', enabled: true },
   { id: 'builtin_4', from: 'Cloud Code', to: 'Claude Code', enabled: true },
 ]
+// i18n-allow-end
 
 export async function getTextReplacements(): Promise<TextReplacementRule[]> {
   const rules = await getSetting<TextReplacementRule[]>(STORAGE_KEY, [])
@@ -47,7 +49,7 @@ export interface ParsedReplacement {
  * - 原文为空的行忽略。
  */
 export function parseBatchReplacements(input: string): ParsedReplacement[] {
-  const separators = ['\t', '=>', '->', '，', ',']
+  const separators = ['\t', '=>', '->', '，', ','] // i18n-allow: 中文批量输入分隔符
   const result: ParsedReplacement[] = []
 
   for (const rawLine of input.split(/\r?\n/)) {

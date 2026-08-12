@@ -2,6 +2,7 @@ import * as bridge from './bridge'
 import { getBackendBaseUrl } from './runtimeConfig'
 import { sanitizeObject } from '@/lib/sanitize'
 import type { DiagnosticOccurrence, DiagnosticsPreview } from '@/types/appApi'
+import { t } from '@/i18n'
 
 export const MAX_DIAGNOSTIC_IMAGES = 5
 export const MAX_DIAGNOSTIC_IMAGE_SIZE = 5 * 1024 * 1024
@@ -22,20 +23,20 @@ export function validateDiagnosticImages(images: File[]): DiagnosticsValidationR
   const errors: string[] = []
 
   if (images.length > MAX_DIAGNOSTIC_IMAGES) {
-    errors.push(`最多上传 ${MAX_DIAGNOSTIC_IMAGES} 张截图。`)
+    errors.push(t('diagnosticsReport.maxImages', { count: MAX_DIAGNOSTIC_IMAGES }))
   }
 
   const totalSize = images.reduce((sum, image) => sum + image.size, 0)
   if (totalSize > MAX_DIAGNOSTIC_TOTAL_IMAGE_SIZE) {
-    errors.push('截图总大小不能超过 20MB。')
+    errors.push(t('diagnosticsReport.maxTotalSize'))
   }
 
   for (const image of images) {
     if (!image.type.startsWith('image/')) {
-      errors.push(`文件 ${image.name} 不是图片。`)
+      errors.push(t('diagnosticsReport.notImage', { name: image.name }))
     }
     if (image.size > MAX_DIAGNOSTIC_IMAGE_SIZE) {
-      errors.push(`图片 ${image.name} 超过 5MB。`)
+      errors.push(t('diagnosticsReport.imageTooLarge', { name: image.name }))
     }
   }
 

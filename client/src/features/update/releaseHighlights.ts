@@ -12,6 +12,8 @@
 // · 短而不省：一眼能读完，但要让人知道"这对我意味着什么"；
 // · 条数压在 10 条以内 —— 列太长等于没重点。
 
+import { t } from '@/i18n'
+
 export interface ReleaseHighlights {
   version: string
   items: string[]
@@ -19,14 +21,17 @@ export interface ReleaseHighlights {
 
 export const RELEASE_HIGHLIGHTS: ReleaseHighlights = {
   version: '0.1.6',
-  items: [
-    '识别没有出字时，历史记录的详情里会说明原因，例如供应商额度用尽、资源未开通或连接中断',
-    '修复豆包在服务端中途断开连接时，本次识别被当成「没有检测到声音」的问题',
-    '修复用鼠标侧键或中键「按住说话」时，按住约 1.7 秒后录音会自动结束的问题',
-    '文本插入被安全软件拦截时会自动换一种方式，此前这种情况只能手动复制',
-    'AI 服务与语音识别服务支持一键测试全部，不必逐张点开',
-    '识别与 AI 服务失败时会记录更完整的诊断信息，反馈问题时更容易定位原因',
-    '历史记录的详情改回点「展开详情」按钮开合，不再鼠标悬停自动展开',
-    '悬浮窗在处理中不再显示「按 Esc 取消」那行小字，取消功能本身不变',
-  ],
+  // getter 防止模块加载时把语言冻结；About 已订阅 locale，重渲染后会重新读取。
+  get items() {
+    return [
+      t('release.0.1.6.1'),
+      t('release.0.1.6.2'),
+      t('release.0.1.6.3'),
+      t('release.0.1.6.4'),
+      t('release.0.1.6.5'),
+      t('release.0.1.6.6'),
+      t('release.0.1.6.7'),
+      t('release.0.1.6.8'),
+    ]
+  },
 }

@@ -1,3 +1,4 @@
+import { getLocale, t } from '@/i18n'
 import * as bridge from '../bridge'
 import { addRuntimeEvent } from '../debugLog'
 import { getSetting } from '../store'
@@ -89,6 +90,8 @@ export class OverlayService {
       showDuration: this.showDuration,
       baseWidth: cfg.windowWidth,
       barCount: cfg.barCount,
+      // 每次都带上：悬浮窗可能在语言切换之后才第一次创建，没有"只发一次"的时机。
+      locale: getLocale(),
     }
   }
 
@@ -190,7 +193,7 @@ export class OverlayService {
    * 导致最后一整分钟只剩一句「单次记录最长300s」，既不知道已录多久、也不知道还剩多久。
    */
   showTimeoutWarning() {
-    const text = `单次最长 ${formatRecordingLimit()}`
+    const text = t('overlay.warnMaxDuration', { limit: formatRecordingLimit() })
     this.activeWarning = text
     void bridge.updateOverlay({
       state: 'listening',
@@ -221,7 +224,7 @@ export class OverlayService {
     if (this.activeWarning) return
     void bridge.updateOverlay({
       state: 'listening',
-      warning: '请靠近麦克风',
+      warning: t('overlay.warnLowVolume'),
       warningTone: 'warn',
       elapsedSec: clampSec(this.getElapsedSec()),
       ...this.getCommonPayload(),
@@ -233,7 +236,7 @@ export class OverlayService {
     if (this.activeWarning) return
     void bridge.updateOverlay({
       state: 'listening',
-      warning: '未检测到声音',
+      warning: t('overlay.warnNoSignal'),
       warningTone: 'warn',
       elapsedSec: clampSec(this.getElapsedSec()),
       ...this.getCommonPayload(),
@@ -245,7 +248,7 @@ export class OverlayService {
     if (this.activeWarning) return
     void bridge.updateOverlay({
       state: 'listening',
-      warning: '麦克风已被静音',
+      warning: t('overlay.warnMicMuted'),
       warningTone: 'error',
       elapsedSec: clampSec(this.getElapsedSec()),
       ...this.getCommonPayload(),
@@ -316,7 +319,7 @@ export class OverlayService {
     this.setEscapeMode('off', 0)
     void bridge.presentOverlay({
       state: 'toast',
-      toastText: `已切换到「${name}」`,
+      toastText: t('overlay.toastPresetSwitched', { name }),
       toastTone: 'info',
       ...this.getCommonPayload(),
     })
@@ -334,11 +337,11 @@ export class OverlayService {
    * 新增一个调用点而漏掉。
    */
   showNoSpeech(diagnostic?: Record<string, unknown>) {
-    addRuntimeEvent('warn', 'recorder', '显示「未检测到有效声音」', diagnostic ?? {})
+    addRuntimeEvent('warn', 'recorder', 'Showing no-speech warning', diagnostic ?? {})
     this.setEscapeMode('off', 0)
     void bridge.presentOverlay({
       state: 'toast',
-      toastText: '未检测到有效声音',
+      toastText: t('overlay.toastNoSpeech'),
       toastTone: 'warn',
       ...this.getCommonPayload(),
     })
@@ -351,7 +354,7 @@ export class OverlayService {
     this.setEscapeMode('off', 0)
     void bridge.presentOverlay({
       state: 'toast',
-      toastText: '已取消',
+      toastText: t('overlay.toastCanceled'),
       toastTone: 'info',
       ...this.getCommonPayload(),
     })

@@ -103,13 +103,13 @@ impl<'a> DoubaoAuth<'a> {
 /// 错误的地方去排查。
 pub fn explain_status_code(code: &str) -> Option<&'static str> {
     match code {
-        "20000003" => Some("音频被判定为静音，没有检测到语音"),
-        "45000030" => Some("这个账号没有开通所用的资源，或额度已用完，请到火山引擎控制台确认"),
+        "20000003" => Some("The audio was classified as silence; no speech was detected"),
+        "45000030" => Some("This account has not enabled the requested resource or has exhausted its quota; check the Volcengine console"),
         _ => {
             if code.starts_with("45") {
-                Some("请求被拒绝（参数、音频格式或额度问题），请到火山引擎控制台确认")
+                Some("The request was rejected; check parameters, audio format, and quota in the Volcengine console")
             } else if code.starts_with("55") {
-                Some("火山服务端处理失败，可稍后重试")
+                Some("Volcengine failed to process the request; try again later")
             } else {
                 None
             }
@@ -232,15 +232,15 @@ mod tests {
     /// 有实据的两个码要给出具体说明。
     #[test]
     fn explains_the_codes_we_have_evidence_for() {
-        assert!(explain_status_code("20000003").unwrap().contains("静音"));
-        assert!(explain_status_code("45000030").unwrap().contains("额度"));
+        assert!(explain_status_code("20000003").unwrap().contains("silence"));
+        assert!(explain_status_code("45000030").unwrap().contains("quota"));
     }
 
     /// 没实据的码按前缀给方向，不编造具体含义。
     #[test]
     fn falls_back_to_code_family() {
-        assert!(explain_status_code("45000001").unwrap().contains("请求被拒绝"));
-        assert!(explain_status_code("55000031").unwrap().contains("服务端"));
+        assert!(explain_status_code("45000001").unwrap().contains("rejected"));
+        assert!(explain_status_code("55000031").unwrap().contains("Volcengine"));
     }
 
     /// 成功码和无法识别的码不该产生任何提示。
@@ -254,8 +254,8 @@ mod tests {
     /// 返回体里的 code 可能是数字也可能是字符串，两种都要认。
     #[test]
     fn explains_payload_with_either_code_type() {
-        assert!(explain_payload(r#"{"code":45000030}"#).contains("额度"));
-        assert!(explain_payload(r#"{"code":"45000030"}"#).contains("额度"));
+        assert!(explain_payload(r#"{"code":45000030}"#).contains("quota"));
+        assert!(explain_payload(r#"{"code":"45000030"}"#).contains("quota"));
     }
 
     /// 拿不到码就返回空串，调用方直接拼接不会多出括号。

@@ -294,7 +294,7 @@ function setupScriptProcessorFallback(ctx: AudioContext, src: MediaStreamAudioSo
 
     if (!firstRmsLogged && rms > 0) {
       firstRmsLogged = true
-      addRuntimeEvent('info', 'audio', '收到首个 RMS (ScriptProcessor)', {
+      addRuntimeEvent('info', 'audio', 'First RMS received (ScriptProcessor)', {
         rms: Number(rms.toFixed(6)),
         sampleRate: TARGET_SAMPLE_RATE,
       })
@@ -314,13 +314,13 @@ function setupScriptProcessorFallback(ctx: AudioContext, src: MediaStreamAudioSo
           const value = Math.abs(pcm[i])
           if (value > peak) peak = value
         }
-        addRuntimeEvent('info', 'audio', '收到首个 PCM 帧 (ScriptProcessor)', {
+      addRuntimeEvent('info', 'audio', 'First PCM frame received (ScriptProcessor)', {
           samples: pcm.length,
           peak,
           byteLength: pcmBuffer.byteLength,
           sampleRate: TARGET_SAMPLE_RATE,
         })
-        console.log('[audio-diag] 首个 PCM 帧 (ScriptProcessor)', {
+      console.log('[audio-diag] first PCM frame (ScriptProcessor)', {
           samples: pcm.length,
           byteLength: pcmBuffer.byteLength,
           contextSampleRate: ctx.sampleRate,
@@ -331,7 +331,7 @@ function setupScriptProcessorFallback(ctx: AudioContext, src: MediaStreamAudioSo
       if (totalPCMFrames % 100 === 0) {
         const elapsedSec = (performance.now() - captureStartTime) / 1000
         const pcmDurationSec = (totalPCMBytes / 2) / 16000
-        console.log('[audio-diag] PCM 累计 (ScriptProcessor)', {
+      console.log('[audio-diag] PCM total (ScriptProcessor)', {
           frames: totalPCMFrames,
           totalBytes: totalPCMBytes,
           wallTimeSec: elapsedSec.toFixed(2),
@@ -348,7 +348,7 @@ function setupScriptProcessorFallback(ctx: AudioContext, src: MediaStreamAudioSo
   // ScriptProcessorNode requires an output connection to work
   spn.connect(ctx.destination)
   console.log('[audio-diag] ScriptProcessorNode fallback active')
-  addRuntimeEvent('info', 'audio', 'ScriptProcessorNode 兜底已激活', {
+  addRuntimeEvent('info', 'audio', 'ScriptProcessorNode fallback activated', {
     bufferSize: 4096,
     inputSampleRate: ctx.sampleRate,
     targetSampleRate: TARGET_SAMPLE_RATE,
@@ -400,7 +400,7 @@ function setupAudioWorkletNode(ctx: AudioContext, src: MediaStreamAudioSourceNod
     },
   })
 
-  addRuntimeEvent('info', 'audio', 'AudioContext 就绪', {
+    addRuntimeEvent('info', 'audio', 'AudioContext ready', {
     contextState: ctx.state,
     inputSampleRate: ctx.sampleRate,
     targetSampleRate: TARGET_SAMPLE_RATE,
@@ -422,7 +422,7 @@ function setupAudioWorkletNode(ctx: AudioContext, src: MediaStreamAudioSourceNod
     if (typeof e.data.rms === 'number') {
       if (!firstRmsLogged) {
         firstRmsLogged = true
-        addRuntimeEvent('info', 'audio', '收到首个 RMS', {
+        addRuntimeEvent('info', 'audio', 'First RMS received', {
           rms: Number(e.data.rms.toFixed(6)),
           sampleRate: actualSampleRate,
         })
@@ -443,13 +443,13 @@ function setupAudioWorkletNode(ctx: AudioContext, src: MediaStreamAudioSourceNod
           const value = Math.abs(pcmFrame[i])
           if (value > peak) peak = value
         }
-        addRuntimeEvent('info', 'audio', '收到首个 PCM 帧', {
+        addRuntimeEvent('info', 'audio', 'First PCM frame received', {
           samples: pcmFrame.length,
           peak,
           byteLength: pcmBuffer.byteLength,
           sampleRate: actualSampleRate,
         })
-        console.log('[audio-diag] 首个 PCM 帧', {
+        console.log('[audio-diag] first PCM frame', {
           samples: pcmFrame.length,
           byteLength: pcmBuffer.byteLength,
           contextSampleRate: audioCtx?.sampleRate,
@@ -460,7 +460,7 @@ function setupAudioWorkletNode(ctx: AudioContext, src: MediaStreamAudioSourceNod
       if (totalPCMFrames % 5000 === 0) {
         const elapsedSec = (performance.now() - captureStartTime) / 1000
         const pcmDurationSec = (totalPCMBytes / 2) / 16000
-        console.log('[audio-diag] PCM 累计', {
+        console.log('[audio-diag] PCM total', {
           frames: totalPCMFrames,
           totalBytes: totalPCMBytes,
           wallTimeSec: elapsedSec.toFixed(2),
@@ -489,13 +489,13 @@ export async function startCapture(
   const hadPriorWorklet = workletNode !== null
   const hadPriorStream = mediaStream !== null
   if (hadPriorCtx || hadPriorWorklet || hadPriorStream) {
-    console.warn('[audio-diag] startCapture 发现残留状态，正在清理', {
+    console.warn('[audio-diag] startCapture found stale state; cleaning up', {
       hadAudioCtx: hadPriorCtx,
       priorCtxState: audioCtx?.state,
       hadWorklet: hadPriorWorklet,
       hadStream: hadPriorStream,
     })
-    addRuntimeEvent('warn', 'audio', 'startCapture 清理残留状态', {
+    addRuntimeEvent('warn', 'audio', 'startCapture cleaned up stale state', {
       hadAudioCtx: hadPriorCtx,
       priorCtxState: audioCtx?.state,
       hadWorklet: hadPriorWorklet,
@@ -541,7 +541,7 @@ export async function startCapture(
       settings,
     })
 
-    addRuntimeEvent('info', 'audio', '麦克风采集已启动', {
+    addRuntimeEvent('info', 'audio', 'Microphone capture started', {
       requestedDeviceId: deviceId || 'default',
       trackLabel: track?.label || '',
       trackSettings: settings || null,
@@ -557,7 +557,7 @@ export async function startCapture(
     })
     // 记一条到运行时日志：这是判断"有没有走上高质量重采样"的唯一依据，
     // 排查识别准确度问题时先看这里。
-    addRuntimeEvent('info', 'audio', nativeSixteenK ? 'AudioContext 原生 16 kHz（跳过手写重采样）' : 'AudioContext 非 16 kHz，走手写线性插值重采样', {
+    addRuntimeEvent('info', 'audio', nativeSixteenK ? 'AudioContext is natively 16 kHz; resampling skipped' : 'AudioContext is not 16 kHz; using linear resampling', {
       contextSampleRate: audioCtx.sampleRate,
       targetSampleRate: TARGET_SAMPLE_RATE,
     })
@@ -569,8 +569,8 @@ export async function startCapture(
     const fallbackSrc = sourceNode
     const fallbackTimerId = setTimeout(() => {
       if (!usingFallback && fallbackCtx === audioCtx && fallbackSrc === sourceNode) {
-        console.warn('[audio-diag] AudioWorklet 超时 (1.5s)，切换到 ScriptProcessorNode')
-        addRuntimeEvent('warn', 'audio', 'AudioWorklet 超时，切换 ScriptProcessorNode 兜底')
+      console.warn('[audio-diag] AudioWorklet timed out (1.5s); switching to ScriptProcessorNode')
+      addRuntimeEvent('warn', 'audio', 'AudioWorklet timed out; switching to ScriptProcessorNode fallback')
         setupScriptProcessorFallback(fallbackCtx, fallbackSrc)
       }
     }, 1500)
@@ -606,15 +606,15 @@ export async function startCapture(
     workletNode.addEventListener('worklet-data', () => { gotWorkletData = true }, { once: true })
     setTimeout(() => {
       if (!gotWorkletData && !usingFallback && fallbackCtx === audioCtx && fallbackSrc === sourceNode) {
-        console.warn('[audio-diag] AudioWorklet 未产生数据 (800ms)，切换到 ScriptProcessorNode')
-        addRuntimeEvent('warn', 'audio', 'AudioWorklet 静默，切换 ScriptProcessorNode 兜底')
+      console.warn('[audio-diag] AudioWorklet produced no data (800ms); switching to ScriptProcessorNode')
+      addRuntimeEvent('warn', 'audio', 'AudioWorklet was silent; switching to ScriptProcessorNode fallback')
         setupScriptProcessorFallback(fallbackCtx, fallbackSrc)
       }
     }, 800)
 
   } catch (error) {
     await teardownCapture()
-    addRuntimeEvent('error', 'audio', '启动麦克风采集失败', {
+    addRuntimeEvent('error', 'audio', 'Failed to start microphone capture', {
       requestedDeviceId: deviceId || 'default',
       error: String(error),
     })
@@ -624,13 +624,13 @@ export async function startCapture(
 
 export async function stopCapture() {
   const finalCtxRate = audioCtx?.sampleRate
-  console.log('[audio-diag] stopCapture 最终汇总', {
+  console.log('[audio-diag] stopCapture final summary', {
     contextSampleRate: finalCtxRate,
     actualSampleRate,
     targetSampleRate: TARGET_SAMPLE_RATE,
     usingFallback,
   })
-  addRuntimeEvent('info', 'audio', '采集停止汇总', {
+  addRuntimeEvent('info', 'audio', 'Capture stop summary', {
     contextSampleRate: finalCtxRate,
     actualSampleRate,
     targetSampleRate: TARGET_SAMPLE_RATE,

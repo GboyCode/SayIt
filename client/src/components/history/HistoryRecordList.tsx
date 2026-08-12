@@ -7,6 +7,9 @@ import * as bridge from '@/services/bridge'
 import { pickVoiceDurationSec } from '@/services/timeModel'
 import { loadAudioAsDataUrl } from '@/services/audioFileService'
 import { invoke } from '@tauri-apps/api/core'
+import { getLocale, t } from '@/i18n'
+import { useT } from '@/i18n/useT'
+import { historyFailureReasonDisplay } from '@/i18n/displayNames'
 
 /**
  * 历史记录里同一时刻只允许播放一条录音。
@@ -56,15 +59,16 @@ function getDayLabel(ts: number): string {
   yesterday.setDate(yesterday.getDate() - 1)
   const recordDay = new Date(date.getFullYear(), date.getMonth(), date.getDate())
 
-  const dateStr = date.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })
-  if (recordDay.getTime() === today.getTime()) return `今天 · ${dateStr}`
-  if (recordDay.getTime() === yesterday.getTime()) return `昨天 · ${dateStr}`
-  return date.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })
+  // 日期格式跟界面语言：英文界面下 "August 4" 而不是 "8月4日"
+  const dateStr = date.toLocaleDateString(getLocale(), { month: 'long', day: 'numeric' })
+  if (recordDay.getTime() === today.getTime()) return t('record.dayPrefix', { day: t('record.today'), date: dateStr })
+  if (recordDay.getTime() === yesterday.getTime()) return t('record.dayPrefix', { day: t('record.yesterday'), date: dateStr })
+  return date.toLocaleDateString(getLocale(), { year: 'numeric', month: 'long', day: 'numeric' })
 }
 
 function formatTime(ts: number): string {
   const d = new Date(ts)
-  return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  return d.toLocaleTimeString(getLocale(), { hour: '2-digit', minute: '2-digit' })
 }
 
 /** 把 text 中命中 keyword 的子串用 <mark> 高亮（大小写不敏感，用 indexOf 避免正则特殊字符问题）。 */
@@ -280,7 +284,7 @@ function HistoryItem({
       const dataUrl = await loadAudioAsDataUrl(record.audioFilePath)
       if (!dataUrl) {
         setDownloadStatus('fail')
-        setDownloadPath('音频文件不存在')
+        setDownloadPath(t('record.audioMissing'))
         setTimeout(() => setDownloadStatus('idle'), 3000)
         return
       }
@@ -363,12 +367,12 @@ function HistoryItem({
                     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); (e.target as HTMLTextAreaElement).blur() }
                   }}
                 />
-                <span className="mt-1 inline-block text-[11px] text-muted-foreground/50">改完点击其它地方即自动保存 · Esc 取消</span>
+                <span className="mt-1 inline-block text-[11px] text-muted-foreground/50">{t('record.editHint')}</span>
               </div>
             ) : isEmpty ? (
               <div className="flex items-center gap-2">
                 <VolumeX className="h-3.5 w-3.5 text-muted-foreground/40" />
-                <p className="text-sm italic text-muted-foreground/60">无有效声音</p>
+                <p className="text-sm italic text-muted-foreground/60">{t('record.noSpeech')}</p>
               </div>
             ) : (
               <div
@@ -385,7 +389,7 @@ function HistoryItem({
                 {(() => {
                   // 编辑过的记录：在正文末尾内联一个小铅笔图标（hover 提示「已编辑」），不占额外行、不混入正文文本
                   const editedMark = record.manualEditedAt ? (
-                    <Tooltip content="已编辑">
+                    <Tooltip content={t('record.edited')}>
                       <Pencil className="ml-1 inline-block h-3 w-3 translate-y-[1px] text-muted-foreground/40" />
                     </Tooltip>
                   ) : null
@@ -406,7 +410,7 @@ function HistoryItem({
 
           <div className={`flex h-fit shrink-0 self-start gap-0.5 transition-opacity group-hover:opacity-100 ${open ? 'opacity-100' : 'opacity-0'}`}>
             {!isEmpty && (
-              <Tooltip content={copied ? '已复制' : '复制文本'} forceVisible={copied}>
+              <Tooltip content={copied ? t('record.copied') : t('record.copyText')} forceVisible={copied}>
                 <button
                   onClick={() => {
                     void bridge.copyText(text).then(() => {
@@ -415,7 +419,7 @@ function HistoryItem({
                     })
                   }}
                   className="inline-flex items-center rounded p-1 transition-colors hover:bg-accent"
-                  aria-label="复制"
+                  aria-label={t('record.copy')}
                 >
                   {copied ? (
                     <Check className="h-3.5 w-3.5 text-success" />
@@ -427,22 +431,22 @@ function HistoryItem({
             )}
 
             {onToggleFavorite && (
-              <Tooltip content={record.favorite ? '取消收藏' : '收藏'}>
+              <Tooltip content={record.favorite ? t('record.unfavorite') : t('record.favorite')}>
                 <button
                   onClick={() => onToggleFavorite(!record.favorite)}
                   className="rounded p-1 hover:bg-accent"
-                  aria-label={record.favorite ? '取消收藏' : '收藏'}
+                  aria-label={record.favorite ? t('record.unfavorite') : t('record.favorite')}
                 >
                   <Star className={`h-3.5 w-3.5 ${record.favorite ? 'fill-amber-400 text-amber-500' : 'text-muted-foreground'}`} />
                 </button>
               </Tooltip>
             )}
 
-            <Tooltip content={expanded ? '收起详情' : '展开详情'}>
+            <Tooltip content={expanded ? t('record.collapse') : t('record.expand')}>
               <button
                 onClick={() => setExpanded(!expanded)}
                 className="rounded p-1 hover:bg-accent"
-                aria-label="详情"
+                aria-label={t('record.details')}
                 aria-expanded={expanded}
               >
                 {expanded
@@ -451,11 +455,11 @@ function HistoryItem({
               </button>
             </Tooltip>
 
-            <Tooltip content="删除记录">
+            <Tooltip content={t('record.deleteRecord')}>
               <button
                 onClick={onDelete}
                 className="rounded p-1 hover:bg-accent"
-                aria-label="删除"
+                aria-label={t('record.delete')}
               >
                 <Trash2 className="h-3.5 w-3.5 text-destructive" />
               </button>
@@ -473,15 +477,15 @@ function HistoryItem({
               <div className="col-span-2 mt-2 grid grid-cols-subgrid gap-y-2 text-xs">
                 {/* 空结果的成因。折叠行只能显示「无有效声音」，真实原因（额度耗尽、
                     资源未开通、服务端断连、文本处理清空）放这里。老记录没有这个字段。 */}
-                {isEmpty && record.failReason && (
+                {isEmpty && (record.failReasonCode || record.failReason) && (
                   <div className="col-span-2 text-muted-foreground">
-                    <span className="font-medium">原因：</span>
-                    <span className="whitespace-pre-line break-words">{record.failReason}</span>
+                    <span className="font-medium">{t('record.reasonLabel')}</span>
+                    <span className="whitespace-pre-line break-words">{historyFailureReasonDisplay(record)}</span>
                   </div>
                 )}
                 {!isEmpty && record.asrText && (
                   <div className="text-muted-foreground">
-                    <span className="font-medium">ASR 原文：</span>
+                    <span className="font-medium">{t('record.asrLabel')}</span>
                     <span className="whitespace-pre-line">{highlightText(record.asrText, highlight)}</span>
                   </div>
                 )}
@@ -489,7 +493,7 @@ function HistoryItem({
                   {record.workMode && (
                     <>
                       <span className="rounded border border-border px-1.5 py-0.5 text-xs">
-                        {record.workMode === 'server' ? '服务器' : record.workMode === 'cloud_api' ? '云 API' : '本地'}
+                        {record.workMode === 'server' ? t('record.modeServer') : record.workMode === 'cloud_api' ? t('record.modeCloudApi') : t('record.modeLocal')}
                       </span>
                       {record.asrProvider && (
                         <span className="text-xs">ASR: {ASR_PROVIDER_DISPLAY[record.asrProvider] || record.asrProvider}</span>
@@ -502,34 +506,34 @@ function HistoryItem({
                       <span className="text-border">|</span>
                     </>
                   )}
-                  <span>语音长度 {voiceDurationSec.toFixed(1)}s</span>
+                  <span>{t('record.voiceLength', { sec: voiceDurationSec.toFixed(1) })}</span>
                   <span className="text-border">|</span>
-                  <span>识别 {((record.asrMs + record.llmMs) / 1000).toFixed(1)}s (ASR {record.asrMs}ms + LLM {record.llmMs}ms)</span>
+                  <span>{t('record.recognizeTime', { total: ((record.asrMs + record.llmMs) / 1000).toFixed(1), asr: record.asrMs, llm: record.llmMs })}</span>
 
                   {/* 四个操作按钮单独收成一组：它们原来和左边的文字共用外层的 gap-2(8px)，
                       按钮之间也就被撑到 8px，比右上角那排（gap-0.5）散得多。
                       这里组内用 gap-0.5 与上排统一，组与文字之间仍由外层的 gap-2 分隔。 */}
                   <div className="flex items-center gap-0.5">
                     {!isEmpty && onEdit && !editing && (
-                      <Tooltip content="编辑文本">
+                      <Tooltip content={t('record.editText')}>
                         <button
                           type="button"
                           onClick={startEdit}
                           className="relative top-[0.5px] flex h-7 w-7 items-center justify-center rounded p-1.5 hover:bg-accent"
-                          aria-label="编辑"
+                          aria-label={t('record.edit')}
                         >
                           <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
                         </button>
                       </Tooltip>
                     )}
                     {record.audioFilePath && (
-                      <Tooltip content={audioPlaying ? '暂停播放' : '播放录音'}>
+                      <Tooltip content={audioPlaying ? t('record.pause') : t('record.play')}>
                         <button
                           type="button"
                           onClick={() => { void handleTogglePlayback() }}
                           disabled={audioLoading}
                           className="relative top-[0.5px] flex h-7 w-7 items-center justify-center rounded p-1.5 hover:bg-accent disabled:opacity-50"
-                          aria-label={audioPlaying ? '暂停播放' : '播放录音'}
+                          aria-label={audioPlaying ? t('record.pause') : t('record.play')}
                         >
                           {audioLoading ? (
                             <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
@@ -542,13 +546,13 @@ function HistoryItem({
                       </Tooltip>
                     )}
                     {record.audioFilePath && (
-                      <Tooltip content={downloadStatus === 'ok' ? `已保存到 ${downloadPath}` : downloadStatus === 'fail' ? `下载失败: ${downloadPath}` : '下载音频'}>
+                      <Tooltip content={downloadStatus === 'ok' ? t('record.savedTo', { path: downloadPath }) : downloadStatus === 'fail' ? t('record.downloadFailed', { path: downloadPath }) : t('record.downloadAudio')}>
                         <button
                           type="button"
                           onClick={() => { void handleDownloadAudio() }}
                           disabled={downloading}
                           className="relative top-[0.5px] flex h-7 w-7 items-center justify-center rounded p-1.5 hover:bg-accent disabled:opacity-50"
-                          aria-label="下载音频"
+                          aria-label={t('record.downloadAudio')}
                         >
                           {downloading ? (
                             <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
@@ -563,13 +567,13 @@ function HistoryItem({
                       </Tooltip>
                     )}
                     {record.audioFilePath && onReprocess && (
-                      <Tooltip content="重新识别">
+                      <Tooltip content={t('record.reprocess')}>
                         <button
                           type="button"
                           onClick={() => { void handleReprocess() }}
                           disabled={reprocessing}
                           className="relative top-[0.5px] flex h-7 w-7 items-center justify-center rounded p-1.5 hover:bg-accent disabled:opacity-50"
-                          aria-label="重新识别"
+                          aria-label={t('record.reprocess')}
                         >
                           {reprocessing ? (
                             <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
@@ -583,11 +587,11 @@ function HistoryItem({
                 </div>
                 {downloadStatus === 'ok' && downloadPath && (
                   <div className="col-span-2 mt-1 flex items-center gap-2 text-xs text-success break-all">
-                    <span className="min-w-0 truncate">已保存到 {downloadPath}</span>
+                    <span className="min-w-0 truncate">{t('record.savedTo', { path: downloadPath })}</span>
                     <button
                       onClick={() => void invoke('reveal_file_in_folder', { filePath: downloadPath })}
                       className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                      aria-label="打开文件所在目录"
+                      aria-label={t('record.openFolder')}
                     >
                       <FolderOpen className="h-3.5 w-3.5" />
                     </button>
@@ -595,7 +599,7 @@ function HistoryItem({
                 )}
                 {downloadStatus === 'fail' && downloadPath && (
                   <div className="col-span-2 mt-1 text-xs text-destructive break-all">
-                    下载失败: {downloadPath}
+                    {t('record.downloadFailed', { path: downloadPath })}
                   </div>
                 )}
                 {/* 音频进度条 + 倍速 */}
@@ -692,9 +696,12 @@ export default function HistoryRecordList({
   onToggleFavorite,
   onReprocess,
   onEdit,
-  emptyText = '还没有记录，去语音工作台试试吧',
+  emptyText,
   highlight,
 }: HistoryRecordListProps) {
+  useT()
+  // 默认值不能写在参数里：默认参数在模块作用域求值不了 t()，写死中文串又会在英文界面漏出来。
+  const resolvedEmptyText = emptyText ?? t('history.empty')
   const grouped = useMemo(() => {
     return records.reduce((acc, record) => {
       const label = getDayLabel(record.timestamp)
@@ -706,10 +713,14 @@ export default function HistoryRecordList({
 
   const sortedDays = useMemo(() => {
     return Object.keys(grouped).sort((a, b) => {
-      const aIsToday = a.startsWith('今天')
-      const bIsToday = b.startsWith('今天')
-      const aIsYesterday = a.startsWith('昨天')
-      const bIsYesterday = b.startsWith('昨天')
+      // 判据跟着译文走：分组标签就是 getDayLabel 拼出来的，硬编码「今天」在英文下永远不命中，
+      // 结果是今天的记录被按字母序丢到中间。
+      const todayLabel = t('record.today')
+      const yesterdayLabel = t('record.yesterday')
+      const aIsToday = a.startsWith(todayLabel)
+      const bIsToday = b.startsWith(todayLabel)
+      const aIsYesterday = a.startsWith(yesterdayLabel)
+      const bIsYesterday = b.startsWith(yesterdayLabel)
       if (aIsToday) return -1
       if (bIsToday) return 1
       if (aIsYesterday) return -1
@@ -719,7 +730,7 @@ export default function HistoryRecordList({
   }, [grouped])
 
   if (records.length === 0) {
-    return <p className="py-12 text-center text-muted-foreground">{emptyText}</p>
+    return <p className="py-12 text-center text-muted-foreground">{resolvedEmptyText}</p>
   }
 
   return (

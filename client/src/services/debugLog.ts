@@ -31,6 +31,10 @@ const MAX_AUDIO_BYTES_PER_SESSION = 256 * 1024
 const MAX_AUDIO_BYTES_TOTAL = 2 * 1024 * 1024
 const ENABLE_INFO_CONSOLE = false
 
+const RECORDER_KEY_EVENT = /(Recording started|Recording stopped|Entered processing|Final result received|External text insertion succeeded|External text insertion failed|Processing timed out|Showing fallback card)/i
+const WEBSOCKET_KEY_EVENT = /(Connection closed|Connection timed out|Failed to send start|Failed to send stop|Connecting|Connected|Reconnected|Ready received|disconnect)/i
+const INSERTION_EVENT = /(Paste decision|External text insertion|fallback|Target is SayIt|Target is not editable)/i
+
 let totalAudioBytes = 0
 
 function shouldMirrorPayload(payload: unknown): boolean {
@@ -45,8 +49,8 @@ function shouldMirrorPayload(payload: unknown): boolean {
     if (level === 'error' || level === 'warn') return true
     if (level !== 'info') return false
 
-    return source === 'recorder' && /(开始录音|停止录音|进入 processing|收到 final|注入成功|注入失败|处理超时|展示兜底卡片)/.test(message)
-      || source === 'websocket' && /(连接关闭|连接超时|发送 start 失败|发送 stop 失败|开始连接|连接成功|重连成功|收到 ready|disconnect)/.test(message)
+    return source === 'recorder' && RECORDER_KEY_EVENT.test(message)
+      || source === 'websocket' && WEBSOCKET_KEY_EVENT.test(message)
       || source === 'backend'
   }
 
@@ -62,10 +66,10 @@ function shouldKeepRuntimeEvent(event: RuntimeEvent): boolean {
   if (event.level === 'error' || event.level === 'warn') return true
   if (event.source === 'backend') return true
   if (event.source === 'websocket') {
-    return /(连接关闭|连接超时|发送 start 失败|发送 stop 失败|开始连接|连接成功|重连成功|收到 ready|disconnect)/.test(event.message)
+    return WEBSOCKET_KEY_EVENT.test(event.message)
   }
   if (event.source === 'recorder') {
-    return /(开始录音|停止录音|进入 processing|收到 final|外部文本注入成功|外部文本注入失败|处理超时|展示兜底卡片)/.test(event.message)
+    return RECORDER_KEY_EVENT.test(event.message)
   }
   return false
 }
@@ -130,7 +134,7 @@ export function addRuntimeEvent(
     console.warn(logPrefix, detail)
   } else if (ENABLE_INFO_CONSOLE) {
     console.log(logPrefix, detail)
-  } else if (source === 'recorder' && /(粘贴决策|外部文本注入|兜底|命中|目标不可编辑)/.test(message)) {
+  } else if (source === 'recorder' && INSERTION_EVENT.test(message)) {
     // Always log paste-related info events for debugging insertion failures
     console.log(logPrefix, detail)
   }

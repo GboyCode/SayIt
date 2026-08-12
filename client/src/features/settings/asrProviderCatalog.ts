@@ -18,6 +18,8 @@ import {
 } from '@/lib/cloudAsrCreds'
 
 /** 凭据归属的平台。同平台的服务用同一种密钥形态。 */
+import { t } from '@/i18n'
+
 export type AsrPlatform = 'doubao' | 'qwen' | 'mimo'
 
 export interface AsrPlatformInfo {
@@ -26,10 +28,12 @@ export interface AsrPlatformInfo {
   consoleUrl: string
 }
 
+// label 用 getter：这是模块级常量，普通字段会把加载那一刻的语言固化下来。
+// 见 aiProviderCatalog.ts 里 AiProvider.label 的注释。
 export const ASR_PLATFORMS: Record<AsrPlatform, AsrPlatformInfo> = {
-  doubao: { label: '火山引擎', consoleUrl: 'https://console.volcengine.com/speech/app' },
-  qwen: { label: '阿里云百炼', consoleUrl: 'https://bailian.console.aliyun.com' },
-  mimo: { label: '小米', consoleUrl: 'https://xiaoai.mi.com' },
+  doubao: { get label() { return t('asrPlatform.doubao') }, consoleUrl: 'https://console.volcengine.com/speech/app' },
+  qwen: { get label() { return t('asrPlatform.qwen') }, consoleUrl: 'https://bailian.console.aliyun.com' },
+  mimo: { get label() { return t('asrPlatform.mimo') }, consoleUrl: 'https://xiaoai.mi.com' },
 }
 
 export interface AsrProviderEntry {
@@ -42,6 +46,8 @@ export interface AsrProviderEntry {
   platform: AsrPlatform
   /** 一句定位，说清「什么时候选它」 */
   blurb: string
+  /** 当前内置端点与控制台所面向的账号地区。 */
+  availability: 'mainland_china'
   /** 边说边出字（实时字幕） */
   streaming?: boolean
   /** 识别与 AI 整理一步完成，不需要单独配 AI 服务 */
@@ -59,54 +65,66 @@ export interface AsrProviderEntry {
 export const ASR_PROVIDERS: AsrProviderEntry[] = [
   {
     id: 'doubao_v2',
-    label: '豆包 ASR',
+    get label() { return t('asrProvider.doubao') },
     model: 'Doubao-Seed-ASR-2.0',
     platform: 'doubao',
-    blurb: '准确率高、速度快，日常口述首选。',
+    availability: 'mainland_china',
+    get blurb() { return t('asrProvider.doubaoBlurb') },
   },
   {
     id: 'qwen',
-    label: '千问 ASR',
+    get label() { return t('asrProvider.qwen') },
     model: 'qwen3-asr-flash',
     platform: 'qwen',
-    blurb: '多语种表现好，录完一次性出字。',
+    availability: 'mainland_china',
+    get blurb() { return t('asrProvider.qwenBlurb') },
   },
   {
     id: 'qwen_realtime',
-    label: '千问 ASR 流式',
+    get label() { return t('asrProvider.qwenRealtime') },
     model: 'qwen3-asr-flash-realtime',
     platform: 'qwen',
-    blurb: '边说边出字，悬浮窗能看到实时字幕。',
+    availability: 'mainland_china',
+    get blurb() { return t('asrProvider.qwenRealtimeBlurb') },
     streaming: true,
     needsWorkspaceId: true,
   },
   {
     id: 'qwen_omni_35_plus',
-    label: '千问 3.5 Omni Plus',
+    get label() { return t('asrProvider.omniPlus') },
     model: 'qwen3.5-omni-plus',
     platform: 'qwen',
-    blurb: '识别加整理一步完成，不用再配 AI 服务。',
+    availability: 'mainland_china',
+    get blurb() { return t('asrProvider.omniPlusBlurb') },
     omni: true,
   },
   {
     id: 'qwen_omni_35_flash',
-    label: '千问 3.5 Omni Flash',
+    get label() { return t('asrProvider.omniFlash') },
     model: 'qwen3.5-omni-flash',
     platform: 'qwen',
-    blurb: '同上，更快更便宜，质量略低。',
+    availability: 'mainland_china',
+    get blurb() { return t('asrProvider.omniFlashBlurb') },
     omni: true,
   },
   {
     id: 'mimo',
-    label: '小米 MiMo',
+    get label() { return t('asrProvider.mimo') },
     model: 'mimo-v2.5-asr',
     platform: 'mimo',
-    blurb: '备选，需要小米的 API Key。',
+    availability: 'mainland_china',
+    get blurb() { return t('asrProvider.mimoBlurb') },
   },
 ]
 
 export function findAsrProvider(id: string): AsrProviderEntry | undefined {
   return ASR_PROVIDERS.find((p) => p.id === id)
+}
+
+export function asrAvailabilityLabel(entry: AsrProviderEntry): string {
+  return entry.availability === 'mainland_china'
+    ? t('asrProvider.regionMainlandChina')
+    : ''
 }
 
 /** 同一平台下有哪些可选服务 */
@@ -284,7 +302,7 @@ export function describeAsrMissing(profile: AsrProfile): string {
   if (findAsrProvider(profile.provider)?.platform === 'doubao') {
     return describeDoubaoMissing(toDoubaoCreds(profile))
   }
-  return profile.apiKey.trim() ? '' : '还没填 API Key'
+  return profile.apiKey.trim() ? '' : t('asrProvider.missingKey')
 }
 
 /**
@@ -324,12 +342,12 @@ const RTF_THRESHOLDS = { instant: 0.15, fast: 0.3, normal: 0.5, slow: 0.8 } as c
 export function gradeAsrLatency(latencyMs: number, audioSec: number): AsrLatencyGrade {
   // 音频时长缺失或不合理时不硬猜档位，只说「已测通」，避免给出一个凭空的结论
   if (!Number.isFinite(audioSec) || audioSec <= 0) {
-    return { tier: 'normal', label: '已测通', tone: 'ok' }
+    return { tier: 'normal', label: t('grade.tested'), tone: 'ok' }
   }
   const rtf = latencyMs / (audioSec * 1000)
-  if (rtf < RTF_THRESHOLDS.instant) return { tier: 'instant', label: '极速', tone: 'ok' }
-  if (rtf < RTF_THRESHOLDS.fast) return { tier: 'fast', label: '很快', tone: 'ok' }
-  if (rtf < RTF_THRESHOLDS.normal) return { tier: 'normal', label: '正常', tone: 'ok' }
-  if (rtf < RTF_THRESHOLDS.slow) return { tier: 'slow', label: '偏慢', tone: 'warn' }
-  return { tier: 'tooSlow', label: '太慢', tone: 'bad' }
+  if (rtf < RTF_THRESHOLDS.instant) return { tier: 'instant', label: t('grade.instant'), tone: 'ok' }
+  if (rtf < RTF_THRESHOLDS.fast) return { tier: 'fast', label: t('grade.fast'), tone: 'ok' }
+  if (rtf < RTF_THRESHOLDS.normal) return { tier: 'normal', label: t('grade.normal'), tone: 'ok' }
+  if (rtf < RTF_THRESHOLDS.slow) return { tier: 'slow', label: t('grade.slow'), tone: 'warn' }
+  return { tier: 'tooSlow', label: t('grade.tooSlow'), tone: 'bad' }
 }

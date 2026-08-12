@@ -28,7 +28,7 @@ fn gzip_compress(data: &[u8]) -> Vec<u8> {
 fn gzip_decompress(data: &[u8]) -> Result<Vec<u8>, String> {
     let mut decoder = GzDecoder::new(data);
     let mut result = Vec::new();
-    decoder.read_to_end(&mut result).map_err(|e| format!("gzip 解压失败: {}", e))?;
+    decoder.read_to_end(&mut result).map_err(|e| format!("Failed to decompress gzip payload: {}", e))?;
     Ok(result)
 }
 
@@ -80,7 +80,7 @@ pub struct ServerResponse {
 
 pub fn parse_server_response(data: &[u8]) -> Result<ServerResponse, String> {
     if data.len() < 4 {
-        return Err("帧太短".into());
+        return Err("Frame is too short".into());
     }
 
     let msg_type = data[1] & 0xF0;
@@ -91,7 +91,7 @@ pub fn parse_server_response(data: &[u8]) -> Result<ServerResponse, String> {
     if msg_type == MSG_ERROR {
         // Error frame: 4 bytes header + 4 bytes error code + 4 bytes msg size + msg
         if data.len() < 12 {
-            return Err("错误帧太短".into());
+            return Err("Error frame is too short".into());
         }
         let error_code = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
         let msg_size = u32::from_be_bytes([data[8], data[9], data[10], data[11]]) as usize;
@@ -109,7 +109,7 @@ pub fn parse_server_response(data: &[u8]) -> Result<ServerResponse, String> {
     }
 
     if msg_type != MSG_SERVER_RESP {
-        return Err(format!("未知消息类型: 0x{:02X}", msg_type));
+        return Err(format!("Unknown message type: 0x{:02X}", msg_type));
     }
 
     // 根据 flags 判断是否有 sequence 字段
@@ -118,7 +118,7 @@ pub fn parse_server_response(data: &[u8]) -> Result<ServerResponse, String> {
     let header_len: usize = if has_sequence { 12 } else { 8 }; // 4 header + (4 seq) + 4 payload_size
 
     if data.len() < header_len {
-        return Err("响应帧太短".into());
+        return Err("Response frame is too short".into());
     }
 
     let payload_size_offset = if has_sequence { 8 } else { 4 };
@@ -132,7 +132,7 @@ pub fn parse_server_response(data: &[u8]) -> Result<ServerResponse, String> {
     let payload_offset = payload_size_offset + 4;
 
     if data.len() < payload_offset + payload_size {
-        return Err(format!("payload 不完整: 期望 {} 字节，实际 {}", payload_size, data.len() - payload_offset));
+        return Err(format!("Incomplete payload: expected {} bytes, received {}", payload_size, data.len() - payload_offset));
     }
 
     let raw_payload = &data[payload_offset..payload_offset + payload_size];

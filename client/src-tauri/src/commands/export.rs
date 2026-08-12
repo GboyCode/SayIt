@@ -148,7 +148,7 @@ pub async fn save_full_export(
             });
             let zip_name = format!("audio/{}", fname);
             zip.start_file(&zip_name, audio_opts).map_err(|e| e.to_string())?;
-            let bytes = fs::read(audio_path).map_err(|e| format!("读取音频失败 {}: {}", fname, e))?;
+            let bytes = fs::read(audio_path).map_err(|e| format!("Failed to read audio file {}: {}", fname, e))?;
             zip.write_all(&bytes).map_err(|e| e.to_string())?;
         }
 
@@ -159,5 +159,5 @@ pub async fn save_full_export(
         Ok(Some(clean))
     })
     .await
-    .map_err(|e| format!("导出异常: {}", e))?
+    .map_err(|e| format!("Export task failed: {}", e))?
 }

@@ -6,23 +6,26 @@ import GeneralSettingsPage from './GeneralSettingsPage'
 import AppearancePage from './AppearancePage'
 import PersonalizationPage from './PersonalizationPage'
 import DiagnosticsPage from './DiagnosticsPage'
+import type { TranslationKey } from '@/i18n'
+import { useT } from '@/i18n/useT'
 
 type SettingsView = 'general' | 'appearance' | 'personalization' | 'diagnostics'
 
 interface SettingsMenuItem {
   id: SettingsView
   icon: typeof Settings
-  label: string
+  labelKey: TranslationKey
 }
 
 const menuItems: SettingsMenuItem[] = [
-  { id: 'general', icon: Settings, label: '设置' },
-  { id: 'appearance', icon: Palette, label: '外观' },
-  { id: 'personalization', icon: User, label: '使用统计' },
-  { id: 'diagnostics', icon: Stethoscope, label: '诊断' },
+  { id: 'general', icon: Settings, labelKey: 'settingsNav.general' },
+  { id: 'appearance', icon: Palette, labelKey: 'settingsNav.appearance' },
+  { id: 'personalization', icon: User, labelKey: 'settingsNav.personalization' },
+  { id: 'diagnostics', icon: Stethoscope, labelKey: 'settingsNav.diagnostics' },
 ]
 
 export default function SettingsDialog() {
+  const t = useT()
   const navigate = useNavigate()
   const [activeView, setActiveView] = useState<SettingsView>('general')
 
@@ -31,11 +34,11 @@ export default function SettingsDialog() {
   }
 
   return (
-    <div 
+    <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
       onClick={handleClose}
     >
-      <div 
+      <div
         className="relative flex h-[85vh] w-[90vw] max-w-6xl overflow-hidden rounded-xl bg-background shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
@@ -43,7 +46,7 @@ export default function SettingsDialog() {
         <button
           onClick={handleClose}
           className="absolute right-3 top-3 z-10 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-card hover:text-foreground"
-          aria-label="关闭"
+          aria-label={t('window.close')}
         >
           <X className="h-4 w-4" />
         </button>
@@ -51,7 +54,7 @@ export default function SettingsDialog() {
         {/* 左侧菜单 */}
         <div className="w-48 border-r border-border bg-card py-8">
           <div className="space-y-0.5 px-3">
-            {menuItems.map(({ id, icon: Icon, label }) => (
+            {menuItems.map(({ id, icon: Icon, labelKey }) => (
               <button
                 key={id}
                 onClick={() => setActiveView(id)}
@@ -63,7 +66,7 @@ export default function SettingsDialog() {
                 )}
               >
                 <Icon className="h-[18px] w-[18px] shrink-0" />
-                <span>{label}</span>
+                <span>{t(labelKey)}</span>
               </button>
             ))}
           </div>

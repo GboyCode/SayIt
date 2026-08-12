@@ -1,3 +1,5 @@
+import { t } from '@/i18n'
+
 export const MAX_HOTWORDS = 1000
 export const BUILTIN_SET_WORDS_KEY = 'builtinSetWords'
 export const BUILTIN_SET_ACTIVE_KEY = 'builtinSetActive'
@@ -13,14 +15,16 @@ export interface CustomTheme {
 
 export const BUILTIN_SETS: Record<string, { label: string; description: string; words: string[] }> = {
   ai: {
-    label: 'AI 热词',
-    description: '常见 AI 模型与术语',
+    get label() { return t('dict.aiSet') },
+    get description() { return t('dict.aiSetDesc') },
+    // i18n-allow-start: 内置中文热词数据，不是界面文案
     words: [
       'ChatGPT', 'GPT', 'OpenAI', 'Claude', 'DeepSeek', '豆包', 'Gemini',
       'LLM', 'Token', 'Prompt', 'Agent', 'Ollama', '千问', '大模型',
       'OpenClaw', 'ASR', 'Codex', 'Claude Code', 'SayIt', 'Hermes',
       'Vibe Coding', 'Typeless', 'Vibe',
     ],
+    // i18n-allow-end
   },
 }
 
@@ -31,7 +35,7 @@ export function uniqueWords(words: string[]) {
 }
 
 export function parseWordsInput(raw: string) {
-  return uniqueWords(raw.split(/[,，\n]+/).map((w) => w.trim()))
+  return uniqueWords(raw.split(/[,\uFF0C\n]+/).map((w) => w.trim()))
 }
 
 export function collectAllSourceWords(

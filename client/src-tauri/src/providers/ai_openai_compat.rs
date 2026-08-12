@@ -110,7 +110,7 @@ pub async fn polish(
             diag::fail(
                 SCOPE,
                 "http_send",
-                format!("HTTP 请求失败: {}", describe_reqwest_error(&e)),
+                format!("HTTP request failed: {}", describe_reqwest_error(&e)),
             )
         })?;
 
@@ -124,7 +124,7 @@ pub async fn polish(
             SCOPE,
             "http_status",
             format!(
-                "API 返回错误 {} [{}]: {}",
+                "API returned error {} [{}]: {}",
                 status,
                 http_summary,
                 diag::truncate(&body_text, 200)
@@ -135,13 +135,13 @@ pub async fn polish(
     let body_text = resp
         .text()
         .await
-        .map_err(|e| diag::fail(SCOPE, "read_body", format!("读取响应失败: {}", e)))?;
+        .map_err(|e| diag::fail(SCOPE, "read_body", format!("Failed to read response: {}", e)))?;
     let data: serde_json::Value = serde_json::from_str(&body_text).map_err(|e| {
         diag::fail(
             SCOPE,
             "parse_json",
             format!(
-                "解析响应失败: {} [{}] 响应片段: {}",
+                "Failed to parse response: {} [{}] response excerpt: {}",
                 e,
                 http_summary,
                 diag::truncate(&body_text, 200)
@@ -158,7 +158,7 @@ pub async fn polish(
                 SCOPE,
                 "no_content_fallback_to_input",
                 &format!(
-                    "响应里没有可用内容，已回落为原文 [{}] {}",
+                    "Response contained no usable content; returned the original text [{}] {}",
                     http_summary,
                     diag::describe_json(&body_text)
                 ),
@@ -175,7 +175,7 @@ pub async fn polish(
             SCOPE,
             "empty_after_strip_thinking",
             &format!(
-                "去掉思考段后为空，已回落为原文 model={} raw_chars={}",
+                "Output was empty after removing the reasoning block; returned the original text model={} raw_chars={}",
                 config.model,
                 result_text.chars().count()
             ),
@@ -195,8 +195,8 @@ pub async fn test_connection(config: &AiProviderConfig) -> TestResult {
     let base_url = normalize_base_url(&config.api_url);
     let url = format!("{}/chat/completions", base_url);
 
-    let system_prompt = "只回复「连接正常」四个字，不要输出任何其他内容。";
-    let user_prompt = "测试";
+    let system_prompt = "Reply with OK only. Do not output anything else.";
+    let user_prompt = "Connection test";
 
     let mut body = serde_json::json!({
         "model": config.model,
@@ -240,13 +240,13 @@ pub async fn test_connection(config: &AiProviderConfig) -> TestResult {
                 .to_string();
             let reply = strip_thinking(&raw_reply);
             let detail = format!(
-                "耗时: {}ms\n模型: {}\n发送: system=\"{}\" user=\"{}\"\n回复: {}",
+                "Elapsed: {}ms\nModel: {}\nSent: system=\"{}\" user=\"{}\"\nReply: {}",
                 elapsed_ms, config.model, system_prompt, user_prompt,
-                if reply.is_empty() { "(空)" } else { &reply }
+                if reply.is_empty() { "(empty)" } else { &reply }
             );
             TestResult {
                 ok: true,
-                message: format!("连接成功 ({}ms)", elapsed_ms),
+                message: format!("Connection successful ({}ms)", elapsed_ms),
                 elapsed_ms,
                 detail,
             }
@@ -261,14 +261,14 @@ pub async fn test_connection(config: &AiProviderConfig) -> TestResult {
                     "ai/openai-compat-test",
                     "http_status",
                     format!(
-                        "API 返回 {} [{}]: {}",
+                        "API returned {} [{}]: {}",
                         status,
                         summary,
                         diag::truncate(&body, 100)
                     ),
                 ),
                 elapsed_ms,
-                detail: format!("模型: {}\n请求地址: {}", config.model, url),
+                detail: format!("Model: {}\nRequest URL: {}", config.model, url),
             }
         }
         Err(e) => TestResult {
@@ -276,35 +276,35 @@ pub async fn test_connection(config: &AiProviderConfig) -> TestResult {
             message: diag::fail(
                 "ai/openai-compat-test",
                 "http_send",
-                format!("连接失败: {}", describe_reqwest_error(&e)),
+                format!("Connection failed: {}", describe_reqwest_error(&e)),
             ),
             elapsed_ms,
-            detail: format!("模型: {}\n请求地址: {}", config.model, url),
+            detail: format!("Model: {}\nRequest URL: {}", config.model, url),
         },
     }
 }
 
-/// 将 reqwest 错误转为用户友好的中文描述
+/// Convert reqwest errors into concise diagnostic details.
 fn describe_reqwest_error(e: &reqwest::Error) -> String {
     let raw = format!("{}", e);
     if e.is_timeout() {
-        return "请求超时，请检查网络或 API 地址是否正确".to_string();
+        return "Request timed out; check the network connection and API URL".to_string();
     }
     if e.is_connect() {
         // 尝试区分 DNS / TLS / 连接拒绝
         let lower = raw.to_lowercase();
         if lower.contains("dns") || lower.contains("resolve") || lower.contains("getaddrinfo") {
-            return format!("DNS 解析失败，域名可能不存在或网络不通: {}", raw);
+            return format!("DNS lookup failed; the host may not exist or the network may be unavailable: {}", raw);
         }
         if lower.contains("ssl") || lower.contains("tls") || lower.contains("certificate")
             || lower.contains("handshake") || lower.contains("schannel")
         {
-            return format!("TLS/SSL 握手失败，可能是证书问题: {}", raw);
+            return format!("TLS/SSL handshake failed; check the certificate: {}", raw);
         }
         if lower.contains("refused") {
-            return format!("连接被拒绝，服务可能未启动: {}", raw);
+            return format!("Connection refused; the service may not be running: {}", raw);
         }
-        return format!("无法连接到服务器: {}", raw);
+        return format!("Could not connect to the server: {}", raw);
     }
     raw
 }

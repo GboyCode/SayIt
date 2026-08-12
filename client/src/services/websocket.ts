@@ -100,7 +100,7 @@ function startHeartbeat() {
       ws.send(JSON.stringify({ cmd: 'ping' }))
       // Start pong timeout
       pongTimer = setTimeout(() => {
-        addRuntimeEvent('warn', 'websocket', '心跳超时：10s 未收到 pong，主动断开')
+    addRuntimeEvent('warn', 'websocket', 'Heartbeat timed out: no pong for 10s; disconnecting')
         // Force close so onclose triggers reconnect
         try { ws?.close(4000, 'heartbeat timeout') } catch { /* ignore */ }
       }, HEARTBEAT_TIMEOUT_MS)
@@ -163,7 +163,7 @@ export function connect(cbs: WSCallbacks): Promise<void> {
     // 上一条连接还在（可能仍在 CONNECTING，或刚 open 尚未标记就绪）。这里会主动关掉它再重连，
     // 这正是「连上几秒就被自己关掉、且没发 start」最可能的元凶——记录下来看看是谁触发的。
     const prevState = ws.readyState
-    addRuntimeEvent('warn', 'websocket', 'connect() 关闭上一条未就绪连接并重连', {
+      addRuntimeEvent('warn', 'websocket', 'connect() closed the previous unready connection before reconnecting', {
       prevReadyState: prevState, // 0=CONNECTING 1=OPEN 2=CLOSING 3=CLOSED
       caller: shortCallerStack(),
     })
@@ -181,7 +181,7 @@ export function connect(cbs: WSCallbacks): Promise<void> {
     updateGlobalState('connecting')
     const wsUrl = getWSUrl()
     connectStartMs = Date.now()
-    addRuntimeEvent('info', 'websocket', '开始连接', { url: wsUrl, caller: shortCallerStack() })
+    addRuntimeEvent('info', 'websocket', 'Connecting', { url: wsUrl, caller: shortCallerStack() })
 
     const socket = new WebSocket(wsUrl)
     socket.binaryType = 'arraybuffer'
@@ -195,7 +195,7 @@ export function connect(cbs: WSCallbacks): Promise<void> {
           // ignore
         }
         updateGlobalState('error')
-        addRuntimeEvent('error', 'websocket', '连接超时（10s）', { url: wsUrl })
+      addRuntimeEvent('error', 'websocket', 'Connection timed out (10s)', { url: wsUrl })
         reject(new Error('WebSocket connection timeout'))
       }
     }, 10000)
@@ -205,7 +205,7 @@ export function connect(cbs: WSCallbacks): Promise<void> {
       openedAtMs = Date.now()
       updateGlobalState('connected')
       const wasReconnect = reconnectAttempts > 0
-      addRuntimeEvent('info', 'websocket', wasReconnect ? `重连成功（第 ${reconnectAttempts} 次尝试）` : '连接成功', {
+      addRuntimeEvent('info', 'websocket', wasReconnect ? `Reconnected on attempt ${reconnectAttempts}` : 'Connected', {
         elapsedMs: connectStartMs ? openedAtMs - connectStartMs : undefined,
       })
       reconnectAttempts = 0
@@ -228,7 +228,7 @@ export function connect(cbs: WSCallbacks): Promise<void> {
 
         switch (msg.type) {
           case 'ready':
-            addRuntimeEvent('info', 'websocket', '收到 ready', {
+          addRuntimeEvent('info', 'websocket', 'Ready received', {
               connectionId: msg.connection_id,
               asr: msg.asr,
               llm: msg.llm,
@@ -273,7 +273,7 @@ export function connect(cbs: WSCallbacks): Promise<void> {
             break
         }
       } catch (err) {
-        addRuntimeEvent('error', 'websocket', '消息解析失败', {
+        addRuntimeEvent('error', 'websocket', 'Message parsing failed', {
           error: String(err),
           raw: e.data,
         })
@@ -284,7 +284,7 @@ export function connect(cbs: WSCallbacks): Promise<void> {
       if (ws !== socket) return
       clearTimeout(timeout)
       updateGlobalState('error')
-      addRuntimeEvent('error', 'websocket', '连接发生错误', {
+      addRuntimeEvent('error', 'websocket', 'Connection error', {
         event: String(ev.type || 'error'),
       })
     }
@@ -292,7 +292,7 @@ export function connect(cbs: WSCallbacks): Promise<void> {
     socket.onclose = (ev) => {
       clearTimeout(timeout)
       if (ws !== socket) {
-        addRuntimeEvent('info', 'websocket', '忽略已失效连接的 close 事件', { code: ev.code })
+        addRuntimeEvent('info', 'websocket', 'Ignored close event from stale connection', { code: ev.code })
         return
       }
       stopHeartbeat()
@@ -305,7 +305,7 @@ export function connect(cbs: WSCallbacks): Promise<void> {
 
       if (!intentionalClose) {
         const delay = computeReconnectDelayMs(ev.code)
-        addRuntimeEvent('warn', 'websocket', `连接关闭 code=${ev.code} reason=${ev.reason || '-'}，${Math.round(delay / 1000)}s 后重连`, {
+        addRuntimeEvent('warn', 'websocket', `Connection closed code=${ev.code} reason=${ev.reason || '-'}; reconnecting in ${Math.round(delay / 1000)}s`, {
           code: ev.code,
           attempt: reconnectAttempts + 1,
           aliveMs,
@@ -316,7 +316,7 @@ export function connect(cbs: WSCallbacks): Promise<void> {
       } else {
         // 主动关闭这一路以前是完全静默的（切换供应商/地址、connect() 替换旧连接、disconnect()）。
         // 现在也记一条，标明是客户端主动关的，便于区分「服务端踢」还是「客户端自己关」。
-        addRuntimeEvent('warn', 'websocket', `主动关闭连接 code=${ev.code} reason=${ev.reason || '-'}`, {
+        addRuntimeEvent('warn', 'websocket', `Connection closed intentionally code=${ev.code} reason=${ev.reason || '-'}`, {
           code: ev.code,
           aliveMs,
           sentStart,
@@ -329,7 +329,7 @@ export function connect(cbs: WSCallbacks): Promise<void> {
 }
 
 export function disconnect() {
-  addRuntimeEvent('info', 'websocket', 'disconnect() 被调用', {
+  addRuntimeEvent('info', 'websocket', 'disconnect() called', {
     hadSocket: !!ws,
     readyState: ws?.readyState,
     caller: shortCallerStack(),
@@ -362,7 +362,7 @@ export function sendStart(opts?: {
   language?: string
 }): boolean {
   if (ws?.readyState !== WebSocket.OPEN) {
-    addRuntimeEvent('error', 'websocket', '发送 start 失败：连接未就绪')
+    addRuntimeEvent('error', 'websocket', 'Failed to send start: connection not ready')
     return false
   }
 
@@ -407,7 +407,7 @@ export function sendStart(opts?: {
     audioDropWarned = false
     return true
   } catch (err) {
-    addRuntimeEvent('error', 'websocket', '发送 start 失败', { error: String(err) })
+    addRuntimeEvent('error', 'websocket', 'Failed to send start', { error: String(err) })
     endSessionIfNeeded()
     return false
   }
@@ -419,7 +419,7 @@ export function sendStop(opts?: { pttHoldMs?: number; audioStats?: AudioStats })
   }
 
   if (ws?.readyState !== WebSocket.OPEN) {
-    addRuntimeEvent('error', 'websocket', '发送 stop 失败：连接未就绪')
+    addRuntimeEvent('error', 'websocket', 'Failed to send stop: connection not ready')
     endSessionIfNeeded()
     return false
   }
@@ -442,7 +442,7 @@ export function sendStop(opts?: { pttHoldMs?: number; audioStats?: AudioStats })
     ws.send(JSON.stringify(payload))
     return true
   } catch (err) {
-    addRuntimeEvent('error', 'websocket', '发送 stop 失败', { error: String(err) })
+    addRuntimeEvent('error', 'websocket', 'Failed to send stop', { error: String(err) })
     endSessionIfNeeded()
     return false
   }
@@ -459,7 +459,7 @@ export function sendAudio(buffer: ArrayBuffer) {
       ws.send(buffer)
       addAudioChunk(buffer)
     } catch (err) {
-      addRuntimeEvent('error', 'websocket', '发送音频失败', {
+    addRuntimeEvent('error', 'websocket', 'Failed to send audio', {
         error: String(err),
         bytes: buffer.byteLength,
       })
@@ -469,7 +469,7 @@ export function sendAudio(buffer: ArrayBuffer) {
 
   if (!audioDropWarned) {
     audioDropWarned = true
-    addRuntimeEvent('warn', 'websocket', '音频已丢弃：连接断开', { bytes: buffer.byteLength })
+    addRuntimeEvent('warn', 'websocket', 'Audio discarded: connection is closed', { bytes: buffer.byteLength })
   }
 }
 

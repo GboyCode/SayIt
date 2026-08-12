@@ -20,6 +20,7 @@ import {
   parseWordsInput,
   uniqueWords,
 } from './model'
+import { t } from '@/i18n'
 import { hotwordsReducer, initialHotwordsState } from './stateMachine'
 
 export function useHotwordsManager() {
@@ -104,7 +105,7 @@ export function useHotwordsManager() {
         nextCustomThemes = [
           {
             id: createThemeId(),
-            name: '我的主题',
+            name: t('dict.myTheme'),
             words: migratedManualWords,
           },
         ]

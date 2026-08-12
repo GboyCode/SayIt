@@ -36,7 +36,7 @@ import { getWorkMode } from '@/services/transcription'
 import { setEngineDraftDirty } from '@/stores/engineDraft'
 import { describeProviderError } from '@/lib/errorMessages'
 import {
-  AI_PROVIDERS,
+  aiProvidersForDisplay,
   blankProfile,
   checkAiKeyFormat,
   checkApiUrl,
@@ -49,12 +49,15 @@ import {
   isProfileComplete,
   profileSubtitle,
   profileTitle,
+  preferredAiProviderValue,
   providerLabel,
   resolveActiveProfile,
   type AiProfile,
   type AiProfileCheck,
 } from './aiProviderCatalog'
 import { loadAiProfiles, saveAiProfiles } from './aiProfileStore'
+import { getLocale, t } from '@/i18n'
+import { useT } from '@/i18n/useT'
 
 interface TestResult { ok: boolean; message: string; elapsed_ms: number; detail?: string }
 
@@ -114,12 +117,12 @@ function latencyTone(ms: number): FeedbackTone {
 function successMessage(model: string, ms: number): string {
   const grade = gradeLatency(ms)
   if (grade.tier === 'tooSlow') {
-    return `${model} 能连通，但一次往返 ${formatLatency(ms)} —— 太慢，不建议用于口述。`
+    return t('ai.msg.tooSlow', { model, latency: formatLatency(ms) })
   }
   if (grade.tier === 'slow') {
-    return `${model} 可用，但一次往返 ${formatLatency(ms)}，偏慢。`
+    return t('ai.msg.slow', { model, latency: formatLatency(ms) })
   }
-  return `${model} 可用，一次往返 ${formatLatency(ms)}（${grade.label}）。`
+  return t('ai.msg.ok', { model, latency: formatLatency(ms), grade: grade.label })
 }
 
 /**
@@ -132,12 +135,12 @@ function successMessage(model: string, ms: number): string {
 function successDetail(profile: AiProfile, outcome: TestOutcome): string {
   const grade = gradeLatency(outcome.elapsedMs)
   return [
-    `供应商：${providerLabel(profile.provider)}`,
-    `模型：${profile.model}`,
-    `端点：${profile.apiUrl}`,
-    `往返：${formatLatency(outcome.elapsedMs)}（${grade.label}）`,
-    outcome.reply ? `回复：${outcome.reply}` : '',
-    `时间：${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`,
+    t('ai.detail.provider', { value: providerLabel(profile.provider) }),
+    t('ai.detail.model', { value: profile.model }),
+    t('ai.detail.endpoint', { value: profile.apiUrl }),
+    t('ai.detail.roundTrip', { latency: formatLatency(outcome.elapsedMs), grade: grade.label }),
+    outcome.reply ? t('ai.detail.reply', { value: outcome.reply }) : '',
+    t('ai.detail.time', { value: new Date().toLocaleTimeString(getLocale(), { hour12: false }) }),
   ].filter(Boolean).join('\n')
 }
 
@@ -178,29 +181,31 @@ const NEUTRAL_BOX = 'bg-muted text-muted-foreground'
  */
 function describeStatus(profile: AiProfile, checking: boolean): CardStatus {
   if (checking) {
-    return { text: '测试中', box: 'bg-warning/10 text-warning-strong', spoken: '测试中', hint: '正在测试' }
+    return { text: t('ai.status.testing'), box: 'bg-warning/10 text-warning-strong', spoken: t('ai.status.testing'), hint: t('ai.status.testingHint') }
   }
 
   const check = profile.check
   if (!check) {
     return isProfileComplete(profile)
-      ? { text: '未测试', box: NEUTRAL_BOX, spoken: '未测试', hint: '还没测过 · 点刷新图标测试' }
-      : { text: '未填完', box: NEUTRAL_BOX, spoken: '未填完', hint: '缺地址、密钥或模型' }
+      ? { text: t('ai.status.untested'), box: NEUTRAL_BOX, spoken: t('ai.status.untested'), hint: t('ai.status.untestedHint') }
+      : { text: t('ai.status.incomplete'), box: NEUTRAL_BOX, spoken: t('ai.status.incomplete'), hint: t('ai.status.incompleteHint') }
   }
 
   const fresh = isCheckFresh(check)
   // 迁移来的老结论没有时间戳，所以「什么时候」这句要么给准，要么明说不知道
   const when = (verdict: string): string =>
-    check.at ? `${formatCheckedAt(check.at)}测试${verdict}` : `测试${verdict} · 时间未知`
-  const staleNote = fresh ? '' : '结果可能已过期，建议重测'
+    check.at
+      ? t('ai.status.whenKnown', { when: formatCheckedAt(check.at), verdict })
+      : t('ai.status.whenUnknown', { verdict })
+  const staleNote = fresh ? '' : t('ai.status.staleNote')
 
   if (!check.ok) {
     // 失败没有数字可显示，只能出词
     return {
-      text: '不可用',
+      text: t('ai.status.unavailable'),
       box: fresh ? 'bg-destructive/10 text-destructive-strong' : NEUTRAL_BOX,
-      spoken: '不可用',
-      hint: [when('未通过'), check.reason, staleNote].filter(Boolean).join(' · '),
+      spoken: t('ai.status.unavailable'),
+      hint: [when(t('ai.status.verdictFail')), check.reason, staleNote].filter(Boolean).join(' · '),
     }
   }
 
@@ -208,10 +213,10 @@ function describeStatus(profile: AiProfile, checking: boolean): CardStatus {
   if (ms === undefined) {
     // 迁移来的老结论可能只知道"通过"、没有耗时
     return {
-      text: '可用',
+      text: t('ai.status.available'),
       box: fresh ? 'bg-success/10 text-success-strong' : NEUTRAL_BOX,
-      spoken: '可用',
-      hint: [when('通过'), staleNote].filter(Boolean).join(' · '),
+      spoken: t('ai.status.available'),
+      hint: [when(t('ai.status.verdictPass')), staleNote].filter(Boolean).join(' · '),
     }
   }
 
@@ -228,11 +233,11 @@ function describeStatus(profile: AiProfile, checking: boolean): CardStatus {
     // 只放数字，档位靠颜色 + tooltip
     text: formatLatency(ms),
     box,
-    spoken: `可用 · ${grade.label} ${formatLatency(ms)}`,
+    spoken: t('ai.status.availableSpoken', { grade: grade.label, latency: formatLatency(ms) }),
     hint: [
-      when('通过'),
+      when(t('ai.status.verdictPass')),
       grade.label,
-      grade.tier === 'tooSlow' ? '超过 2 秒，不建议用于口述' : '',
+      grade.tier === 'tooSlow' ? t('ai.status.tooSlowNote') : '',
       staleNote,
     ].filter(Boolean).join(' · '),
   }
@@ -242,9 +247,9 @@ const DOC_URL = 'https://my.feishu.cn/wiki/EEdswP97PijkmAkSr4HcuiVlnxf'
 
 // ⓘ 里只放"选哪家"这一件事。"点一张即启用"写在卡头副标题上，不重复说；
 // 卡上标签的含义由标签自己和它的 tooltip 承担。
-const PICK_ADVICE = '首选 DeepSeek 的 deepseek-v4-flash，其次通义千问的 qwen3.6-flash。\n口述最看重出字快，这两个都够快也够便宜。'
+const pickAdvice = () => t('ai.pickAdvice')
 
-const SERVER_MODE_HINT = '服务器模式下 AI 整理由服务器完成，这一页的配置不参与。\n仍可正常新增、切换和测试；到「语音引擎」把工作模式切换为「云 API 模式」或「本地模式」后即生效。'
+const serverModeHint = () => t('ai.serverModeHint')
 
 const inputClass = 'h-9 w-full rounded-md border border-input-border bg-input-bg px-3 text-sm transition-colors focus:border-input-focus-border'
 const selectClass = 'h-9 w-full rounded-md border border-input-border bg-input-bg px-2 text-sm transition-colors focus:border-input-focus-border'
@@ -253,6 +258,7 @@ const cardIconButtonClass = 'pointer-events-auto rounded p-1 text-muted-foregrou
 const helpIconClass = 'h-3.5 w-3.5 shrink-0 cursor-help text-muted-foreground/50 transition-colors hover:text-muted-foreground'
 
 export default function AIProviderSection() {
+  useT()
   const [profiles, setProfiles] = useState<AiProfile[]>([])
   const [activeId, setActiveId] = useState('')
   const [loaded, setLoaded] = useState(false)
@@ -422,7 +428,7 @@ export default function AIProviderSection() {
    */
   function makeDraft(providerValue?: string): AiProfile {
     const active = resolveActiveProfile(profiles, activeId)
-    const target = providerValue ?? active?.provider ?? AI_PROVIDERS[0].value
+    const target = providerValue ?? active?.provider ?? preferredAiProviderValue()
     const fresh = blankProfile(target)
     const previous = lastProfileOf(target)
     return previous
@@ -482,7 +488,7 @@ export default function AIProviderSection() {
       setNotice({
         tone: 'warning',
         scope: 'editor',
-        message: draftNeedsKey ? 'API 地址不能为空。' : 'Ollama 地址不能为空。',
+        message: draftNeedsKey ? t('ai.err.apiUrlEmpty') : t('ai.err.ollamaUrlEmpty'),
       })
       return
     }
@@ -519,7 +525,7 @@ export default function AIProviderSection() {
     try {
       await persist(nextProfiles, nextActiveId)
     } catch (err) {
-      setNotice({ tone: 'error', scope: 'editor', message: '配置没能保存。', detail: String(err) })
+      setNotice({ tone: 'error', scope: 'editor', message: t('ai.err.saveFailed'), detail: String(err) })
       setSaving(false)
       return
     }
@@ -538,18 +544,18 @@ export default function AIProviderSection() {
     }
 
     if (draftNeedsKey && !base.apiKey) {
-      finish({ tone: 'warning', scope, message: `已保存 ${created} 份，密钥是空的。填入密钥后才能工作。` })
+      finish({ tone: 'warning', scope, message: t('ai.msg.savedNoKey', { count: created }) })
       return
     }
     if (models.length === 0) {
-      finish({ tone: 'warning', scope: 'editor', message: '已保存，但还没填模型名。填上才知道调哪个模型。' })
+      finish({ tone: 'warning', scope: 'editor', message: t('ai.msg.savedNoModel') })
       return
     }
     if (!withTest) {
       finish({
         tone: 'success',
         scope,
-        message: created > 1 ? `已保存 ${created} 份配置。` : '已保存。',
+        message: created > 1 ? t('ai.msg.savedCount', { count: created }) : t('ai.msg.savedOne'),
         detail: created > 1 ? withChecks.map((t) => t.model).join('\n') : undefined,
       })
       return
@@ -576,13 +582,13 @@ export default function AIProviderSection() {
         ? {
           tone: latencyTone(outcome.elapsedMs),
           scope: 'editor',
-          message: `已保存。${successMessage(profile.model, outcome.elapsedMs)}`,
+          message: t('ai.msg.savedAndTested', { result: successMessage(profile.model, outcome.elapsedMs) }),
           detail: successDetail(profile, outcome),
         }
         : {
           tone: 'error',
           scope: 'editor',
-          message: `已保存，但没通过测试：${outcome.message}`,
+          message: t('ai.msg.savedButFailed', { message: outcome.message }),
           detail: outcome.detail,
         })
       return
@@ -592,11 +598,11 @@ export default function AIProviderSection() {
     finish({
       tone: okCount === results.length ? 'success' : okCount === 0 ? 'error' : 'warning',
       scope,
-      message: `已保存 ${results.length} 份配置：${okCount} 个可用，${results.length - okCount} 个不可用。`,
+      message: t('ai.msg.savedBatch', { total: results.length, ok: okCount, fail: results.length - okCount }),
       detail: results
         .map(({ profile, outcome }) => outcome.ok
-          ? `${profile.model}：可用 ${formatLatency(outcome.elapsedMs)}（${gradeLatency(outcome.elapsedMs).label}）`
-          : `${profile.model}：不可用 —— ${outcome.message}`)
+          ? t('ai.msg.batchItemOk', { model: profile.model, latency: formatLatency(outcome.elapsedMs), grade: gradeLatency(outcome.elapsedMs).label })
+          : t('ai.msg.batchItemFail', { model: profile.model, message: outcome.message }))
         .join('\n'),
     })
   }
@@ -615,7 +621,7 @@ export default function AIProviderSection() {
       setNotice({
         tone: 'warning',
         scope,
-        message: `「${profileTitle(profile)}」还没填完，测不了。点卡上的编辑，把地址、密钥、模型补齐。`,
+        message: t('ai.msg.incompleteCard', { title: profileTitle(profile) }),
       })
       return
     }
@@ -638,7 +644,7 @@ export default function AIProviderSection() {
       setNotice({
         tone: 'error',
         scope,
-        message: `${profile.model} 不可用：${outcome.message}`,
+        message: t('ai.msg.modelFailed', { model: profile.model, message: outcome.message }),
         detail: outcome.detail,
       })
     }
@@ -667,7 +673,7 @@ export default function AIProviderSection() {
       setNotice({
         tone: 'warning',
         scope: 'list',
-        message: '没有填完的服务可测。先把地址、密钥、模型补齐，再来一键测试。',
+        message: t('ai.msg.nothingToTest'),
       })
       return
     }
@@ -702,22 +708,22 @@ export default function AIProviderSection() {
     const lines = results.map(({ target, outcome }) => {
       if (outcome.ok) {
         okCount += 1
-        return `${target.model}：可用 · ${formatLatency(outcome.elapsedMs)}`
+        return t('ai.msg.batchLineOk', { model: target.model, latency: formatLatency(outcome.elapsedMs) })
       }
       failCount += 1
-      return `${target.model}：不可用 —— ${outcome.message}`
+      return t('ai.msg.batchLineFail', { model: target.model, message: outcome.message })
     })
 
-    const parts = [`${okCount} 个可用`]
-    if (failCount > 0) parts.push(`${failCount} 个不可用`)
-    if (skipped > 0) parts.push(`${skipped} 个没填完（已跳过）`)
+    const parts = [t('ai.msg.batchOk', { count: okCount })]
+    if (failCount > 0) parts.push(t('ai.msg.batchFail', { count: failCount }))
+    if (skipped > 0) parts.push(t('ai.msg.batchSkipped', { count: skipped }))
     if (targets.length > 1) {
-      lines.push('', '这批是并发测的，耗时互相有影响，不宜横向比较；要准确数字请单个测试。')
+      lines.push('', t('ai.msg.batchNote'))
     }
     setNotice({
       tone: failCount > 0 ? 'warning' : 'success',
       scope: 'list',
-      message: `测试完成：${parts.join('，')}。`,
+      message: t('ai.msg.batchDone', { parts: parts.join(t('asr.listSeparator')) }),
       detail: lines.join('\n'),
     })
   }
@@ -751,7 +757,11 @@ export default function AIProviderSection() {
           type="button"
           role="radio"
           aria-checked={isActive}
-          aria-label={`${profileTitle(profile)}（${profileSubtitle(profile)}）·${status.spoken}`}
+          aria-label={t('common.cardStatusAria', {
+            title: profileTitle(profile),
+            subtitle: profileSubtitle(profile),
+            status: status.spoken,
+          })}
           onClick={() => handleActivate(profile.id)}
           className="absolute inset-0 rounded-lg"
         />
@@ -761,8 +771,8 @@ export default function AIProviderSection() {
               它和右边的状态标签分工不同：勾说的是"这份在被用"，标签说的是"上次测得如何"，
               所以勾旁边挂一个 tooltip 明说，避免又被读成"能用" */}
           {isActive && (
-            <Tooltip className="pointer-events-auto relative z-10 shrink-0" content="使用中">
-              <CheckCircle2 className="h-4 w-4 shrink-0 cursor-help text-success-strong" aria-label="使用中" />
+            <Tooltip className="pointer-events-auto relative z-10 shrink-0" content={t('common.inUse')}>
+              <CheckCircle2 className="h-4 w-4 shrink-0 cursor-help text-success-strong" aria-label={t('common.inUse')} />
             </Tooltip>
           )}
           {/* 字号压到 12px：模型名动辄 20 多个字符（doubao-seed-2-0-lite-260215），
@@ -786,32 +796,32 @@ export default function AIProviderSection() {
             {/* 图标 tooltip 一律是"这个按钮叫什么"，两三个字（对齐诊断页的「刷新状态」等）。
                 「会真实调用一次、按供应商计费」这种前提不属于 tooltip：它太长，
                 而且用户按下按钮的那一刻已经知道自己在测一个云服务了 */}
-            <Tooltip className="pointer-events-auto" content="测试">
+            <Tooltip className="pointer-events-auto" content={t('common.test')}>
               <button
                 type="button"
                 onClick={() => void handleCheck(profile)}
                 disabled={busy}
-                aria-label={`测试 ${profileTitle(profile)} 是否可用`}
+                aria-label={t('ai.testAria', { title: profileTitle(profile) })}
                 className={cardIconButtonClass}
               >
                 <RefreshCw className={cn('h-3.5 w-3.5', checking && 'animate-spin')} aria-hidden />
               </button>
             </Tooltip>
-            <Tooltip className="pointer-events-auto" content="编辑">
+            <Tooltip className="pointer-events-auto" content={t('common.edit')}>
               <button
                 type="button"
                 onClick={() => openEditor({ ...profile }, false)}
-                aria-label={`编辑 ${profileTitle(profile)}`}
+                aria-label={t('ai.editAria', { title: profileTitle(profile) })}
                 className={cardIconButtonClass}
               >
                 <Pencil className="h-3.5 w-3.5" aria-hidden />
               </button>
             </Tooltip>
-            <Tooltip className="pointer-events-auto" content="删除">
+            <Tooltip className="pointer-events-auto" content={t('common.delete')}>
               <button
                 type="button"
                 onClick={() => setPendingDeleteId(profile.id)}
-                aria-label={`删除 ${profileTitle(profile)}`}
+                aria-label={t('ai.deleteAria', { title: profileTitle(profile) })}
                 className={cardIconButtonClass}
               >
                 <Trash2 className="h-3.5 w-3.5" aria-hidden />
@@ -827,28 +837,28 @@ export default function AIProviderSection() {
     <Card>
       <CardContent className="p-6">
         {/* 卡头留在 fieldset 外面：整块禁用时，说明"为什么禁用"的那行字必须照常可读 */}
-        <div className="mb-3 flex items-start justify-between gap-3">
-          <div className="min-w-0">
+        <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 grow basis-[18rem]">
             <div className="flex items-center gap-2">
-              <h2 id="ai-service-heading" className="text-lg font-semibold">AI 服务</h2>
+              <h2 id="ai-service-heading" className="text-lg font-semibold">{t('ai.title')}</h2>
               {/* 徽标沿用工作模式卡上「待配置」那一款（同样的形状和 warning 配色），
                   比正文亮一档 —— 服务器模式下它是本页最需要被读到的一行。
                   完整解释挂在徽标自己的 tooltip 上，而不是塞进右边的 ⓘ：
                   「为什么不生效」和「选哪家」是两件事，各自有各自的入口，谁也别挤占谁。 */}
               {configIgnored && (
-                <Tooltip variant="light" content={SERVER_MODE_HINT}>
+                <Tooltip variant="light" content={serverModeHint()}>
                   <span className="inline-flex cursor-help items-center gap-1.5 rounded-full bg-warning/10 px-2.5 py-1 text-xs font-medium text-warning-strong">
                     <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-warning" aria-hidden />
-                    服务器模式下不生效
+                    {t('ai.serverModeBadge')}
                   </span>
                 </Tooltip>
               )}
-              <Tooltip variant="light" content={PICK_ADVICE}>
-                <Info aria-label="AI 服务说明" className={helpIconClass} />
+              <Tooltip variant="light" content={pickAdvice()}>
+                <Info aria-label={t('ai.helpAria')} className={helpIconClass} />
               </Tooltip>
             </div>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              点一张即启用，它的地址、密钥、模型会一起生效。
+              {t('ai.desc')}
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
@@ -862,7 +872,7 @@ export default function AIProviderSection() {
               disabled={busy || profiles.length === 0}
             >
               <RefreshCw className={cn('mr-1 h-3.5 w-3.5', batch && 'animate-spin')} aria-hidden />
-              {batch ? `测试中（${batch.done}/${batch.total}）` : '测试全部'}
+              {batch ? t('ai.testingBatch', { done: batch.done, total: batch.total }) : t('ai.testAll')}
             </Button>
             {/* 「新建」回到卡头右上角（和「润色模式」页同一个位置）。
                 它开的是弹窗，所以不会再出现"点了按钮、变化发生在屏幕外"的问题 */}
@@ -873,7 +883,7 @@ export default function AIProviderSection() {
               onClick={() => openEditor(makeDraft(), true)}
             >
               <Plus className="mr-1 h-3.5 w-3.5" aria-hidden />
-              新建
+              {t('common.new')}
             </Button>
           </div>
         </div>
@@ -883,10 +893,10 @@ export default function AIProviderSection() {
             而不是把整页涂灰 —— 涂灰会把"想提前配"和"想测 key"的人一起挡在外面。 */}
         <fieldset className="min-w-0">
           {!loaded ? (
-            <p className="py-2 text-sm text-muted-foreground">正在读取已保存的服务…</p>
+            <p className="py-2 text-sm text-muted-foreground">{t('ai.loading')}</p>
           ) : profiles.length === 0 ? (
             <p className="rounded-lg border border-dashed border-border px-4 py-4 text-center text-sm text-muted-foreground">
-              还没有配置 AI 服务。点右上角「新建」加一份，DeepSeek + deepseek-v4-flash 是最省事的起点。
+              {t('ai.empty')}
             </p>
           ) : (
             <div
@@ -907,7 +917,7 @@ export default function AIProviderSection() {
 
       {draft && (
         <Modal
-          title={draftIsNew ? '新建 AI 服务' : '编辑 AI 服务'}
+          title={draftIsNew ? t('ai.editorNew') : t('ai.editorEdit')}
           onClose={closeEditor}
           locked={saving}
           showCloseButton
@@ -915,14 +925,14 @@ export default function AIProviderSection() {
         >
           <div className="mt-4 space-y-3">
             <div>
-              <label htmlFor="ai-provider" className="mb-1 block text-sm text-muted-foreground">供应商</label>
+              <label htmlFor="ai-provider" className="mb-1 block text-sm text-muted-foreground">{t('ai.provider')}</label>
               <select
                 id="ai-provider"
                 value={draft.provider}
                 onChange={(e) => handleDraftProvider(e.target.value)}
                 className={selectClass}
               >
-                {AI_PROVIDERS.map((p) => (
+                {aiProvidersForDisplay().map((p) => (
                   <option key={p.value} value={p.value}>{p.label}</option>
                 ))}
               </select>
@@ -930,7 +940,7 @@ export default function AIProviderSection() {
 
             <div>
               <label htmlFor="ai-api-url" className="mb-1 block text-sm text-muted-foreground">
-                {draftProvider.keyless ? 'Ollama 地址' : 'API 地址'}
+                {draftProvider.keyless ? t('ai.ollamaUrl') : t('ai.apiUrl')}
               </label>
               <input
                 id="ai-api-url"
@@ -956,18 +966,17 @@ export default function AIProviderSection() {
                   value={draft.apiKey}
                   onChange={(v) => patchDraft({ apiKey: v })}
                   onSubmit={() => void handleSave(true)}
-                  placeholder="粘贴 API Key"
+                  placeholder={t('ai.keyPlaceholder')}
                   className={inputClass}
                 />
                 {!notice && draftKeyHint && <FormatHint text={draftKeyHint} />}
                 {/* 密钥不是凭空出现的：说一句它从哪来，免得用户以为自己看错了 */}
                 {draftKeyInherited && (
                   <p className="mt-1 text-[11px] text-muted-foreground">
-                    已沿用「{draftProvider.label}」上一份配置的地址和密钥，改个模型名即可。
+                    {t('ai.keyReused', { provider: draftProvider.label })}
                   </p>
                 )}
-                {/* 两条外链都是"我去哪弄密钥"，放在密钥这一格里。
-                    （tooltip 浮层是 pointer-events-none，链接塞进去点不到，只能留在格子下面） */}
+                {/* 密钥入口放在密钥这一格里。英文文档发布前，设置文档只对中文界面显示。 */}
                 <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1">
                   {draftProvider.consoleUrl && (
                     <button
@@ -975,20 +984,22 @@ export default function AIProviderSection() {
                       onClick={() => void shellOpen(draftProvider.consoleUrl as string)}
                       className={linkClass}
                     >
-                      打开{draftProvider.label}控制台
+                      {t('ai.openConsole', { provider: draftProvider.label })}
                       <ExternalLink className="h-3 w-3" aria-hidden />
                     </button>
                   )}
-                  <button type="button" onClick={() => void shellOpen(DOC_URL)} className={linkClass}>
-                    怎么申请密钥？看配置文档
-                    <ExternalLink className="h-3 w-3" aria-hidden />
-                  </button>
+                  {getLocale() === 'zh-CN' && (
+                    <button type="button" onClick={() => void shellOpen(DOC_URL)} className={linkClass}>
+                      {t('ai.howToGetKey')}
+                      <ExternalLink className="h-3 w-3" aria-hidden />
+                    </button>
+                  )}
                 </div>
               </div>
             )}
 
             <div>
-              <label htmlFor="ai-model" className="mb-1 block text-sm text-muted-foreground">模型</label>
+              <label htmlFor="ai-model" className="mb-1 block text-sm text-muted-foreground">{t('ai.model')}</label>
               {/* 原来这里是 <input list=...>：Chromium 会画一个下拉箭头，但它其实是个自由文本框，
                   "又是下拉又要我填"两头都不像。现在拆开——输入框只管输入，推荐名做成可点的小按钮 */}
               <div className="flex items-center gap-2">
@@ -1001,7 +1012,7 @@ export default function AIProviderSection() {
                     e.preventDefault()
                     addModel(modelInput)
                   }}
-                  placeholder={draftProvider.defaultModels[0] ?? '模型名'}
+                  placeholder={draftProvider.defaultModels[0] ?? t('ai.modelPlaceholder')}
                   className={cn(inputClass, 'flex-1')}
                 />
                 <Button
@@ -1011,7 +1022,7 @@ export default function AIProviderSection() {
                   onClick={() => addModel(modelInput)}
                   disabled={!modelInput.trim()}
                 >
-                  再加一个
+                  {t('ai.addAnother')}
                 </Button>
               </div>
 
@@ -1026,7 +1037,7 @@ export default function AIProviderSection() {
                       <button
                         type="button"
                         onClick={() => removeModel(model)}
-                        aria-label={`移除 ${model}`}
+                        aria-label={t('ai.removeModel', { model })}
                         className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive-strong"
                       >
                         <X className="h-3 w-3" aria-hidden />
@@ -1040,7 +1051,7 @@ export default function AIProviderSection() {
                   已经预先躺在上面的清单里，输入框的 placeholder 也写着它，
                   再摆一排按钮是把同一件事说第三遍。 */}
               <p className="mt-1.5 text-[11px] text-muted-foreground">
-                可以一次填多个：每个模型各存成一张卡，共用上面的地址和密钥。
+                {t('ai.multiModelHint')}
               </p>
             </div>
 
@@ -1061,10 +1072,10 @@ export default function AIProviderSection() {
                 onClick={() => void handleSave(false)}
                 disabled={busy}
               >
-                保存
+                {t('common.save')}
               </Button>
               <Button size="sm" className="h-9" onClick={() => void handleSave(true)} disabled={busy}>
-                {saving ? '处理中…' : draftModels.length > 1 ? `保存并测试 ${draftModels.length} 个` : '保存并测试'}
+                {saving ? t('common.processing') : draftModels.length > 1 ? t('ai.saveAndTestCount', { count: draftModels.length }) : t('ai.saveAndTest')}
               </Button>
             </div>
           </div>
@@ -1072,21 +1083,20 @@ export default function AIProviderSection() {
       )}
 
       {pendingDelete && (
-        <Modal title="删除这份配置？" onClose={() => setPendingDeleteId('')} panelClassName="w-[420px]">
+        <Modal title={t('ai.deleteTitle')} onClose={() => setPendingDeleteId('')} panelClassName="w-[420px]">
           <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
-            {profileTitle(pendingDelete)}（{profileSubtitle(pendingDelete)}）。
-            里面的 API Key 一起删除，恢复需要重新填一次。
+            {profileTitle(pendingDelete)} ({profileSubtitle(pendingDelete)}). {t('ai.deleteBody')}
           </p>
           <div className="mt-4 flex items-center justify-end gap-2">
             <Button variant="outline" size="sm" className="h-9" onClick={() => setPendingDeleteId('')}>
-              取消
+              {t('common.cancel')}
             </Button>
             <button
               type="button"
               onClick={() => void handleDelete(pendingDelete.id)}
               className="h-9 rounded-md border border-destructive/30 bg-destructive/5 px-3 text-sm font-medium text-destructive-strong transition-colors hover:bg-destructive/10"
             >
-              删除
+              {t('common.delete')}
             </button>
           </div>
         </Modal>

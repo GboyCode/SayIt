@@ -27,6 +27,8 @@ import { type ConfigExportSelection, type ConfigImportPreview } from '@/services
 import { CUSTOM_THEMES_KEY, normalizeCustomThemes, type CustomTheme } from '@/services/hotwords/model'
 import { getPromptPresets, getSetting, type PromptPreset } from '@/services/store'
 import { getTextReplacements, type TextReplacementRule } from '@/services/textReplacement'
+import { useT } from '@/i18n/useT'
+import { promptPresetDisplayName } from '@/i18n/displayNames'
 
 /** 头部图标底托，弹窗的视觉锚点。 */
 function IconTile({ children, tone = 'default' }: { children: ReactNode; tone?: 'default' | 'warning' }) {
@@ -59,6 +61,7 @@ function DialogShell({
   onClose: () => void
   width?: string
 }) {
+  const t = useT()
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose()
@@ -91,7 +94,7 @@ function DialogShell({
             <button
               type="button"
               onClick={onClose}
-              aria-label="关闭"
+              aria-label={t('configTransfer.close')}
               className="-mr-1.5 -mt-1 shrink-0 rounded-lg p-1.5 text-muted-foreground/50 transition-colors hover:bg-accent hover:text-foreground"
             >
               <X className="h-4 w-4" />
@@ -267,6 +270,18 @@ function Badge({ children }: { children: ReactNode }) {
 
 type ExportMode = 'full' | 'selected'
 
+function sectionLabel(kind: string, t: ReturnType<typeof useT>): string {
+  switch (kind) {
+    case 'fullConfig': return t('configTransfer.fullConfig')
+    case 'appSettings': return t('configTransfer.appSettings')
+    case 'hotwords': return t('configTransfer.hotwordGroups')
+    case 'textReplacements': return t('configTransfer.textReplacements')
+    case 'promptPresets': return t('configTransfer.promptPresets')
+    case 'appPromptRules': return t('configTransfer.appPromptRules')
+    default: return kind
+  }
+}
+
 export function ConfigExportDialog({
   onClose,
   onExport,
@@ -274,6 +289,7 @@ export function ConfigExportDialog({
   onClose: () => void
   onExport: (selection: ConfigExportSelection) => void
 }) {
+  const t = useT()
   const [mode, setMode] = useState<ExportMode>('full')
   const [themes, setThemes] = useState<CustomTheme[]>([])
   const [replacements, setReplacements] = useState<TextReplacementRule[]>([])
@@ -299,7 +315,7 @@ export function ConfigExportDialog({
         setSelectedPresetIds(customPresets.map((preset) => preset.id))
       })
       .catch((error) => {
-        if (active) setLoadError(`读取配置失败：${String(error)}`)
+        if (active) setLoadError(t('configTransfer.readFailed', { message: String(error) }))
       })
       .finally(() => {
         if (active) setLoading(false)
@@ -334,16 +350,16 @@ export function ConfigExportDialog({
     <>
       <p className="min-w-0 truncate text-xs text-muted-foreground">
         {loading
-          ? '正在读取配置…'
+          ? t('configTransfer.reading')
           : isFull
-            ? '导出为单个 JSON 文件'
+            ? t('configTransfer.singleJson')
             : selectedCount > 0
-              ? `已选 ${selectedCount} 项`
-              : '尚未选择内容'}
+              ? t('configTransfer.selectedCount', { count: selectedCount })
+              : t('configTransfer.nothingSelected')}
       </p>
       <div className="flex shrink-0 gap-2">
         <Button size="sm" variant="ghost" onClick={onClose}>
-          取消
+          {t('configTransfer.cancel')}
         </Button>
         <Button
           size="sm"
@@ -352,7 +368,7 @@ export function ConfigExportDialog({
           disabled={!isFull && (loading || Boolean(loadError) || selectedCount === 0)}
         >
           <Download className="h-3.5 w-3.5" />
-          导出
+          {t('configTransfer.export')}
         </Button>
       </div>
     </>
@@ -365,8 +381,8 @@ export function ConfigExportDialog({
           <Archive className="h-4 w-4" />
         </IconTile>
       }
-      title="导出配置"
-      description="完整配置适合换机和备份；只导出部分内容更适合分享给他人。"
+      title={t('configTransfer.exportTitle')}
+      description={t('configTransfer.exportDesc')}
       footer={footer}
       onClose={onClose}
     >
@@ -374,15 +390,15 @@ export function ConfigExportDialog({
         value={mode}
         onChange={setMode}
         options={[
-          { value: 'full', label: '完整配置' },
-          { value: 'selected', label: '选择部分内容' },
+          { value: 'full', label: t('configTransfer.fullConfig') },
+          { value: 'selected', label: t('configTransfer.selectedConfig') },
         ]}
       />
 
       {loading ? (
         <div className="mt-4 flex items-center justify-center gap-2 py-12 text-xs text-muted-foreground">
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          正在读取配置…
+          {t('configTransfer.reading')}
         </div>
       ) : loadError ? (
         <div className="mt-4 rounded-xl border border-destructive/25 bg-destructive/[0.07] px-3.5 py-2.5 text-xs text-destructive">
@@ -393,29 +409,29 @@ export function ConfigExportDialog({
           <Panel>
             <InfoRow
               icon={<SlidersHorizontal className="h-4 w-4" />}
-              title="应用设置"
-              meta="快捷键 · 界面 · 语音引擎"
+              title={t('configTransfer.appSettings')}
+              meta={t('configTransfer.appSettingsMeta')}
             />
-            <InfoRow icon={<KeyRound className="h-4 w-4" />} title="AI 供应商" badge={<Badge>含密钥</Badge>} />
+            <InfoRow icon={<KeyRound className="h-4 w-4" />} title={t('configTransfer.aiProviders')} badge={<Badge>{t('configTransfer.containsKeys')}</Badge>} />
             <InfoRow
               icon={<Tags className="h-4 w-4" />}
-              title="热词组"
-              meta={themes.length > 0 ? `${themes.length} 组` : '暂无'}
+              title={t('configTransfer.hotwordGroups')}
+              meta={themes.length > 0 ? t('configTransfer.groupCount', { count: themes.length }) : t('configTransfer.none')}
             />
             <InfoRow
               icon={<ArrowRightLeft className="h-4 w-4" />}
-              title="文本替换"
-              meta={replacements.length > 0 ? `${replacements.length} 条` : '暂无'}
+              title={t('configTransfer.textReplacements')}
+              meta={replacements.length > 0 ? t('configTransfer.ruleCount', { count: replacements.length }) : t('configTransfer.none')}
             />
             <InfoRow
               icon={<Sparkles className="h-4 w-4" />}
-              title="自定义润色模式"
-              meta={presets.length > 0 ? `${presets.length} 个` : '暂无'}
+              title={t('configTransfer.promptPresets')}
+              meta={presets.length > 0 ? t('configTransfer.presetCount', { count: presets.length }) : t('configTransfer.none')}
             />
           </Panel>
-          <WarningNote>文件含 AI 供应商密钥明文，请妥善保管，不要直接分享。</WarningNote>
+          <WarningNote>{t('configTransfer.keyWarning')}</WarningNote>
           <p className="px-0.5 text-xs leading-relaxed text-muted-foreground/70">
-            不含历史记录与录音，需要一起迁移请使用「全部数据」导出。
+            {t('configTransfer.noHistory')}
           </p>
         </div>
       ) : (
@@ -423,7 +439,7 @@ export function ConfigExportDialog({
           <section>
             <GroupLabel
               icon={<Tags className="h-3.5 w-3.5" />}
-              title="热词组"
+              title={t('configTransfer.hotwordGroups')}
               action={
                 themes.length > 1 && (
                   <TextButton
@@ -433,7 +449,7 @@ export function ConfigExportDialog({
                       )
                     }
                   >
-                    {selectedThemeIds.length === themes.length ? '清空' : '全选'}
+                    {selectedThemeIds.length === themes.length ? t('configTransfer.clear') : t('configTransfer.selectAll')}
                   </TextButton>
                 )
               }
@@ -446,27 +462,27 @@ export function ConfigExportDialog({
                     checked={selectedThemeIds.includes(theme.id)}
                     onChange={(checked) => toggleId(theme.id, checked, selectedThemeIds, setSelectedThemeIds)}
                     title={theme.name}
-                    meta={`${theme.words.length} 词`}
+                    meta={t('configTransfer.wordCount', { count: theme.words.length })}
                   />
                 ))
               ) : (
-                <EmptyRow>暂无自定义热词组</EmptyRow>
+                <EmptyRow>{t('configTransfer.noHotwords')}</EmptyRow>
               )}
             </Panel>
           </section>
 
           <section>
-            <GroupLabel icon={<ArrowRightLeft className="h-3.5 w-3.5" />} title="文本替换" />
+            <GroupLabel icon={<ArrowRightLeft className="h-3.5 w-3.5" />} title={t('configTransfer.textReplacements')} />
             <Panel>
               {replacements.length > 0 ? (
                 <ChoiceRow
                   checked={includeReplacements}
                   onChange={setIncludeReplacements}
-                  title="全部替换规则"
-                  meta={`${replacements.length} 条`}
+                  title={t('configTransfer.allReplacementRules')}
+                  meta={t('configTransfer.ruleCount', { count: replacements.length })}
                 />
               ) : (
-                <EmptyRow>暂无文本替换规则</EmptyRow>
+                <EmptyRow>{t('configTransfer.noReplacements')}</EmptyRow>
               )}
             </Panel>
           </section>
@@ -474,7 +490,7 @@ export function ConfigExportDialog({
           <section>
             <GroupLabel
               icon={<Sparkles className="h-3.5 w-3.5" />}
-              title="自定义润色模式"
+              title={t('configTransfer.promptPresets')}
               action={
                 presets.length > 1 && (
                   <TextButton
@@ -484,7 +500,7 @@ export function ConfigExportDialog({
                       )
                     }
                   >
-                    {selectedPresetIds.length === presets.length ? '清空' : '全选'}
+                    {selectedPresetIds.length === presets.length ? t('configTransfer.clear') : t('configTransfer.selectAll')}
                   </TextButton>
                 )
               }
@@ -496,19 +512,19 @@ export function ConfigExportDialog({
                     key={preset.id}
                     checked={selectedPresetIds.includes(preset.id)}
                     onChange={(checked) => toggleId(preset.id, checked, selectedPresetIds, setSelectedPresetIds)}
-                    title={preset.name}
+                    title={promptPresetDisplayName(preset)}
                   />
                 ))
               ) : (
-                <EmptyRow>暂无自定义润色模式</EmptyRow>
+                <EmptyRow>{t('configTransfer.noPresets')}</EmptyRow>
               )}
             </Panel>
           </section>
 
           <p className="px-0.5 text-xs leading-relaxed text-muted-foreground/70">
             {hasSelectable
-              ? '不含密钥和其它应用设置，可放心分享。'
-              : '暂无可分享的内容，可先创建热词组或润色模式。'}
+              ? t('configTransfer.safeToShare')
+              : t('configTransfer.nothingToShare')}
           </p>
         </div>
       )}
@@ -527,18 +543,19 @@ export function ConfigImportDialog({
   onClose: () => void
   onConfirm: () => void
 }) {
+  const t = useT()
   const isSelected = preview.scope === 'selected'
   const fileName = filePath.split(/[\\/]/).pop() || filePath
 
   const footer = (
     <>
-      <p className="min-w-0 truncate text-xs text-muted-foreground">导入后应用会自动重启</p>
+      <p className="min-w-0 truncate text-xs text-muted-foreground">{t('configTransfer.restartAfterImport')}</p>
       <div className="flex shrink-0 gap-2">
         <Button size="sm" variant="ghost" onClick={onClose}>
-          取消
+          {t('configTransfer.cancel')}
         </Button>
         <Button size="sm" variant={isSelected ? 'default' : 'destructive'} onClick={onConfirm}>
-          {isSelected ? '确认导入' : '覆盖导入'}
+          {isSelected ? t('configTransfer.confirmImport') : t('configTransfer.overwriteImport')}
         </Button>
       </div>
     </>
@@ -551,11 +568,11 @@ export function ConfigImportDialog({
           {isSelected ? <Archive className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
         </IconTile>
       }
-      title="确认导入配置"
+      title={t('configTransfer.importTitle')}
       description={
         isSelected
-          ? '已识别为部分配置，下列内容会按既定规则合并到当前数据。'
-          : '已识别为完整配置备份，文件中包含的配置会覆盖当前设置。'
+          ? t('configTransfer.selectedImportDesc')
+          : t('configTransfer.fullImportDesc')
       }
       footer={footer}
       onClose={onClose}
@@ -572,17 +589,17 @@ export function ConfigImportDialog({
         <Panel>
           {preview.sections.map((section) => (
             <div key={section.kind} className="flex items-center gap-3 px-3.5 py-2.5">
-              <span className="min-w-0 flex-1 truncate text-sm">{section.label}</span>
+              <span className="min-w-0 flex-1 truncate text-sm">{sectionLabel(section.kind, t)}</span>
               {isSelected ? (
                 <span className="shrink-0 text-xs tabular-nums text-muted-foreground/80">
-                  新增 <strong className="font-medium text-foreground">{section.added}</strong>
-                  <span className="mx-1 text-border">·</span>
-                  更新 <strong className="font-medium text-foreground">{section.updated}</strong>
-                  <span className="mx-1 text-border">·</span>
-                  跳过 <strong className="font-medium text-foreground">{section.skipped}</strong>
+                  {t('configTransfer.changeSummary', {
+                    added: section.added,
+                    updated: section.updated,
+                    skipped: section.skipped,
+                  })}
                 </span>
               ) : (
-                <span className="shrink-0 text-xs text-muted-foreground/80">将被覆盖</span>
+                <span className="shrink-0 text-xs text-muted-foreground/80">{t('configTransfer.willOverwrite')}</span>
               )}
             </div>
           ))}
@@ -590,9 +607,16 @@ export function ConfigImportDialog({
 
         {preview.warnings.length > 0 && (
           <WarningNote>
-            {preview.warnings.map((warning) => (
-              <span key={warning} className="block">
-                {warning}
+            {preview.warnings.map((warning, index) => (
+              <span key={`${warning.code}-${index}`} className="block">
+                {warning.code === 'hotwordLimit'
+                  ? t('configTransfer.hotwordLimitWarning', {
+                    current: warning.current ?? 0,
+                    limit: warning.limit ?? 0,
+                  })
+                  : warning.code === 'fullOverwrite'
+                    ? t('configTransfer.fullOverwriteWarning')
+                    : t('configTransfer.unknownWarning', { code: warning.code })}
               </span>
             ))}
           </WarningNote>
@@ -612,6 +636,7 @@ export function FullImportConfirmDialog({
   onClose: () => void
   onConfirm: () => void
 }) {
+  const t = useT()
   const fileName = filePath.split(/[\\/]/).pop() || filePath
 
   return (
@@ -621,19 +646,19 @@ export function FullImportConfirmDialog({
           <AlertTriangle className="h-4 w-4" />
         </IconTile>
       }
-      title="确认导入全部数据"
-      description="备份会覆盖当前的设置、历史记录与录音，此操作无法撤销。"
+      title={t('configTransfer.fullDataTitle')}
+      description={t('configTransfer.fullDataDesc')}
       width="w-[460px]"
       onClose={onClose}
       footer={
         <>
-          <p className="min-w-0 truncate text-xs text-muted-foreground">导入后应用会自动重启</p>
+          <p className="min-w-0 truncate text-xs text-muted-foreground">{t('configTransfer.restartAfterImport')}</p>
           <div className="flex shrink-0 gap-2">
             <Button size="sm" variant="ghost" onClick={onClose}>
-              取消
+              {t('configTransfer.cancel')}
             </Button>
             <Button size="sm" variant="destructive" onClick={onConfirm}>
-              覆盖导入
+              {t('configTransfer.overwriteImport')}
             </Button>
           </div>
         </>
@@ -646,7 +671,7 @@ export function FullImportConfirmDialog({
         </span>
       </div>
       <div className="mt-3">
-        <WarningNote>建议先导出一份当前的「全部数据」作为回滚备份，再执行覆盖导入。</WarningNote>
+        <WarningNote>{t('configTransfer.rollbackHint')}</WarningNote>
       </div>
     </DialogShell>
   )
@@ -654,16 +679,17 @@ export function FullImportConfirmDialog({
 
 /** 导入成功提示，稍后自动重启。居中图标样式与自动更新弹窗一致。 */
 export function ImportDoneDialog() {
+  const t = useT()
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/60 p-6 backdrop-blur-sm">
       <div className="animate-fade-in-scale w-[320px] rounded-2xl border border-border bg-card p-6 text-center shadow-2xl">
         <span className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-success/10">
           <Check className="h-5 w-5 text-success" strokeWidth={2.5} />
         </span>
-        <h3 className="mt-3 text-[15px] font-semibold">导入成功</h3>
+        <h3 className="mt-3 text-[15px] font-semibold">{t('configTransfer.importDone')}</h3>
         <p className="mt-1.5 flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
           <Loader2 className="h-3 w-3 animate-spin" />
-          应用即将重启以使更改生效…
+          {t('configTransfer.restarting')}
         </p>
       </div>
     </div>

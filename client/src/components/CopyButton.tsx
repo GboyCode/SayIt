@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Copy, Check } from 'lucide-react'
 import { Tooltip } from '@/components/ui/tooltip'
 import * as bridge from '@/services/bridge'
+import { useT } from '@/i18n/useT'
 
 interface CopyButtonProps {
   text: string
@@ -9,6 +10,7 @@ interface CopyButtonProps {
 }
 
 export default function CopyButton({ text, className = '' }: CopyButtonProps) {
+  const t = useT()
   const [copied, setCopied] = useState(false)
 
   const handleCopy = async () => {
@@ -23,11 +25,11 @@ export default function CopyButton({ text, className = '' }: CopyButtonProps) {
   }
 
   return (
-    <Tooltip content={copied ? '已复制' : '复制文本'}>
+    <Tooltip content={copied ? t('record.copied') : t('record.copyText')}>
       <button
         onClick={handleCopy}
         className={`inline-flex items-center rounded p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground ${className}`}
-        aria-label="复制"
+        aria-label={t('record.copy')}
       >
         {copied ? (
           <Check className="h-4 w-4 text-success" />

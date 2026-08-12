@@ -16,6 +16,7 @@
 //      把一个看得懂的错误变成一次没有日志的崩溃。
 
 use crate::commands::system::write_log_line;
+use crate::error_protocol;
 
 /// 统一前缀。所有 provider 日志共用一个标签，排查时 `Select-String '\[provider\]'`
 /// 一次就能把整条调用链捞出来，不必知道用户用的是哪家。
@@ -64,7 +65,63 @@ pub fn fail(scope: &str, stage: &str, user_msg: String) -> String {
         stage,
         truncate(&user_msg, 400)
     ));
-    user_msg
+    error_protocol::encode(classify_failure(stage, &user_msg), user_msg)
+}
+
+/// Explicit variant for failures whose semantic category is known at the call site.
+pub fn fail_code(scope: &str, stage: &str, code: &str, user_msg: String) -> String {
+    write_log_line(&format!(
+        "{} {} {} FAILED code={} {}",
+        TAG,
+        scope,
+        stage,
+        code,
+        truncate(&user_msg, 400)
+    ));
+    error_protocol::encode(code, user_msg)
+}
+
+fn contains_http_status(message: &str, expected: &[u16]) -> bool {
+    message
+        .split(|ch: char| !ch.is_ascii_digit())
+        .filter_map(|part| (part.len() == 3).then(|| part.parse::<u16>().ok()).flatten())
+        .any(|status| expected.contains(&status))
+}
+
+fn classify_failure(stage: &str, message: &str) -> &'static str {
+    let lower = message.to_ascii_lowercase();
+    if contains_http_status(message, &[401, 403])
+        || lower.contains("unauthorized")
+        || lower.contains("invalid api key")
+        || message.contains("认证失败")
+        || message.contains("鉴权")
+    {
+        return "provider_bad_key";
+    }
+    if contains_http_status(message, &[429])
+        || lower.contains("rate limit")
+        || lower.contains("quota")
+        || message.contains("欠费")
+        || message.contains("余额")
+    {
+        return "provider_rate_limit";
+    }
+    if contains_http_status(message, &[404])
+        || lower.contains("model not found")
+        || lower.contains("model does not exist")
+    {
+        return "provider_no_model";
+    }
+    if lower.contains("timeout") || lower.contains("timed out") || message.contains("超时") {
+        return "provider_timeout";
+    }
+    if matches!(
+        stage,
+        "http_send" | "connect" | "send_request" | "recv" | "recv_ack"
+    ) {
+        return "provider_unreachable";
+    }
+    "connect_failed"
 }
 
 /// 记一条「服务端返回了空结果」。
@@ -141,7 +198,7 @@ fn collect_safe_fields(value: &serde_json::Value, depth: usize, out: &mut Vec<St
 /// 「服务端回了个什么形状、有没有说明原因」，而不是用户说了什么。
 pub fn describe_json(raw: &str) -> String {
     let Ok(json) = serde_json::from_str::<serde_json::Value>(raw) else {
-        return format!("body_bytes={} (非 JSON)", raw.len());
+        return format!("body_bytes={} (non-JSON)", raw.len());
     };
     let mut parts = vec![format!("body_bytes={}", raw.len())];
     if let Some(obj) = json.as_object() {
@@ -179,6 +236,14 @@ pub fn http_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classifies_provider_failures_before_the_detail_is_translated() {
+        assert_eq!(classify_failure("http_status", "HTTP 401 Unauthorized"), "provider_bad_key");
+        assert_eq!(classify_failure("http_status", "HTTP 429 Too Many Requests"), "provider_rate_limit");
+        assert_eq!(classify_failure("http_send", "request timed out"), "provider_timeout");
+        assert_eq!(classify_failure("connect", "socket closed"), "provider_unreachable");
+    }
 
     /// 关键回归：按字节切中文会 panic。历史上 doubao / ollama / qwen / mimo 四处
     /// 各有一份 `&s[..n]` 的实现，只要供应商回一段中文报错就崩 —— 而那正是出错的时刻。
@@ -242,6 +307,6 @@ mod tests {
     #[test]
     fn describe_json_handles_non_json() {
         let out = describe_json("<html>502 Bad Gateway</html>");
-        assert!(out.contains("非 JSON"), "{}", out);
+        assert!(out.contains("non-JSON"), "{}", out);
     }
 }

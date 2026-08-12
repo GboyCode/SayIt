@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   canonicalizePTTShortcut,
   displayPTTShortcut,
+  getAcceleratorShortcutValidationError,
+  getPTTShortcutWarning,
   getPTTShortcutValidationError,
   isValidPTTShortcut,
   parsePTTShortcut,
@@ -41,6 +43,25 @@ describe('PTT 物理组合键', () => {
     expect(getPTTShortcutValidationError('ControlLeft+ControlRight+KeyK')).toContain('左右')
     expect(getPTTShortcutValidationError('MetaLeft+KeyL')).toContain('系统组合')
     expect(getPTTShortcutValidationError('AltLeft+F4')).toContain('系统组合')
+    expect(getPTTShortcutValidationError('MetaLeft+KeyK')).not.toBeNull()
+    expect(getPTTShortcutValidationError('AltLeft+Space')).not.toBeNull()
+    expect(isValidPTTShortcut('ControlLeft+MetaLeft')).toBe(true)
+  })
+
+  it('提示右 Shift 的筛选键风险，但仍允许保存', () => {
+    expect(getPTTShortcutWarning('ShiftRight')).toContain('筛选键')
+    expect(getPTTShortcutWarning('ControlLeft+ShiftRight')).toContain('筛选键')
+    expect(getPTTShortcutWarning('AltRight')).toBeNull()
+    expect(isValidPTTShortcut('ShiftRight')).toBe(true)
+  })
+
+  it('通用组合键同样拒绝 Windows 保留快捷键', () => {
+    expect(getAcceleratorShortcutValidationError('Control+Alt+Delete')).not.toBeNull()
+    expect(getAcceleratorShortcutValidationError('Alt+Tab')).not.toBeNull()
+    expect(getAcceleratorShortcutValidationError('Alt+Space')).not.toBeNull()
+    expect(getAcceleratorShortcutValidationError('Control+Shift+Escape')).not.toBeNull()
+    expect(getAcceleratorShortcutValidationError('Super+K')).not.toBeNull()
+    expect(getAcceleratorShortcutValidationError('CommandOrControl+K')).toBeNull()
   })
 
   it('可与免提 accelerator 做语义冲突比较', () => {

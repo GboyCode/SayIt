@@ -17,6 +17,8 @@ import { reconnectProvider } from '@/services/recorder'
 import { getSetting, setSetting } from '@/services/store'
 import { setEngineDraftDirty } from '@/stores/engineDraft'
 import { describeServerError } from '@/lib/errorMessages'
+import { t } from '@/i18n'
+import { useT } from '@/i18n/useT'
 
 interface ServiceResult {
   tone: FeedbackTone
@@ -24,13 +26,8 @@ interface ServiceResult {
   detail?: string
 }
 
-const LANGUAGES = [
-  { value: 'auto', label: '自动' },
-  { value: 'zh', label: '中文' },
-  { value: 'en', label: '英文' },
-] as const
-
 export default function ServerSection() {
+  const t = useT()
   const [backendBaseUrl, setBackendBaseUrl] = useState('')
   /** 已保存的地址。输入框与它不一致就是「未保存」 */
   const [savedBaseUrl, setSavedBaseUrl] = useState('')
@@ -73,16 +70,16 @@ export default function ServerSection() {
     if (payload.asr === false) {
       return {
         tone: 'warning',
-        message: `${prefix}，能连上，但这台服务器的语音识别没有就绪，现在还不能用来口述。检查服务端的 ASR 模型是否加载成功。`,
+        message: t('server.asrNotReady', { prefix }),
       }
     }
     if (payload.llm === false) {
       return {
         tone: 'success',
-        message: `${prefix}，连接成功。这台服务器只提供语音识别，没有开启 AI 整理——口述出来的是原始转写，不会润色。`,
+        message: t('server.noAi', { prefix }),
       }
     }
-    return { tone: 'success', message: `${prefix}，连接成功，语音识别与 AI 整理都可用。` }
+    return { tone: 'success', message: t('server.allGood', { prefix }) }
   }
 
   /**
@@ -96,7 +93,7 @@ export default function ServerSection() {
     if (busy) return
     const normalized = normalize(backendBaseUrl)
     if (!normalized) {
-      setResult({ tone: 'warning', message: '服务地址不能为空。' })
+      setResult({ tone: 'warning', message: t('server.urlEmpty') })
       return
     }
     try {
@@ -104,7 +101,7 @@ export default function ServerSection() {
     } catch {
       setResult({
         tone: 'warning',
-        message: '这不是一个合法的网址。要带上 https:// 或 http:// 前缀，例如 https://sayitapp.site。',
+        message: t('server.urlInvalid'),
       })
       return
     }
@@ -120,19 +117,19 @@ export default function ServerSection() {
       // 让左下角连接状态反映新配置（改成错误地址后应显示未连接，而非仍旧"已连接"）
       reconnectProvider()
     } catch (error) {
-      setResult({ tone: 'error', message: '地址没能保存。', detail: String(error) })
+      setResult({ tone: 'error', message: t('server.saveFailed'), detail: String(error) })
       setBusy(false)
       return
     }
 
     try {
       const payload = await probeHealth(normalized)
-      setResult(describeHealth(payload, '已保存'))
+      setResult(describeHealth(payload, t('server.savedPrefix')))
     } catch (error) {
       const friendly = describeServerError(error, normalize(normalized) !== normalize(defaultBaseUrl))
       setResult({
         tone: 'error',
-        message: `地址已保存，但连不上：${friendly.message}`,
+        message: t('server.savedButUnreachable', { message: friendly.message }),
         detail: friendly.detail,
       })
     } finally {
@@ -152,12 +149,12 @@ export default function ServerSection() {
       setEngineDraftDirty(false)
       reconnectProvider()
       const payload = await probeHealth(next)
-      setResult(describeHealth(payload, `已恢复默认地址 ${next}`))
+      setResult(describeHealth(payload, t('server.restoredPrefix', { url: next })))
     } catch (error) {
       const friendly = describeServerError(error, false)
       setResult({
         tone: 'error',
-        message: `已恢复默认地址，但连不上：${friendly.message}`,
+        message: t('server.restoredButUnreachable', { message: friendly.message }),
         detail: friendly.detail,
       })
     } finally {
@@ -169,12 +166,12 @@ export default function ServerSection() {
     <>
       <Card>
         <CardContent className="p-6">
-          <h2 className="text-lg font-semibold">服务地址</h2>
+          <h2 className="text-lg font-semibold">{t('server.title')}</h2>
           <p className="mt-1 flex items-center gap-1 text-sm text-muted-foreground">
-            输入你部署的 SayIt 服务器地址，保存后客户端会自动连接。
+            {t('server.desc')}
             <Tooltip
               variant="light"
-              content={'默认地址 sayitapp.site 是作者提供的免费体验服务器，已内置语音识别与 AI 功能，方便快速试用。\n由于服务器运行存在成本，服务不保证长期稳定可用。\n如需稳定使用，建议使用本地识别、接入豆包 API，或自行部署后端服务。'}
+              content={t('server.help')}
             >
               <Info className="h-3.5 w-3.5 shrink-0 cursor-help text-muted-foreground transition-colors hover:text-foreground" />
             </Tooltip>
@@ -183,13 +180,13 @@ export default function ServerSection() {
           <div className="mt-4">
             <div className="mb-1.5 flex items-center gap-2">
               <label htmlFor="server-base-url" className="text-sm text-muted-foreground">
-                服务地址
+                {t('server.title')}
               </label>
               {/* 输入框内容只活在 local state 里，切页就没了。原来这件事完全无提示，
                   用户会以为改完就生效了。 */}
               {isDirty && (
                 <span className="rounded-full bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning-strong">
-                  未保存
+                  {t('server.unsaved')}
                 </span>
               )}
             </div>
@@ -206,11 +203,11 @@ export default function ServerSection() {
                 className="h-9 min-w-[16rem] flex-1 rounded-md border border-input-border bg-input-bg px-3 text-sm transition-colors focus:border-input-focus-border"
               />
               <Button size="sm" className="h-9 shrink-0" onClick={() => void handleSaveAndTest()} disabled={busy}>
-                {busy ? '保存并测试中…' : '保存并测试'}
+                {busy ? t('server.savingAndTesting') : t('server.saveAndTest')}
               </Button>
               {isCustom && (
                 <Button size="sm" variant="ghost" className="h-9 shrink-0" onClick={() => void handleResetDefault()} disabled={busy}>
-                  恢复默认
+                  {t('server.restoreDefault')}
                 </Button>
               )}
             </div>
@@ -233,18 +230,22 @@ export default function ServerSection() {
 
       <Card>
         <CardContent className="p-6">
-          <h2 id="server-language-heading" className="mb-3 text-lg font-semibold">识别语言</h2>
+          <h2 id="server-language-heading" className="mb-3 text-lg font-semibold">{t('server.languageTitle')}</h2>
           <Segmented
             labelledBy="server-language-heading"
             value={asrLanguage}
-            options={LANGUAGES}
+            options={[
+              { value: 'auto', label: t('common.auto') },
+              { value: 'zh', label: t('local.lang.zh') },
+              { value: 'en', label: t('local.lang.en') },
+            ]}
             onChange={(value) => { setAsrLanguage(value); void setSetting('server.language', value) }}
           />
           {/* 说清作用范围：这个值只跟着服务器模式走（随每次识别发给服务端，
               由 asr.py 的 _resolve_language 映射成 Chinese/English，auto = 让模型自检）。
               本地模式有它自己的一份，云 API 模式没有这个选项。 */}
           <p className="mt-2 text-xs text-muted-foreground">
-            只影响服务器模式的识别。大部分场景选「自动」；固定只说一种语言时选对应项更稳——短句上自动检测偶尔会认错语种。
+            {t('server.languageNote')}
           </p>
         </CardContent>
       </Card>

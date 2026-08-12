@@ -17,10 +17,17 @@ import MicrophoneSection from './MicrophoneSection'
 import type { MicVolumeLevel } from './MicrophoneSection'
 import { ComboShortcutInput, PTTShortcutInput } from './ShortcutInputs'
 import { pttShortcutConflictsWithAccelerator } from '@/lib/shortcutKeys'
+import { t, type LanguagePreference, type TranslationKey } from '@/i18n'
+import { useT } from '@/i18n/useT'
+import { getLanguagePreference, switchLanguage } from '@/stores/language'
 
-const HANDS_FREE_HELP = '可以设置哪些按键？\n支持单个常用按键（如右 Alt、Caps Lock、F1–F12）、“修饰键 + 主键”组合，也可以使用鼠标侧键或中键。\n\n绑定鼠标按键有什么影响？\n绑定侧键后，原来的前进 / 后退功能会被占用；绑定中键后，打开新标签页、自动滚动等功能可能无法使用。'
-
-const PTT_HELP = '可以设置哪些按键？\n支持单个常用按键（如右 Shift、Caps Lock、F1–F12）、“修饰键 + 主键”组合、Ctrl + Win 这类纯修饰键组合，也可以使用鼠标侧键或中键。\n\n纯修饰键会影响系统操作吗？\n这些按键仍会传给 Windows，某些组合可能同时打开开始菜单等系统界面，建议设置后在常用应用中试用。\n\n绑定鼠标按键有什么影响？\n绑定侧键后，原来的前进 / 后退功能会被占用；绑定中键后，打开新标签页、自动滚动等功能可能无法使用。'
+/** 语言名一律用该语言自己的写法（English / 简体中文），不做翻译 —— 看不懂当前
+ *  界面语言的人，正是靠认出自己的语言名才能切回去的。 */
+const LANGUAGE_OPTIONS = [
+  { value: 'auto', labelKey: 'language.auto' },
+  { value: 'zh-CN', labelKey: 'language.zhCN' },
+  { value: 'en', labelKey: 'language.en' },
+] as const satisfies readonly { value: LanguagePreference; labelKey: TranslationKey }[]
 
 function ShortcutLabel({ label, help }: { label: string; help: string }) {
   return (
@@ -28,7 +35,7 @@ function ShortcutLabel({ label, help }: { label: string; help: string }) {
       <span>{label}</span>
       <Tooltip variant="light" content={help}>
         <Info
-          aria-label={`${label}说明`}
+          aria-label={t('settings.helpAria', { label })}
           className="h-3.5 w-3.5 shrink-0 cursor-help text-muted-foreground/50 transition-colors hover:text-muted-foreground"
         />
       </Tooltip>
@@ -37,6 +44,8 @@ function ShortcutLabel({ label, help }: { label: string; help: string }) {
 }
 
 export default function GeneralSettingsPage() {
+  const t = useT()
+  const [languagePreference, setLanguagePreference] = useState<LanguagePreference>('auto')
   const [autoLaunch, setAutoLaunch] = useState(false)
   const [autoCheckUpdate, setAutoCheckUpdate] = useState(true)
   const [mics, setMics] = useState<MediaDeviceInfo[]>([])
@@ -99,6 +108,7 @@ export default function GeneralSettingsPage() {
         if (!cancelled) setAnimate(true)
       }))
     })()
+    getLanguagePreference().then(setLanguagePreference).catch(() => { })
     getSetting('selectedMic', '').then(setSelectedMic)
     getSetting('shortcutPTT', 'ShiftRight').then((value) => setPttKey(value as string))
     getSetting('shortcutHandsFree', 'AltRight').then((value) => setHandsFreeKey(value as string))
@@ -106,6 +116,18 @@ export default function GeneralSettingsPage() {
     return () => { cancelled = true }
   }, [])
 
+  // 先切内存里的语言让界面立刻响应，再落库。失败时把选中项回滚到真实的持久化值，
+  // 不留「按钮已高亮但其实没保存」这种假成功。
+  const handleLanguageChange = async (next: LanguagePreference) => {
+    const previous = languagePreference
+    setLanguagePreference(next)
+    try {
+      await switchLanguage(next)
+    } catch {
+      setLanguagePreference(previous)
+      await switchLanguage(previous).catch(() => { })
+    }
+  }
   const toggleAutoLaunch = async () => { const next = !autoLaunch; setAutoLaunch(next); await bridge.setAutoLaunch(next) }
   const toggleAutoCheckUpdate = async () => { const next = !autoCheckUpdate; setAutoCheckUpdate(next); await setSetting('autoCheckUpdate', next) }
   const handleMicChange = async (deviceId: string) => { setSelectedMic(deviceId); await setSetting('selectedMic', deviceId); await refreshRecorderSettings() }
@@ -124,21 +146,21 @@ export default function GeneralSettingsPage() {
   const validatePTT = useCallback(async (value: string) => {
     if (!value) return null
     if (pttShortcutConflictsWithAccelerator(value, handsFreeKey)) {
-      return '与「免提模式」的快捷键相同，请更换一个按键'
+      return t('settings.shortcuts.conflictHandsFree')
     }
     const presetShortcuts = await getPresetShortcuts()
     if (Object.values(presetShortcuts).some(
       (shortcut) => pttShortcutConflictsWithAccelerator(value, shortcut),
-    )) return '该按键已被 AI 整理的预设切换快捷键占用，请更换'
+    )) return t('settings.shortcuts.conflictPreset')
     return null
   }, [handsFreeKey])
   const validateHandsFree = useCallback(async (value: string) => {
     if (!value) return null
     if (pttShortcutConflictsWithAccelerator(pttKey, value)) {
-      return '与「按住说话」的快捷键相同，请更换一个按键'
+      return t('settings.shortcuts.conflictPtt')
     }
     const presetShortcuts = await getPresetShortcuts()
-    if (Object.values(presetShortcuts).includes(value)) return '该按键已被 AI 整理的预设切换快捷键占用，请更换'
+    if (Object.values(presetShortcuts).includes(value)) return t('settings.shortcuts.conflictPreset')
     return null
   }, [pttKey])
 
@@ -182,10 +204,10 @@ export default function GeneralSettingsPage() {
       }, 5000)
     } catch (err) {
       const msg = err instanceof DOMException && err.name === 'NotFoundError'
-        ? '未检测到麦克风设备，请连接麦克风后重试'
+        ? t('mic.error.notFound')
         : err instanceof DOMException && err.name === 'NotAllowedError'
-          ? '麦克风权限被拒绝，请在系统设置中允许访问麦克风'
-          : '麦克风访问失败，请检查设备连接'
+          ? t('mic.error.denied')
+          : t('mic.error.failed')
       setMicError(msg)
       setTesting(false); setVolumeLevel('idle')
     }
@@ -193,11 +215,27 @@ export default function GeneralSettingsPage() {
 
   return (
     <div className="mx-auto max-w-4xl p-8">
-      <h1 className="mb-6 text-2xl font-bold">设置</h1>
+      <h1 className="mb-6 text-2xl font-bold">{t('settings.title')}</h1>
       <div className="space-y-6">
+        {/* 界面语言排在最前：看不懂界面的人做不了下面任何一件事。
+            这张卡自己走 t()，所以切换后它连自己的标题一起变，用户能立刻确认生效了。 */}
         <Card>
           <CardContent className="p-6">
-            <h2 className="text-lg font-semibold">键盘快捷键</h2>
+            <h2 className="text-lg font-semibold">{t('settings.general.language.title')}</h2>
+            <p className="mt-1 text-sm text-muted-foreground">{t('settings.general.language.hint')}</p>
+            <div className="mt-4 flex gap-2" style={ready ? undefined : { visibility: 'hidden' }}>
+              {LANGUAGE_OPTIONS.map((opt) => (
+                <button key={opt.value} type="button" onClick={() => void handleLanguageChange(opt.value)}
+                  className={`rounded-md border px-3 py-1.5 text-sm ${animate ? 'transition-colors' : ''} ${languagePreference === opt.value ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-card text-foreground hover:bg-accent'}`}
+                >{t(opt.labelKey)}</button>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-6">
+            <h2 className="text-lg font-semibold">{t('settings.shortcuts.title')}</h2>
             {/* ⚠ 这是「按 Esc 能取消」在整个界面上的**唯一**出处 —— 悬浮窗上那行提示已经
                 去掉了（见 overlay/Overlay.tsx 的 thinking 分支）。删掉这句，这个能力就没有
                 任何地方告诉用户了。
@@ -205,22 +243,22 @@ export default function GeneralSettingsPage() {
                 「录音也不会保留」要写明：取消和「录了但没出字」在用户眼里很容易混。
                 「录音或识别处理」是两个阶段，别连写 —— Esc 在两个阶段都能按。 */}
             <p className="mb-4 mt-1 text-xs text-muted-foreground">
-              录音或识别处理期间按 Esc 可以取消本次识别，不会插入文字，录音也不会保留。
+              {t('settings.shortcuts.escHint')}
             </p>
             <div className="space-y-4">
               <ComboShortcutInput
                 value={handsFreeKey}
                 onChange={handleHandsFreeChange}
                 validate={validateHandsFree}
-                label={<ShortcutLabel label="免提模式" help={HANDS_FREE_HELP} />}
-                description="适合持续说话：按一次开始录音，再按一次结束，全程无需按住快捷键"
+                label={<ShortcutLabel label={t('settings.shortcuts.handsFree')} help={t('settings.shortcuts.handsFreeHelp')} />}
+                description={t('settings.shortcuts.handsFreeDesc')}
               />
               <PTTShortcutInput
                 value={pttKey}
                 onChange={handlePTTChange}
                 validate={validatePTT}
-                label={<ShortcutLabel label="按住说话" help={PTT_HELP} />}
-                description="适合随按随说：完整按下设定的按键或组合后开始录音，松开任意一个按键即结束"
+                label={<ShortcutLabel label={t('settings.shortcuts.ptt')} help={t('settings.shortcuts.pttHelp')} />}
+                description={t('settings.shortcuts.pttDesc')}
               />
             </div>
           </CardContent>
@@ -233,25 +271,25 @@ export default function GeneralSettingsPage() {
 
         <Card>
           <CardContent className="space-y-4 p-6">
-            <h2 className="text-lg font-semibold">偏好设置</h2>
+            <h2 className="text-lg font-semibold">{t('settings.prefs.title')}</h2>
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm font-medium">录音就绪提示音</p>
-                <p className="text-xs text-muted-foreground">按下热键后，录音准备好时播放一声短促提示音</p>
+                <p className="text-sm font-medium">{t('settings.prefs.readySound')}</p>
+                <p className="text-xs text-muted-foreground">{t('settings.prefs.readySoundDesc')}</p>
               </div>
               <Switch checked={readySoundEnabled} onChange={() => void toggleReadySound()} noAnimation={!animate} hidden={!ready} />
             </div>
             <div className="flex items-center justify-between border-t border-border pt-4">
               <div>
-                <p className="text-sm font-medium">录音时静音系统声音</p>
-                <p className="text-xs text-muted-foreground">按住说话期间临时静音外放，避免被麦克风录入</p>
+                <p className="text-sm font-medium">{t('settings.prefs.muteSystemAudio')}</p>
+                <p className="text-xs text-muted-foreground">{t('settings.prefs.muteSystemAudioDesc')}</p>
               </div>
               <Switch checked={muteSystemAudio} onChange={() => void toggleMuteSystemAudio()} noAnimation={!animate} hidden={!ready} />
             </div>
             <div className="flex items-center justify-between border-t border-border pt-4">
               <div>
-                <p className="text-sm font-medium">插入文本后保护剪贴板</p>
-                <p className="text-xs text-muted-foreground">插入完成后自动还原为插入前的剪贴板内容，避免占用剪贴板</p>
+                <p className="text-sm font-medium">{t('settings.prefs.protectClipboard')}</p>
+                <p className="text-xs text-muted-foreground">{t('settings.prefs.protectClipboardDesc')}</p>
               </div>
               <Switch checked={protectClipboard} onChange={() => void toggleProtectClipboard()} noAnimation={!animate} hidden={!ready} />
             </div>
@@ -264,8 +302,8 @@ export default function GeneralSettingsPage() {
           <CardContent className="p-6">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h2 className="text-lg font-semibold">历史记录</h2>
-                <p className="mt-1 text-sm text-muted-foreground">保存每次转写的文本与录音到本地历史，可随时回看、复制和重新识别。关闭后不再保存新的记录（适合与他人共用的电脑）；已有记录不会被删除，可在历史页手动清除。</p>
+                <h2 className="text-lg font-semibold">{t('settings.history.title')}</h2>
+                <p className="mt-1 text-sm text-muted-foreground">{t('settings.history.desc')}</p>
               </div>
               <Switch checked={historyEnabled} onChange={() => void toggleHistoryEnabled()} noAnimation={!animate} hidden={!ready} />
             </div>
@@ -276,19 +314,19 @@ export default function GeneralSettingsPage() {
           <CardContent className="p-6">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h2 className="text-lg font-semibold">音频保留</h2>
-                <p className="mt-1 text-sm text-muted-foreground">录音结束后自动保存音频文件到本地，可在历史记录中回放和重新识别。</p>
+                <h2 className="text-lg font-semibold">{t('settings.audio.title')}</h2>
+                <p className="mt-1 text-sm text-muted-foreground">{t('settings.audio.desc')}</p>
               </div>
               <Switch checked={audioRetentionEnabled} onChange={() => void toggleAudioRetention()} noAnimation={!animate} hidden={!ready} />
             </div>
             {audioRetentionEnabled && (
               <div className="mt-4">
-                <label className="text-sm text-muted-foreground">保留时长</label>
+                <label className="text-sm text-muted-foreground">{t('settings.audio.retentionLabel')}</label>
                 <div className="mt-2 flex gap-2" style={ready ? undefined : { visibility: 'hidden' }}>
-                  {([{ value: 7, label: '7 天' }, { value: 30, label: '1 个月' }, { value: 90, label: '3 个月' }, { value: -1, label: '永久' }] as const).map((opt) => (
+                  {([{ value: 7, labelKey: 'settings.retention.7d' }, { value: 30, labelKey: 'settings.retention.1m' }, { value: 90, labelKey: 'settings.retention.3m' }, { value: -1, labelKey: 'settings.retention.forever' }] as const satisfies readonly { value: number; labelKey: TranslationKey }[]).map((opt) => (
                     <button key={opt.value} type="button" onClick={() => void handleAudioRetentionDaysChange(opt.value)}
                       className={`rounded-md border px-3 py-1.5 text-sm ${animate ? 'transition-colors' : ''} ${audioRetentionDays === opt.value ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-card text-foreground hover:bg-accent'}`}
-                    >{opt.label}</button>
+                    >{t(opt.labelKey)}</button>
                   ))}
                 </div>
               </div>
@@ -299,15 +337,15 @@ export default function GeneralSettingsPage() {
         <Card>
           <CardContent className="p-6">
             <div>
-              <h2 className="text-lg font-semibold">日志保留</h2>
-              <p className="mt-1 text-sm text-muted-foreground">运行日志用于排查问题，超过保留时长的日志将自动清理。</p>
+              <h2 className="text-lg font-semibold">{t('settings.log.title')}</h2>
+              <p className="mt-1 text-sm text-muted-foreground">{t('settings.log.desc')}</p>
             </div>
             <div className="mt-4">
               <div className="flex gap-2" style={ready ? undefined : { visibility: 'hidden' }}>
-                {([{ value: 7, label: '7 天' }, { value: 15, label: '15 天' }, { value: 30, label: '1 个月' }, { value: 90, label: '3 个月' }] as const).map((opt) => (
+                {([{ value: 7, labelKey: 'settings.retention.7d' }, { value: 15, labelKey: 'settings.retention.15d' }, { value: 30, labelKey: 'settings.retention.1m' }, { value: 90, labelKey: 'settings.retention.3m' }] as const satisfies readonly { value: number; labelKey: TranslationKey }[]).map((opt) => (
                   <button key={opt.value} type="button" onClick={() => void handleLogRetentionDaysChange(opt.value)}
                     className={`rounded-md border px-3 py-1.5 text-sm ${animate ? 'transition-colors' : ''} ${logRetentionDays === opt.value ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-card text-foreground hover:bg-accent'}`}
-                  >{opt.label}</button>
+                  >{t(opt.labelKey)}</button>
                 ))}
               </div>
             </div>

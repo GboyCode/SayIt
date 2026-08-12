@@ -1,6 +1,8 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import {
   AI_PROVIDERS,
+  aiProvidersForDisplay,
+  blankProfile,
   checkAiKeyFormat,
   checkApiUrl,
   extractTestReply,
@@ -14,10 +16,12 @@ import {
   parseProfiles,
   profileSubtitle,
   profileTitle,
+  preferredAiProviderValue,
   resolveActiveProfile,
   type AiProfile,
   type LegacyProviderData,
 } from '../aiProviderCatalog'
+import { setLocale } from '@/i18n'
 
 /**
  * 这组断言守住「AI 服务」页最容易回归的几件事：
@@ -43,6 +47,24 @@ describe('AI_PROVIDERS 清单', () => {
 
   it('只有 Ollama 是免密钥的本机服务', () => {
     expect(AI_PROVIDERS.filter((p) => p.keyless).map((p) => p.value)).toEqual(['ollama'])
+  })
+})
+
+describe('地区相关的供应商默认值', () => {
+  afterEach(() => setLocale('zh-CN'))
+
+  it('英文界面优先 OpenAI-compatible', () => {
+    setLocale('en')
+    expect(preferredAiProviderValue()).toBe('openai_compat')
+    expect(aiProvidersForDisplay()[0].value).toBe('openai_compat')
+    expect(blankProfile().provider).toBe('openai_compat')
+  })
+
+  it('中文界面保持 DeepSeek 优先', () => {
+    setLocale('zh-CN')
+    expect(preferredAiProviderValue()).toBe('deepseek')
+    expect(aiProvidersForDisplay()[0].value).toBe('deepseek')
+    expect(blankProfile().provider).toBe('deepseek')
   })
 })
 
@@ -247,11 +269,15 @@ describe('isCheckFresh', () => {
 describe('formatCheckedAt', () => {
   const now = new Date('2026-08-03T12:00:00Z').getTime()
 
+  // 断言"选了哪个粒度"，不写死具体文案：相对时间现在交给 Intl.RelativeTimeFormat
+  // 渲染（英文的单复数没法用一条模板覆盖），所以文案随语言与 CLDR 走，不该锁死。
+  const rtf = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto' })
+
   it('按最粗的合适粒度说"多久之前"', () => {
     expect(formatCheckedAt(now - 30 * 1000, now)).toBe('刚刚')
-    expect(formatCheckedAt(now - 5 * 60 * 1000, now)).toBe('5 分钟前')
-    expect(formatCheckedAt(now - 3 * 3600 * 1000, now)).toBe('3 小时前')
-    expect(formatCheckedAt(now - 50 * 3600 * 1000, now)).toBe('2 天前')
+    expect(formatCheckedAt(now - 5 * 60 * 1000, now)).toBe(rtf.format(-5, 'minute'))
+    expect(formatCheckedAt(now - 3 * 3600 * 1000, now)).toBe(rtf.format(-3, 'hour'))
+    expect(formatCheckedAt(now - 50 * 3600 * 1000, now)).toBe(rtf.format(-2, 'day'))
   })
 
   it('时钟往回跳时不说"负几分钟前"', () => {

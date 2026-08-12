@@ -20,7 +20,7 @@ async fn connect(
     auth: &DoubaoAuth<'_>,
     scope: &str,
 ) -> Result<(tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, &'static str), String> {
-    let mut last_err = String::from("未知错误");
+    let mut last_err = String::from("Unknown error");
     for resource_id in doubao_auth::SAUC_RESOURCE_CANDIDATES {
         let mut builder = tungstenite::http::Request::builder()
             .uri(WS_URL)
@@ -39,7 +39,7 @@ async fn connect(
         }
         let request = builder
             .body(())
-            .map_err(|e| format!("构建请求失败: {}", e))?;
+            .map_err(|e| diag::fail(scope, "build_request", format!("Failed to build request: {}", e)))?;
 
         match tokio_tungstenite::connect_async(request).await {
             Ok((ws, response)) => {
@@ -69,7 +69,7 @@ async fn connect(
     Err(diag::fail(
         scope,
         "connect",
-        format!("WebSocket 连接失败: {}", last_err),
+        format!("WebSocket connection failed: {}", last_err),
     ))
 }
 
@@ -83,19 +83,20 @@ pub async fn transcribe(
         &base64::engine::general_purpose::STANDARD,
         audio_pcm_b64,
     )
-    .map_err(|e| diag::fail(SCOPE, "decode_b64", format!("base64 解码失败: {}", e)))?;
+    .map_err(|e| diag::fail(SCOPE, "decode_b64", format!("Failed to decode base64 audio: {}", e)))?;
 
     if pcm_data.is_empty() {
-        diag::empty_result(SCOPE, "客户端送来的音频是空的，没有发起请求");
+        diag::empty_result(SCOPE, "Input audio was empty; provider request was skipped");
         return Ok(AsrResult { text: String::new(), elapsed_ms: 0 });
     }
 
     let auth = DoubaoAuth::from_config(config);
     if let Some(missing) = auth.missing_field() {
-        return Err(diag::fail(
+        return Err(diag::fail_code(
             SCOPE,
             "credentials",
-            format!("豆包 ASR 缺少{}，请在设置里填好", missing),
+            "provider_bad_key",
+            format!("Doubao ASR is missing {}; complete it in Settings", missing),
         ));
     }
     let uid = auth.uid().to_string();
@@ -149,12 +150,12 @@ pub async fn transcribe(
     );
     ws.send(tungstenite::Message::Binary(request_frame.into()))
         .await
-        .map_err(|e| diag::fail(SCOPE, "send_request", format!("发送请求失败: {}", e)))?;
+        .map_err(|e| diag::fail(SCOPE, "send_request", format!("Failed to send request: {}", e)))?;
 
     // 等待服务端确认
     if let Some(msg) = ws.next().await {
         let msg =
-            msg.map_err(|e| diag::fail(SCOPE, "recv_ack", format!("接收确认失败: {}", e)))?;
+            msg.map_err(|e| diag::fail(SCOPE, "recv_ack", format!("Failed to receive acknowledgement: {}", e)))?;
         if let tungstenite::Message::Binary(data) = msg {
             let resp = doubao_protocol::parse_server_response(&data)
                 .map_err(|e| diag::fail(SCOPE, "parse_ack", e))?;
@@ -164,7 +165,7 @@ pub async fn transcribe(
                     SCOPE,
                     "server_error_on_ack",
                     format!(
-                        "服务端错误: {}{}",
+                        "Server error: {}{}",
                         resp.payload,
                         doubao_auth::explain_payload(&resp.payload)
                     ),
@@ -178,7 +179,7 @@ pub async fn transcribe(
     let audio_frame = doubao_protocol::build_audio_request(&pcm_data, true);
     ws.send(tungstenite::Message::Binary(audio_frame.into()))
         .await
-        .map_err(|e| diag::fail(SCOPE, "send_audio", format!("发送音频失败: {}", e)))?;
+        .map_err(|e| diag::fail(SCOPE, "send_audio", format!("Failed to send audio: {}", e)))?;
 
     // 3. 接收结果（bigmodel_async 双向流式：每包输入对应一包返回，取最终结果）
     let mut final_text = String::new();
@@ -188,10 +189,10 @@ pub async fn transcribe(
     // 以前两种都返回 Ok(空文本)，于是失败被显示成「未检测到有效声音」，
     // 日志里一个字都没有 —— 排查一次要来回问用户好几轮。
     let mut saw_last = false;
-    let mut last_payload_desc = String::from("(没收到任何结果包)");
+    let mut last_payload_desc = String::from("(no result packet received)");
 
     while let Some(msg) = ws.next().await {
-        let msg = msg.map_err(|e| diag::fail(SCOPE, "recv", format!("接收结果失败: {}", e)))?;
+        let msg = msg.map_err(|e| diag::fail(SCOPE, "recv", format!("Failed to receive result: {}", e)))?;
         match msg {
             tungstenite::Message::Binary(data) => {
                 let resp = doubao_protocol::parse_server_response(&data)
@@ -201,7 +202,7 @@ pub async fn transcribe(
                         SCOPE,
                         "server_error",
                         format!(
-                            "识别错误: {}{}",
+                            "Recognition error: {}{}",
                             resp.payload,
                             doubao_auth::explain_payload(&resp.payload)
                         ),
@@ -227,7 +228,7 @@ pub async fn transcribe(
             tungstenite::Message::Close(frame) => {
                 let reason = frame
                     .map(|f| format!("code={} reason={}", f.code, diag::truncate(&f.reason, 200)))
-                    .unwrap_or_else(|| "无详情".to_string());
+                    .unwrap_or_else(|| "No details".to_string());
                 if !saw_last {
                     let _ = ws.close(None).await;
                     // 服务端主动断开且没给最终结果 —— 额度耗尽、资源未开通、超限都长这样。
@@ -235,7 +236,7 @@ pub async fn transcribe(
                     return Err(diag::fail(
                         SCOPE,
                         "closed_before_result",
-                        format!("豆包服务端提前关闭了连接（{}），本次识别未完成", reason),
+                        format!("Doubao closed the connection before recognition completed ({})", reason),
                     ));
                 }
                 diag::log(SCOPE, "close", &reason);
@@ -256,7 +257,7 @@ pub async fn transcribe(
             SCOPE,
             "stream_ended_without_result",
             format!(
-                "豆包连接中断，没有收到最终结果（已收 {} 字符，耗时 {}ms）",
+                "Doubao connection ended without a final result (received_chars={} elapsed={}ms)",
                 final_text.chars().count(),
                 elapsed_ms
             ),
@@ -267,7 +268,7 @@ pub async fn transcribe(
         diag::empty_result(
             SCOPE,
             &format!(
-                "服务端给出最终结果但文本为空 resourceId={} audio_sec={:.1} elapsed={}ms {}",
+                "Server returned a final result with an empty transcript resourceId={} audio_sec={:.1} elapsed={}ms {}",
                 resource_id, audio_sec, elapsed_ms, last_payload_desc
             ),
         );
@@ -286,7 +287,7 @@ pub async fn test_connection(config: &AsrProviderConfig) -> TestResult {
     if let Some(missing) = auth.missing_field() {
         return TestResult {
             ok: false,
-            message: format!("还没填{}", missing),
+            message: format!("{} has not been configured", missing),
             elapsed_ms: 0,
             detail: String::new(),
         };
@@ -300,10 +301,10 @@ pub async fn test_connection(config: &AsrProviderConfig) -> TestResult {
             let elapsed_ms = start.elapsed().as_millis() as u64;
             TestResult {
                 ok: true,
-                message: format!("连接成功 ({}ms)", elapsed_ms),
+                message: format!("Connection successful ({}ms)", elapsed_ms),
                 elapsed_ms,
                 // 资源 ID 决定计费方式（小时版/并发版），测通了顺手告诉用户命中的是哪个
-                detail: format!("资源: {}", resource_id),
+                detail: format!("Resource: {}", resource_id),
             }
         }
         Err(e) => {

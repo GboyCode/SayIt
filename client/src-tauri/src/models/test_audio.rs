@@ -24,19 +24,19 @@ pub async fn run_asr_benchmark(
 ) -> Result<AsrBenchmarkResult, String> {
     let pcm_bytes = if let Some(b64) = audio_b64 {
         base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &b64)
-            .map_err(|e| format!("base64 解码失败: {}", e))?
+            .map_err(|e| format!("Failed to decode base64 audio: {}", e))?
     } else {
         // 读取内置测试音频（WAV 格式，需要跳过 44 字节 header 提取 PCM）
         let resource_path = app_handle.path()
             .resolve("resources/test_zh.wav", tauri::path::BaseDirectory::Resource)
-            .map_err(|e| format!("找不到测试音频: {}", e))?;
+            .map_err(|e| format!("Could not locate test audio: {}", e))?;
         let wav_bytes = std::fs::read(&resource_path)
-            .map_err(|e| format!("读取测试音频失败: {}", e))?;
+            .map_err(|e| format!("Failed to read test audio: {}", e))?;
         // 跳过 WAV header（44 字节）
         if wav_bytes.len() > 44 {
             wav_bytes[44..].to_vec()
         } else {
-            return Err("测试音频文件无效".into());
+            return Err("The test audio file is invalid".into());
         }
     };
 
@@ -71,7 +71,7 @@ pub async fn run_asr_benchmark(
         })
     })
     .await
-    .map_err(|e| format!("测试异常: {}", e))?
+    .map_err(|e| format!("Test failed: {}", e))?
 }
 
 /// 获取内置测试音频的 base64 WAV 数据（供前端播放）
@@ -79,8 +79,8 @@ pub async fn run_asr_benchmark(
 pub async fn get_test_audio_b64(app_handle: tauri::AppHandle) -> Result<String, String> {
     let resource_path = app_handle.path()
         .resolve("resources/test_zh.wav", tauri::path::BaseDirectory::Resource)
-        .map_err(|e| format!("找不到测试音频: {}", e))?;
+        .map_err(|e| format!("Could not locate test audio: {}", e))?;
     let wav_bytes = std::fs::read(&resource_path)
-        .map_err(|e| format!("读取测试音频失败: {}", e))?;
+        .map_err(|e| format!("Failed to read test audio: {}", e))?;
     Ok(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &wav_bytes))
 }

@@ -23,7 +23,8 @@ server/benchmarks/
 server/mytestwav.txt
 
 # ── Client dev artifacts ──
-client/scripts/
+client/scripts/*
+!client/scripts/check-i18n.mjs
 client/dist/
 # build.rs 从 transcribe-cpp 的构建产物拷进来的 DLL，纯生成物
 client/src-tauri/transcribe-libs/

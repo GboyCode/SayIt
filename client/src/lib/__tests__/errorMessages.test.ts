@@ -16,6 +16,7 @@ describe('describeServerError', () => {
     expect(result.message).toContain('连不上这个地址')
     expect(result.detail).toBe('Failed to fetch')
     expect(result.action).toBe('reset_url')
+    expect(result.code).toBe('server_unreachable')
   })
 
   it('地址本来就是默认值时不提议恢复默认', () => {
@@ -48,10 +49,18 @@ describe('describeServerError', () => {
 })
 
 describe('describeProviderError', () => {
+  it('优先使用 Rust 稳定错误码，并从 detail 中剥掉协议前缀', () => {
+    const result = describeProviderError('sayit_error:provider_bad_key:HTTP 418 translated detail')
+    expect(result.code).toBe('provider_bad_key')
+    expect(result.action).toBe('check_key')
+    expect(result.detail).toBe('HTTP 418 translated detail')
+  })
+
   it('密钥类失败指向密钥本身', () => {
     const result = describeProviderError('Invalid API key')
     expect(result.message).toContain('密钥被拒绝')
     expect(result.action).toBe('check_key')
+    expect(result.code).toBe('provider_bad_key')
   })
 
   it('限流/欠费与密钥错误区分开', () => {
@@ -64,10 +73,18 @@ describe('describeProviderError', () => {
 })
 
 describe('describeDownloadError', () => {
+  it('错误分类不依赖 Rust detail 使用哪种语言', () => {
+    const result = describeDownloadError('sayit_error:download_no_space:write failed')
+    expect(result.code).toBe('download_no_space')
+    expect(result.action).toBe('none')
+    expect(result.detail).toBe('write failed')
+  })
+
   it('网络中断建议换下载源', () => {
     const result = describeDownloadError('error sending request for url (https://hf-mirror.com/...)')
     expect(result.message).toContain('换一个下载源')
     expect(result.action).toBe('switch_source')
+    expect(result.code).toBe('download_network')
     expect(result.detail).toContain('hf-mirror.com')
   })
 

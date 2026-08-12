@@ -2,6 +2,7 @@ import * as bridge from '@/services/bridge'
 import { setShortcutCaptureActive } from '@/services/webviewKeyboardFallback'
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
+import { t } from '@/i18n'
 import {
   displayAccelerator,
   eventToAccelerator,
@@ -11,6 +12,8 @@ import {
 import {
   canonicalizePTTShortcut,
   displayPTTShortcut,
+  getAcceleratorShortcutValidationError,
+  getPTTShortcutWarning,
   getPTTShortcutValidationError,
 } from '@/lib/shortcutKeys'
 
@@ -190,7 +193,8 @@ export function PTTShortcutInput({
   }, [recording, handleKeyDown, handleKeyUp, cancelRecording, commit])
 
   const displayValue = tempValue || value
-  const keys = displayValue ? displayPTTShortcut(displayValue) : ['未设置']
+  const keys = displayValue ? displayPTTShortcut(displayValue) : [t('shortcut.notSet')]
+  const shortcutWarning = !recording ? getPTTShortcutWarning(value) : null
 
   return (
     <div>
@@ -216,7 +220,7 @@ export function PTTShortcutInput({
               }`}
           >
             {recording && !tempValue ? (
-              <span className="animate-pulse text-muted-foreground">按下按键...</span>
+              <span className="animate-pulse text-muted-foreground">{t('shortcutInput.pressKeys')}</span>
             ) : (
               keys.map((key, index) => (
                 <span key={`${key}-${index}`}>
@@ -233,8 +237,8 @@ export function PTTShortcutInput({
             <button
               onClick={() => onChange('')}
               className="rounded p-1 hover:bg-accent"
-              title="清空快捷键"
-              aria-label="清空快捷键"
+              title={t('shortcutInput.clear')}
+              aria-label={t('shortcutInput.clear')}
             >
               <X className="h-3.5 w-3.5 text-muted-foreground" />
             </button>
@@ -244,9 +248,12 @@ export function PTTShortcutInput({
       {validateError && (
         <p className="mt-1.5 text-xs text-destructive">{validateError}</p>
       )}
+      {shortcutWarning && (
+        <p className="mt-1.5 text-xs text-amber-500">{shortcutWarning}</p>
+      )}
       {showMiddleHint && value === 'MButton' && (
         <p className="mt-1.5 text-xs text-amber-500">
-          已绑定鼠标中键，其打开新标签页 / 自动滚动等原功能将被占用。
+          {t('shortcutInput.middleMouseWarning')}
         </p>
       )}
     </div>
@@ -313,7 +320,8 @@ export function ComboShortcutInput({
       if (comboOnly) return
       committingRef.current = true
       void (async () => {
-        const error = validate ? await validate(tempValue) : null
+        const systemError = getAcceleratorShortcutValidationError(tempValue)
+        const error = systemError || (validate ? await validate(tempValue) : null)
         if (error) {
           showConflict(error)
         } else {
@@ -330,14 +338,15 @@ export function ComboShortcutInput({
     // 加守卫避免多次 keyup 重复探测。
     committingRef.current = true
     void (async () => {
-      const error = validate ? await validate(tempValue) : null
+      const systemError = getAcceleratorShortcutValidationError(tempValue)
+      const error = systemError || (validate ? await validate(tempValue) : null)
       if (error) {
         showConflict(error)
       } else if (await bridge.testShortcut(tempValue)) {
         showConflict('')
         onChange(tempValue)
       } else {
-        showConflict('该组合键可能已被其他程序占用，请更换后重试')
+        showConflict(t('shortcutInput.conflictOther'))
       }
       setRecording(false)
       setTempValue('')
@@ -362,7 +371,8 @@ export function ComboShortcutInput({
         // 见 PTT 处说明：延迟提交，避免重配钩子的空档期把侧键“抬起”漏给 webview。
         window.setTimeout(() => {
           void (async () => {
-            const error = validate ? await validate(setting) : null
+            const systemError = getAcceleratorShortcutValidationError(setting)
+            const error = systemError || (validate ? await validate(setting) : null)
             if (error) {
               showConflict(error)
               return
@@ -409,7 +419,7 @@ export function ComboShortcutInput({
               }`}
           >
             {recording && !tempValue ? (
-              <span className="animate-pulse text-muted-foreground">按下按键...</span>
+              <span className="animate-pulse text-muted-foreground">{t('shortcutInput.pressKeys')}</span>
             ) : (
               keys.map((key, index) => (
                 <span key={index}>
@@ -424,7 +434,7 @@ export function ComboShortcutInput({
             <button
               onClick={() => onChange('')}
               className="rounded p-1 hover:bg-accent"
-              aria-label="清空快捷键"
+              aria-label={t('shortcutInput.clear')}
             >
               <X className="h-3.5 w-3.5 text-muted-foreground" />
             </button>
@@ -435,7 +445,7 @@ export function ComboShortcutInput({
         <p className="mt-1.5 text-xs text-destructive">{conflict}</p>
       )}
       {showMiddleHint && value === 'MButton' && (
-        <p className="mt-1.5 text-xs text-amber-500">已绑定鼠标中键，其打开新标签页 / 自动滚动等原功能将被占用。</p>
+        <p className="mt-1.5 text-xs text-amber-500">{t('shortcutInput.middleMouseWarning')}</p>
       )}
     </div>
   )

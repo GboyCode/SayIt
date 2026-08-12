@@ -2,6 +2,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod error_protocol;
+mod locale;
 mod storage;
 mod window;
 mod keyboard;
@@ -284,9 +286,9 @@ fn main() {
             .to_string();
         std::thread::spawn(move || {
             match models::gguf_asr::preload(&model_id, &accelerator) {
-                Ok(()) => log::info!("启动预热本地模型完成: {}", model_id),
+                Ok(()) => log::info!("Startup local model warm-up completed: {}", model_id),
                 // 模型没下载是正常情况（新装用户），不当错误刷日志
-                Err(e) => log::info!("启动预热跳过 ({}): {}", model_id, e),
+                Err(e) => log::info!("Startup local model warm-up skipped ({}): {}", model_id, e),
             }
         });
     }
@@ -437,8 +439,15 @@ fn main() {
 
             // 系统托盘图标
             {
-                let show_item = MenuItemBuilder::with_id("show", "显示主窗口").build(app)?;
-                let quit_item = MenuItemBuilder::with_id("quit", "退出 SayIt").build(app)?;
+                // 语言在建菜单之前就要定下来：托盘是开机即可见的 UI，
+                // 等前端起来再改文案会先闪一遍错误语言。
+                let tray_lang = {
+                    let storage: tauri::State<Storage> = app.state();
+                    locale::effective_lang(storage.inner())
+                };
+                let tray_text = locale::tray_strings(tray_lang);
+                let show_item = MenuItemBuilder::with_id("show", tray_text.show).build(app)?;
+                let quit_item = MenuItemBuilder::with_id("quit", tray_text.quit).build(app)?;
                 let tray_menu = MenuBuilder::new(app)
                     .item(&show_item)
                     .separator()
@@ -451,7 +460,7 @@ fn main() {
 
                 let _tray = TrayIconBuilder::new()
                     .icon(icon)
-                    .tooltip("SayIt — 随口说，出色写")
+                    .tooltip(tray_text.tooltip)
                     .menu(&tray_menu)
                     .on_menu_event(|app, event| {
                         match event.id().as_ref() {
@@ -561,6 +570,7 @@ fn main() {
             commands::paste::copy_text,
             // System
             commands::system::get_client_runtime_info,
+            commands::system::get_system_ui_language,
             commands::system::get_auto_launch,
             commands::system::set_auto_launch,
             commands::system::get_update_status,

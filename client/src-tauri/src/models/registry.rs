@@ -7,6 +7,8 @@ use serde::Serialize;
 use std::path::Path;
 use tauri::AppHandle;
 
+use crate::error_protocol;
+
 /// 列出所有可用模型
 #[tauri::command]
 pub fn list_available_models() -> Vec<ModelInfo> {
@@ -117,7 +119,7 @@ pub async fn download_model(
     let model = catalog
         .iter()
         .find(|m| m.id == model_id)
-        .ok_or_else(|| format!("未知模型: {}", model_id))?;
+        .ok_or_else(|| error_protocol::encode("download_failed", format!("Unknown model: {}", model_id)))?;
 
     let dest_dir = downloader::model_dir(&model_id);
 
@@ -135,7 +137,7 @@ pub async fn download_model(
             .iter()
             .find(|s| s.source == source)
             .or_else(|| model.sources.first())
-            .ok_or_else(|| format!("模型 {} 没有可用的下载源", model_id))?;
+            .ok_or_else(|| error_protocol::encode("download_network", format!("Model {} has no available download source", model_id)))?;
 
         let file_count = download_source.files.len() as u32;
         for (i, file) in download_source.files.iter().enumerate() {
@@ -163,7 +165,7 @@ pub async fn download_model(
     });
     let meta_path = dest_dir.join("meta.json");
     std::fs::write(&meta_path, serde_json::to_string_pretty(&meta).unwrap_or_default())
-        .map_err(|e| format!("写入 meta.json 失败: {}", e))?;
+        .map_err(|e| error_protocol::encode("download_failed", format!("Failed to write meta.json: {}", e)))?;
 
     Ok(())
 }
@@ -174,7 +176,7 @@ pub fn delete_model(model_id: String) -> Result<(), String> {
     let model_path = downloader::model_dir(&model_id);
     if model_path.exists() {
         std::fs::remove_dir_all(&model_path)
-            .map_err(|e| format!("删除模型失败: {}", e))?;
+            .map_err(|e| format!("Failed to delete model: {}", e))?;
         log::info!("Deleted model: {}", model_id);
     }
     Ok(())
@@ -184,7 +186,7 @@ pub fn delete_model(model_id: String) -> Result<(), String> {
 #[tauri::command]
 pub fn open_models_folder() -> Result<String, String> {
     let dir = downloader::models_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {}", e))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create directory: {}", e))?;
     let path = dir.to_string_lossy().to_string();
     #[cfg(target_os = "windows")]
     {
@@ -227,13 +229,13 @@ pub fn get_models_dir() -> ModelsDirInfo {
 /// 递归复制目录/文件（跨盘 rename 失败时的兜底）。
 fn copy_path_recursive(src: &Path, dst: &Path) -> Result<(), String> {
     if src.is_dir() {
-        std::fs::create_dir_all(dst).map_err(|e| format!("创建目录失败: {}", e))?;
-        for entry in std::fs::read_dir(src).map_err(|e| format!("读取目录失败: {}", e))? {
-            let entry = entry.map_err(|e| format!("读取条目失败: {}", e))?;
+        std::fs::create_dir_all(dst).map_err(|e| format!("Failed to create directory: {}", e))?;
+        for entry in std::fs::read_dir(src).map_err(|e| format!("Failed to read directory: {}", e))? {
+            let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
             copy_path_recursive(&entry.path(), &dst.join(entry.file_name()))?;
         }
     } else {
-        std::fs::copy(src, dst).map_err(|e| format!("复制文件失败: {}", e))?;
+        std::fs::copy(src, dst).map_err(|e| format!("Failed to copy file: {}", e))?;
     }
     Ok(())
 }
@@ -242,8 +244,8 @@ fn copy_path_recursive(src: &Path, dst: &Path) -> Result<(), String> {
 /// 优先 rename（同盘瞬时）；跨盘失败则递归复制后删除源。
 /// 目标已存在同名条目则跳过（不覆盖新目录已有内容）。
 fn move_dir_contents(from: &Path, to: &Path) -> Result<(), String> {
-    for entry in std::fs::read_dir(from).map_err(|e| format!("读取旧目录失败: {}", e))? {
-        let entry = entry.map_err(|e| format!("读取条目失败: {}", e))?;
+    for entry in std::fs::read_dir(from).map_err(|e| format!("Failed to read old directory: {}", e))? {
+        let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
         let src = entry.path();
         let dst = to.join(entry.file_name());
         if dst.exists() {
@@ -293,10 +295,10 @@ pub async fn set_models_dir(
         // fs 操作（可能是跨盘大文件复制）放到阻塞线程池，避免占用异步运行时线程。
         tokio::task::spawn_blocking(move || -> Result<(), String> {
             std::fs::create_dir_all(&new_for_task)
-                .map_err(|e| format!("无法创建目录: {}", e))?;
+                .map_err(|e| format!("Failed to create directory: {}", e))?;
             // 可写性探测
             let probe = new_for_task.join(".sayit_write_test");
-            std::fs::write(&probe, b"ok").map_err(|e| format!("目录不可写: {}", e))?;
+            std::fs::write(&probe, b"ok").map_err(|e| format!("Directory is not writable: {}", e))?;
             let _ = std::fs::remove_file(&probe);
             if move_existing && old_for_task.exists() {
                 move_dir_contents(&old_for_task, &new_for_task)?;
@@ -304,7 +306,7 @@ pub async fn set_models_dir(
             Ok(())
         })
         .await
-        .map_err(|e| format!("迁移任务异常: {}", e))??;
+        .map_err(|e| format!("Model migration task failed: {}", e))??;
     }
 
     // 更新进程内生效路径：自定义 → Some，恢复默认 → None
@@ -317,7 +319,7 @@ pub async fn set_models_dir(
     };
     storage
         .set("localAsr.modelsDir", &value)
-        .map_err(|e| format!("保存设置失败: {}", e))?;
+        .map_err(|e| format!("Failed to save setting: {}", e))?;
 
     Ok(new_dir.to_string_lossy().to_string())
 }
@@ -326,7 +328,7 @@ pub async fn set_models_dir(
 #[tauri::command]
 pub fn open_model_folder(model_id: String) -> Result<String, String> {
     let dir = downloader::model_dir(&model_id);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {}", e))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create directory: {}", e))?;
     let path = dir.to_string_lossy().to_string();
     #[cfg(target_os = "windows")]
     {

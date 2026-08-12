@@ -5,23 +5,33 @@ import { cn } from '@/lib/utils'
 import { Tooltip } from '@/components/ui/tooltip'
 import { useConnectionStatus } from '@/hooks/useConnectionStatus'
 import { getModeStatus, refreshModeStatus, subscribeModeStatus } from '@/stores/modeStatus'
+import type { TranslationKey } from '@/i18n'
+import { useT } from '@/i18n/useT'
 
+// 导航项存 key 而不是文案：切语言时这些常量不会重新求值（模块级只算一次），
+// 存成中文串就会永远停在启动时那个语言。
 const dailyNavItems = [
-  { to: '/', icon: Home, label: '首页' },
-  { to: '/history', icon: Clock, label: '历史' },
-]
+  { to: '/', icon: Home, labelKey: 'nav.home' },
+  { to: '/history', icon: Clock, labelKey: 'nav.history' },
+] as const satisfies readonly NavItemDef[]
 
 const configNavItems = [
-  { to: '/voice-engine', icon: AudioLines, label: '语音引擎' },
-  { to: '/hotwords', icon: BookOpen, label: '热词' },
-  { to: '/ai-instructions', icon: Wand2, label: 'AI 整理' },
-  { to: '/ai-service', icon: Sparkles, label: 'AI 供应商' },
-]
+  { to: '/voice-engine', icon: AudioLines, labelKey: 'nav.voiceEngine' },
+  { to: '/hotwords', icon: BookOpen, labelKey: 'nav.hotwords' },
+  { to: '/ai-instructions', icon: Wand2, labelKey: 'nav.aiInstructions' },
+  { to: '/ai-service', icon: Sparkles, labelKey: 'nav.aiService' },
+] as const satisfies readonly NavItemDef[]
 
 const footerNavItems = [
-  { to: '/settings', icon: Settings, label: '设置' },
-  { to: '/about', icon: Info, label: '关于' },
-]
+  { to: '/settings', icon: Settings, labelKey: 'nav.settings' },
+  { to: '/about', icon: Info, labelKey: 'nav.about' },
+] as const satisfies readonly NavItemDef[]
+
+interface NavItemDef {
+  to: string
+  icon: typeof Home
+  labelKey: TranslationKey
+}
 
 function NavItem({
   to,
@@ -82,11 +92,11 @@ function IconOnlyNavItem({
  * 本地/云 API 没有这种持续探测，见 ModeIndicator 的注释。
  */
 const statusConfig = {
-  connected: { icon: Wifi, color: 'text-success', label: '后端已连接' },
-  connecting: { icon: Wifi, color: 'text-warning animate-pulse', label: '正在连接…' },
-  disconnected: { icon: WifiOff, color: 'text-muted-foreground', label: '后端未连接' },
-  error: { icon: WifiOff, color: 'text-destructive', label: '连接失败' },
-} as const
+  connected: { icon: Wifi, color: 'text-success', labelKey: 'connection.connected' },
+  connecting: { icon: Wifi, color: 'text-warning animate-pulse', labelKey: 'connection.connecting' },
+  disconnected: { icon: WifiOff, color: 'text-muted-foreground', labelKey: 'connection.disconnected' },
+  error: { icon: WifiOff, color: 'text-destructive', labelKey: 'connection.error' },
+} as const satisfies Record<string, { icon: typeof Wifi; color: string; labelKey: TranslationKey }>
 
 /**
  * 左下角的引擎指示：始终只占一个图标位，细节全在悬停提示里。
@@ -101,15 +111,16 @@ const statusConfig = {
  * 曾经在这里点过绿灯，等于替一件没测过的事作保。
  */
 function ModeIndicator() {
+  const t = useT()
   const status = useConnectionStatus()
   const { mode, detail, ready, blockedReason } = useSyncExternalStore(subscribeModeStatus, getModeStatus)
 
   useEffect(() => { void refreshModeStatus() }, [])
 
   if (mode === 'server') {
-    const { icon: StatusIcon, color, label } = statusConfig[status]
+    const { icon: StatusIcon, color, labelKey } = statusConfig[status]
     return (
-      <Tooltip content={`服务器模式 · ${label}`}>
+      <Tooltip content={t('mode.tooltipDetail', { mode: t('mode.server'), detail: t(labelKey) })}>
         <div className="flex items-center justify-center rounded-lg p-2">
           <StatusIcon className={cn('h-4 w-4', color)} />
         </div>
@@ -118,11 +129,13 @@ function ModeIndicator() {
   }
 
   const Icon = mode === 'local' ? Cpu : Cloud
-  const title = mode === 'local' ? '本地模式' : '云 API 模式'
+  const title = mode === 'local' ? t('mode.local') : t('mode.cloudApi')
   const notReady = ready === false
+  // blockedReason 目前是 Rust/服务层给的中文串（P2-1 会改成 code 再本地化）。
+  // 这里只保证**外壳**跟随语言，不假装里面那句已经翻好了。
   const tip = notReady
-    ? `${title} · 待配置（${blockedReason || '配置未填完'}）`
-    : detail ? `${title} · ${detail}` : title
+    ? t('mode.tooltipNotReady', { mode: title, reason: blockedReason || t('mode.notReadyFallback') })
+    : detail ? t('mode.tooltipDetail', { mode: title, detail }) : title
 
   return (
     <Tooltip content={tip}>
@@ -134,26 +147,27 @@ function ModeIndicator() {
 }
 
 export default function Sidebar() {
+  const t = useT()
   return (
     <nav className="flex w-48 flex-col border-r border-sidebar-border bg-sidebar py-4">
       <div className="flex-1 space-y-1 px-3">
-        {dailyNavItems.map(({ to, icon, label }) => (
-          <NavItem key={to} to={to} icon={icon} label={label} />
+        {dailyNavItems.map(({ to, icon, labelKey }) => (
+          <NavItem key={to} to={to} icon={icon} label={t(labelKey)} />
         ))}
 
         <div className="px-1 py-3">
           <div className="h-px bg-[linear-gradient(to_right,transparent_0%,hsl(var(--sidebar-border))_5%,hsl(var(--sidebar-border))_95%,transparent_100%)]" />
         </div>
-        {configNavItems.map(({ to, icon, label }) => (
-          <NavItem key={to} to={to} icon={icon} label={label} />
+        {configNavItems.map(({ to, icon, labelKey }) => (
+          <NavItem key={to} to={to} icon={icon} label={t(labelKey)} />
         ))}
       </div>
 
       <div className="space-y-3 px-3 pt-4">
         <div className="h-px bg-[linear-gradient(to_right,transparent_0%,hsl(var(--sidebar-border))_5%,hsl(var(--sidebar-border))_95%,transparent_100%)]" />
         <div className="flex items-center gap-1">
-          {footerNavItems.map(({ to, icon, label }) => (
-            <IconOnlyNavItem key={to} to={to} icon={icon} label={label} />
+          {footerNavItems.map(({ to, icon, labelKey }) => (
+            <IconOnlyNavItem key={to} to={to} icon={icon} label={t(labelKey)} />
           ))}
           <ModeIndicator />
         </div>

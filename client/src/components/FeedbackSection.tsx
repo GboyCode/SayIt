@@ -5,8 +5,11 @@ import { X } from 'lucide-react'
 import { open } from '@tauri-apps/plugin-shell'
 import { getBackendBaseUrl } from '@/services/runtimeConfig'
 import { getLastTranscript, submitFeedback } from '@/services/feedback'
+import { t } from '@/i18n'
+import { useT } from '@/i18n/useT'
 
 export default function FeedbackSection() {
+  useT()
   const [lastTranscript, setLastTranscript] = useState<string>('')
   const [showTranscript, setShowTranscript] = useState(true)
   const [feedbackText, setFeedbackText] = useState('')
@@ -21,7 +24,7 @@ export default function FeedbackSection() {
     getLastTranscript().then((record) => {
       if (record) {
         if (record.isEmpty) {
-          setLastTranscript('无有效声音')
+          setLastTranscript(t('record.noSpeech'))
         } else {
           const display = record.llmText || record.asrText || ''
           setLastTranscript(display.slice(0, 200))
@@ -34,7 +37,7 @@ export default function FeedbackSection() {
     if (sending) return
     const trimmed = feedbackText.trim()
     if (trimmed.length < 2) {
-      setMessage({ ok: false, text: '请输入至少 2 个字的反馈' })
+      setMessage({ ok: false, text: t('feedback.tooShort') })
       return
     }
 
@@ -51,7 +54,7 @@ export default function FeedbackSection() {
       }
     } catch (err) {
       setSubmitted(false)
-      setMessage({ ok: false, text: '网络错误，请稍后重试' })
+      setMessage({ ok: false, text: t('feedback.networkError') })
     } finally {
       setSending(false)
     }
@@ -74,20 +77,20 @@ export default function FeedbackSection() {
 
   return (
     <div>
-      <h2 className="mb-3 text-lg font-semibold">意见反馈</h2>
+      <h2 className="mb-3 text-lg font-semibold">{t('feedback.title')}</h2>
 
       <div className="rounded-xl border border-border p-4">
         {/* 转录引用块 — 可删除 */}
         {showTranscript && lastTranscript && (
           <div className="relative mb-3">
             <div className="rounded-lg bg-muted/70 px-3 py-2 pr-8">
-              <p className="text-sm text-muted-foreground">最后的转录</p>
+              <p className="text-sm text-muted-foreground">{t('feedback.lastTranscript')}</p>
               <p className="mt-1 truncate border-l-2 border-muted-foreground/30 pl-2 text-sm text-muted-foreground/70">{lastTranscript}</p>
             </div>
             <button
               onClick={() => setShowTranscript(false)}
               className="absolute right-2 top-2 rounded p-0.5 text-muted-foreground/50 transition-colors hover:text-muted-foreground"
-              aria-label="移除转录"
+              aria-label={t('feedback.removeTranscript')}
             >
               <X className="h-3.5 w-3.5" />
             </button>
@@ -103,7 +106,7 @@ export default function FeedbackSection() {
             if (message) setMessage(null)
           }}
           onKeyDown={handleKeyDown}
-          placeholder="如何改进 SayIt？输入你的反馈建议..."
+          placeholder={t('feedback.placeholder')}
           rows={1}
           maxLength={1000}
           className="w-full resize-none border-0 bg-transparent p-0 text-sm outline-none placeholder:text-muted-foreground/50"
@@ -115,8 +118,8 @@ export default function FeedbackSection() {
           <div className="min-h-[1.25rem] flex-1 text-xs leading-relaxed">
             {submitted ? (
               <p className="text-muted-foreground">
-                <span className="text-green-600 dark:text-green-400">发送成功，感谢您的反馈。</span>
-                待作者通过后，可访问{' '}
+                <span className="text-green-600 dark:text-green-400">{t('feedback.sent')}</span>
+                {t('feedback.sentAfter')}{' '}
                 <button
                   onClick={handleOpenFeedbackPage}
                   className="text-foreground transition-opacity hover:opacity-70"
@@ -124,7 +127,7 @@ export default function FeedbackSection() {
                   <span className="break-all underline underline-offset-2">{feedbackUrl}</span>
                   <sup className="ml-0.5">↗</sup>
                 </button>
-                ，查看反馈进度
+                {t('feedback.sentLinkSuffix')}
               </p>
             ) : (
               message && (
@@ -139,7 +142,7 @@ export default function FeedbackSection() {
             disabled={sending || feedbackText.trim().length < 2}
             className="shrink-0 rounded-full bg-secondary px-4 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-foreground hover:text-background disabled:opacity-40"
           >
-            {sending ? '发送中...' : '发送反馈'}
+            {sending ? t('feedback.sending') : t('feedback.send')}
           </button>
         </div>
       </div>

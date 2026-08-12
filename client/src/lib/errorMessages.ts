@@ -8,9 +8,31 @@
  * 原始文本不丢弃：`detail` 保留原文给能看懂的人排查，UI 以次要字号展示。
  */
 
+import { t } from '@/i18n'
+
 export type ErrorActionHint = 'reset_url' | 'check_key' | 'switch_source' | 'retry' | 'none'
 
+export type FriendlyErrorCode =
+  | 'server_timeout'
+  | 'server_unreachable'
+  | 'server_forbidden'
+  | 'server_not_sayit'
+  | 'server_internal'
+  | 'provider_timeout'
+  | 'provider_unreachable'
+  | 'provider_bad_key'
+  | 'provider_rate_limit'
+  | 'provider_no_model'
+  | 'download_network'
+  | 'download_no_space'
+  | 'download_permission'
+  | 'download_checksum'
+  | 'download_failed'
+  | 'connect_failed'
+
 export interface FriendlyError {
+  /** 稳定分类；可持久化，展示时再按当前界面语言取文案。 */
+  code: FriendlyErrorCode
   /** 一句话说清发生了什么，以及该往哪个方向查 */
   message: string
   /** 原始异常文本，供排查用；UI 以次要字号展示 */
@@ -19,9 +41,48 @@ export interface FriendlyError {
   action: ErrorActionHint
 }
 
-function raw(error: unknown): string {
-  if (error instanceof Error) return error.message || String(error)
-  return String(error)
+const ERROR_PROTOCOL_PREFIX = 'sayit_error:'
+
+interface DecodedError {
+  code: FriendlyErrorCode | null
+  text: string
+}
+
+const FRIENDLY_ERROR_CODES = new Set<FriendlyErrorCode>([
+  'server_timeout',
+  'server_unreachable',
+  'server_forbidden',
+  'server_not_sayit',
+  'server_internal',
+  'provider_timeout',
+  'provider_unreachable',
+  'provider_bad_key',
+  'provider_rate_limit',
+  'provider_no_model',
+  'download_network',
+  'download_no_space',
+  'download_permission',
+  'download_checksum',
+  'download_failed',
+  'connect_failed',
+])
+
+/**
+ * Rust/Tauri errors use `sayit_error:<stable-code>:<diagnostic detail>`.
+ * The code is the contract; the detail may change language and remains useful for diagnostics.
+ * Unknown codes deliberately fall back to legacy text classification for forward compatibility.
+ */
+function decodeError(error: unknown): DecodedError {
+  const value = error instanceof Error ? (error.message || String(error)) : String(error)
+  if (!value.startsWith(ERROR_PROTOCOL_PREFIX)) return { code: null, text: value }
+
+  const separator = value.indexOf(':', ERROR_PROTOCOL_PREFIX.length)
+  if (separator < 0) return { code: null, text: value }
+  const candidate = value.slice(ERROR_PROTOCOL_PREFIX.length, separator)
+  const text = value.slice(separator + 1)
+  return FRIENDLY_ERROR_CODES.has(candidate as FriendlyErrorCode)
+    ? { code: candidate as FriendlyErrorCode, text }
+    : { code: null, text }
 }
 
 /** 从各种异常文本里抠出 HTTP 状态码（`HTTP 401` / `status: 403` / `(404)`） */
@@ -34,12 +95,12 @@ function extractHttpStatus(text: string): number | null {
 }
 
 function isNetworkFailure(text: string): boolean {
-  return /failed to fetch|networkerror|error sending request|econnrefused|enotfound|dns|connection refused|unreachable|websocket 连接失败/i
+  return /failed to fetch|networkerror|error sending request|econnrefused|enotfound|dns|connection refused|unreachable|websocket 连接失败/i // i18n-allow: 匹配底层中文错误串
     .test(text)
 }
 
 function isTimeout(text: string): boolean {
-  return /timeout|timed out|超时/i.test(text)
+  return /timeout|timed out|超时/i.test(text) // i18n-allow: 匹配底层中文错误串
 }
 
 /**
@@ -47,46 +108,52 @@ function isTimeout(text: string): boolean {
  * `hasCustomUrl` 为 true 时才建议「恢复默认地址」——地址本来就是默认值时这个动作没意义。
  */
 export function describeServerError(error: unknown, hasCustomUrl: boolean): FriendlyError {
-  const text = raw(error)
+  const { code: stableCode, text } = decodeError(error)
   const status = extractHttpStatus(text)
 
-  if (isTimeout(text)) {
+  if (stableCode === 'server_timeout' || isTimeout(text)) {
     return {
-      message: '等待服务器响应超时。服务器可能正在启动或负载过高，稍后再试。',
+      code: 'server_timeout',
+      message: t('err.server.timeout'),
       detail: text,
       action: 'retry',
     }
   }
-  if (isNetworkFailure(text)) {
+  if (stableCode === 'server_unreachable' || isNetworkFailure(text)) {
     return {
-      message: '连不上这个地址。检查网址有没有写错（含 https:// 前缀）、本机网络是否正常、服务是否已启动。',
+      code: 'server_unreachable',
+      message: t('err.server.unreachable'),
       detail: text,
       action: hasCustomUrl ? 'reset_url' : 'retry',
     }
   }
-  if (status === 401 || status === 403) {
+  if (stableCode === 'server_forbidden' || status === 401 || status === 403) {
     return {
-      message: `服务器拒绝了这个请求（HTTP ${status}）。地址能连通，但没有访问权限——确认这是 SayIt 后端，且没有被反向代理或防火墙拦下。`,
+      code: 'server_forbidden',
+      message: t('err.server.forbidden', { status: String(status) }),
       detail: text,
       action: 'retry',
     }
   }
-  if (status === 404) {
+  if (stableCode === 'server_not_sayit' || status === 404) {
     return {
-      message: '地址能连通，但上面没有 SayIt 服务。这里要填服务的根地址，不要带 /api、/ws 之类的路径。',
+      code: 'server_not_sayit',
+      message: t('err.server.notSayIt'),
       detail: text,
       action: hasCustomUrl ? 'reset_url' : 'retry',
     }
   }
-  if (status && status >= 500) {
+  if (stableCode === 'server_internal' || (status && status >= 500)) {
     return {
-      message: `服务器内部错误（HTTP ${status}）。地址是对的，问题在服务端——查看服务端日志。`,
+      code: 'server_internal',
+      message: t('err.server.internal', { status: String(status) }),
       detail: text,
       action: 'retry',
     }
   }
   return {
-    message: '连接失败。',
+    code: 'connect_failed',
+    message: t('err.connectFailed'),
     detail: text,
     action: hasCustomUrl ? 'reset_url' : 'retry',
   }
@@ -94,77 +161,86 @@ export function describeServerError(error: unknown, hasCustomUrl: boolean): Frie
 
 /** 云 API 供应商类错误（密钥校验、试拨一次识别） */
 export function describeProviderError(error: unknown): FriendlyError {
-  const text = raw(error)
+  const { code: stableCode, text } = decodeError(error)
   const status = extractHttpStatus(text)
 
-  if (isTimeout(text)) {
-    return { message: '等待供应商响应超时，稍后再试。', detail: text, action: 'retry' }
+  if (stableCode === 'provider_timeout' || isTimeout(text)) {
+    return { code: 'provider_timeout', message: t('err.provider.timeout'), detail: text, action: 'retry' }
   }
-  if (isNetworkFailure(text)) {
+  if (stableCode === 'provider_unreachable' || isNetworkFailure(text)) {
     return {
-      message: '连不上供应商的服务。检查本机网络，以及是否需要代理才能访问。',
+      code: 'provider_unreachable',
+      message: t('err.provider.unreachable'),
       detail: text,
       action: 'retry',
     }
   }
-  if (status === 401 || status === 403 || /invalid.*(key|token)|unauthorized|认证失败|鉴权/i.test(text)) {
+  if (stableCode === 'provider_bad_key' || status === 401 || status === 403 || /invalid.*(key|token)|unauthorized|认证失败|鉴权/i.test(text)) { // i18n-allow: 匹配底层中文错误串
     return {
-      message: '密钥被拒绝。确认复制完整、没有多余空格，且对应的服务已在供应商控制台开通。',
+      code: 'provider_bad_key',
+      message: t('err.provider.badKey'),
       detail: text,
       action: 'check_key',
     }
   }
-  if (status === 429 || /rate.?limit|quota|欠费|余额/i.test(text)) {
+  if (stableCode === 'provider_rate_limit' || status === 429 || /rate.?limit|quota|欠费|余额/i.test(text)) { // i18n-allow: 匹配底层中文错误串
     return {
-      message: '被供应商限流或额度不足。检查控制台的余额与调用配额。',
+      code: 'provider_rate_limit',
+      message: t('err.provider.rateLimit'),
       detail: text,
       action: 'retry',
     }
   }
-  if (status === 404 || /model.*not.*(found|exist)/i.test(text)) {
+  if (stableCode === 'provider_no_model' || status === 404 || /model.*not.*(found|exist)/i.test(text)) {
     return {
-      message: '供应商说这个模型不存在或未对你开通。换一个供应商，或到控制台申请该模型的权限。',
+      code: 'provider_no_model',
+      message: t('err.provider.noModel'),
       detail: text,
       action: 'retry',
     }
   }
-  return { message: '连接失败。', detail: text, action: 'retry' }
+  return { code: 'connect_failed', message: t('err.connectFailed'), detail: text, action: 'retry' }
 }
 
 /** 模型下载类错误 */
 export function describeDownloadError(error: unknown): FriendlyError {
-  const text = raw(error)
+  const { code: stableCode, text } = decodeError(error)
 
-  if (isTimeout(text) || isNetworkFailure(text)) {
+  if (stableCode === 'download_network' || isTimeout(text) || isNetworkFailure(text)) {
     return {
-      message: '下载中断，没能连上下载源。换一个下载源重试，或走手动下载。',
+      code: 'download_network',
+      message: t('err.download.network'),
       detail: text,
       action: 'switch_source',
     }
   }
-  if (/no space|磁盘|disk full|not enough space/i.test(text)) {
+  if (stableCode === 'download_no_space' || /no space|磁盘|disk full|not enough space/i.test(text)) { // i18n-allow: 匹配底层中文错误串
     return {
-      message: '磁盘空间不足，模型没能写完。清理目标磁盘，或在「模型存储位置」换一个盘。',
+      code: 'download_no_space',
+      message: t('err.download.noSpace'),
       detail: text,
       action: 'none',
     }
   }
-  if (/permission|denied|access is denied|拒绝访问/i.test(text)) {
+  if (stableCode === 'download_permission' || /permission|denied|access is denied|拒绝访问/i.test(text)) { // i18n-allow: 匹配底层中文错误串
     return {
-      message: '没有写入权限。检查模型存储目录是否被占用或受保护。',
+      code: 'download_permission',
+      message: t('err.download.permission'),
       detail: text,
       action: 'none',
     }
   }
-  if (/checksum|sha256|校验/i.test(text)) {
+  if (stableCode === 'download_checksum' || /checksum|sha256|校验/i.test(text)) { // i18n-allow: 匹配底层中文错误串
     return {
-      message: '文件校验失败，下载到的内容不完整。换一个下载源重试。',
+      code: 'download_checksum',
+      message: t('err.download.checksum'),
       detail: text,
       action: 'switch_source',
     }
   }
   return {
-    message: '下载失败。换一个下载源重试，或走手动下载。',
+    code: 'download_failed',
+    message: t('err.download.generic'),
     detail: text,
     action: 'switch_source',
   }

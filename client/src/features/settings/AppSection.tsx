@@ -1,5 +1,6 @@
 import { Card, CardContent } from '@/components/ui/card'
 import { Switch } from '@/components/ui/switch'
+import { useT } from '@/i18n/useT'
 
 export default function AppSection({
   autoLaunch,
@@ -16,22 +17,23 @@ export default function AppSection({
   ready?: boolean
   animate?: boolean
 }) {
+  const t = useT()
   return (
     <Card>
       <CardContent className="p-6">
-        <h2 className="mb-4 text-lg font-semibold">应用</h2>
+        <h2 className="mb-4 text-lg font-semibold">{t('settings.app.title')}</h2>
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium">开机自启动</p>
-              <p className="text-xs text-muted-foreground">系统启动时自动运行 SayIt</p>
+              <p className="text-sm font-medium">{t('settings.app.autoLaunch')}</p>
+              <p className="text-xs text-muted-foreground">{t('settings.app.autoLaunchDesc')}</p>
             </div>
             <Switch checked={autoLaunch} onChange={onToggleAutoLaunch} noAnimation={!animate} hidden={!ready} />
           </div>
           <div className="flex items-center justify-between border-t border-border pt-4">
             <div>
-              <p className="text-sm font-medium">自动检测更新</p>
-              <p className="text-xs text-muted-foreground">启动时自动检查是否有新版本可用</p>
+              <p className="text-sm font-medium">{t('settings.app.autoUpdate')}</p>
+              <p className="text-xs text-muted-foreground">{t('settings.app.autoUpdateDesc')}</p>
             </div>
             <Switch checked={autoCheckUpdate} onChange={onToggleAutoCheckUpdate} noAnimation={!animate} hidden={!ready} />
           </div>

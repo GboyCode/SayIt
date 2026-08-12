@@ -14,34 +14,37 @@ import { getModeStatus, refreshModeStatus, subscribeModeStatus } from '@/stores/
 // 两处对本地 / 云 API 用同一个图标，对服务器模式刻意不同，因为它们说的不是同一件事。
 import { Cpu, Cloud, Server, Check, type LucideIcon } from 'lucide-react'
 import type { WorkMode } from '@/services/transcription'
+import type { TranslationKey } from '@/i18n'
+import { useT } from '@/i18n/useT'
 
-const modes: Array<{ value: WorkMode; label: string; desc: string; privacy: string; icon: LucideIcon }> = [
+// 模块级常量只求值一次，所以存 key、渲染时才翻。
+const modes: Array<{ value: WorkMode; labelKey: TranslationKey; descKey: TranslationKey; privacyKey: TranslationKey; icon: LucideIcon }> = [
   {
-    value: 'local', label: '本地模式',
-    desc: '语音识别完全在本机运行，无需联网',
-    privacy: '不开启 AI 整理时数据全程留在本地；开启后文本会发送给 AI 整理。',
+    value: 'local', labelKey: 'mode.local',
+    descKey: 'workMode.local.desc',
+    privacyKey: 'workMode.local.privacy',
     icon: Cpu,
   },
   {
-    value: 'cloud_api', label: '云 API 模式',
-    desc: '使用你自己的云服务商密钥',
-    privacy: '音频和文本会发送到你配置的云服务商处理。',
+    value: 'cloud_api', labelKey: 'mode.cloudApi',
+    descKey: 'workMode.cloudApi.desc',
+    privacyKey: 'workMode.cloudApi.privacy',
     icon: Cloud,
   },
   {
-    value: 'server', label: '服务器模式',
-    desc: '连接自部署的远程服务器',
-    privacy: '音频发送到服务器处理后不保留，仅本地保存结果。',
+    value: 'server', labelKey: 'mode.server',
+    descKey: 'workMode.server.desc',
+    privacyKey: 'workMode.server.privacy',
     icon: Server,
   },
 ]
 
 const statusConfig = {
-  connected: { dot: 'bg-success', text: '已连接', bg: 'bg-success/10 text-success-strong' },
-  connecting: { dot: 'bg-warning animate-pulse', text: '连接中', bg: 'bg-warning/10 text-warning-strong' },
-  disconnected: { dot: 'bg-muted-foreground', text: '未连接', bg: 'bg-muted text-muted-foreground' },
-  error: { dot: 'bg-destructive', text: '连接失败', bg: 'bg-destructive/10 text-destructive-strong' },
-} as const
+  connected: { dot: 'bg-success', textKey: 'status.connected', bg: 'bg-success/10 text-success-strong' },
+  connecting: { dot: 'bg-warning animate-pulse', textKey: 'status.connecting', bg: 'bg-warning/10 text-warning-strong' },
+  disconnected: { dot: 'bg-muted-foreground', textKey: 'status.disconnected', bg: 'bg-muted text-muted-foreground' },
+  error: { dot: 'bg-destructive', textKey: 'status.error', bg: 'bg-destructive/10 text-destructive-strong' },
+} as const satisfies Record<string, { dot: string; textKey: TranslationKey; bg: string }>
 
 interface Props {
   value: WorkMode
@@ -49,6 +52,7 @@ interface Props {
 }
 
 export default function WorkModeSection({ value, onChange }: Props) {
+  const t = useT()
   const wsStatus = useConnectionStatus()
   const { ready, blockedReason } = useSyncExternalStore(subscribeModeStatus, getModeStatus)
 
@@ -64,17 +68,18 @@ export default function WorkModeSection({ value, onChange }: Props) {
    * 未就绪时显示「待配置」并可点击滚到对应的配置卡。
    */
   const badge = value === 'server'
-    ? { ...statusConfig[wsStatus], hint: '' }
+    ? { dot: statusConfig[wsStatus].dot, bg: statusConfig[wsStatus].bg, text: t(statusConfig[wsStatus].textKey), hint: '' }
     : ready === false
       ? {
         dot: 'bg-warning',
-        text: '待配置',
+        text: t('workMode.badge.needsSetup'),
         bg: 'bg-warning/10 text-warning-strong',
-        hint: blockedReason ? `${blockedReason}，按下快捷键不会有反应` : '配置还没填完',
+        // blockedReason 仍是服务层给的中文串（P2-1 会 code 化），这里只保证外壳跟随语言
+        hint: blockedReason ? t('workMode.hintBlocked', { reason: blockedReason }) : t('workMode.hintIncomplete'),
       }
       : ready === true
-        ? { dot: 'bg-success', text: '就绪', bg: 'bg-success/10 text-success-strong', hint: '' }
-        : { dot: 'bg-muted-foreground', text: '检查中', bg: 'bg-muted text-muted-foreground', hint: '' }
+        ? { dot: 'bg-success', text: t('workMode.badge.ready'), bg: 'bg-success/10 text-success-strong', hint: '' }
+        : { dot: 'bg-muted-foreground', text: t('workMode.badge.checking'), bg: 'bg-muted text-muted-foreground', hint: '' }
 
   const scrollToConfig = () => {
     document.getElementById('engine-config')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -92,10 +97,10 @@ export default function WorkModeSection({ value, onChange }: Props) {
     <Card>
       <CardContent className="p-6">
         <div className="mb-4 flex items-center justify-between gap-3">
-          <h2 id="work-mode-heading" className="text-lg font-semibold">工作模式</h2>
+          <h2 id="work-mode-heading" className="text-lg font-semibold">{t('workMode.title')}</h2>
 
           {badge.hint ? (
-            <Tooltip variant="light" content={`${badge.hint}。点击跳到需要填的地方。`}>
+            <Tooltip variant="light" content={t('workMode.tooltipJump', { hint: badge.hint })}>
               <button
                 type="button"
                 onClick={scrollToConfig}
@@ -137,11 +142,11 @@ export default function WorkModeSection({ value, onChange }: Props) {
                     让"当前是哪个"不依赖颜色感知 */}
                 <div className="flex items-center gap-1 pr-7 text-sm font-medium">
                   {isActive && <Check className="h-3.5 w-3.5 shrink-0 text-primary" aria-hidden />}
-                  {m.label}
+                  {t(m.labelKey)}
                 </div>
-                <div className="mt-1 text-xs text-muted-foreground">{m.desc}</div>
+                <div className="mt-1 text-xs text-muted-foreground">{t(m.descKey)}</div>
                 <div className="mt-2 border-t border-border/50 pt-2 text-xs leading-relaxed text-muted-foreground">
-                  {m.privacy}
+                  {t(m.privacyKey)}
                 </div>
               </button>
             )

@@ -11,11 +11,12 @@ import { getEngineDraftDirty, subscribeEngineDraft } from '@/stores/engineDraft'
 import { isQwenOmniProvider, resolveAsrDisplayModel, resolveQwenOmniModel } from '@/lib/asrModels'
 import { describeProviderError, describeServerError } from '@/lib/errorMessages'
 import type { WorkMode } from '@/services/transcription'
+import { useT } from '@/i18n/useT'
 
 interface TestResult {
   text: string
   asrMs: number
-  mode: string
+  mode: WorkMode
   model: string
   audioDurationSec: number
 }
@@ -26,6 +27,7 @@ interface TestError {
 }
 
 export default function AsrTestSection({ workMode }: { workMode: WorkMode }) {
+  const t = useT()
   const [testing, setTesting] = useState(false)
   const [playing, setPlaying] = useState(false)
   const [result, setResult] = useState<TestResult | null>(null)
@@ -80,7 +82,7 @@ export default function AsrTestSection({ workMode }: { workMode: WorkMode }) {
         const r = await invoke<{ text: string; elapsed_ms: number; model_id: string }>('run_asr_benchmark', {
           modelId, language,
         })
-        setResult({ text: r.text, asrMs: r.elapsed_ms, mode: '本地', model: r.model_id, audioDurationSec })
+        setResult({ text: r.text, asrMs: r.elapsed_ms, mode: 'local', model: r.model_id, audioDurationSec })
       } else if (workMode === 'cloud_api') {
         let pcmB64 = ''
         const chunk = 8192
@@ -121,7 +123,7 @@ export default function AsrTestSection({ workMode }: { workMode: WorkMode }) {
         setResult({
           text: r.text,
           asrMs: totalMs,
-          mode: '云 API',
+          mode: 'cloud_api',
           model: isOmni ? (qwenOmniModel || asrProvider) : resolveAsrDisplayModel(asrProvider),
           audioDurationSec,
         })
@@ -131,7 +133,7 @@ export default function AsrTestSection({ workMode }: { workMode: WorkMode }) {
         const wsUrl = getWSUrl()
 
         const r = await new Promise<{ text: string; asrMs: number }>((resolve, reject) => {
-          const timeout = setTimeout(() => { try { sock.close() } catch { } reject(new Error('超时')) }, 30000)
+          const timeout = setTimeout(() => { try { sock.close() } catch { } reject(new Error(t('asrTest.timeout'))) }, 30000)
           const sock = new WebSocket(wsUrl)
           sock.binaryType = 'arraybuffer'
           sock.onopen = () => {
@@ -153,15 +155,15 @@ export default function AsrTestSection({ workMode }: { workMode: WorkMode }) {
                 sock.close()
               } else if (msg.type === 'error') {
                 clearTimeout(timeout)
-                reject(new Error(msg.message || '服务器错误'))
+                reject(new Error(msg.message || t('asrTest.serverError')))
                 sock.close()
               }
             } catch { }
           }
-          sock.onerror = () => { clearTimeout(timeout); reject(new Error('WebSocket 连接失败')) }
+          sock.onerror = () => { clearTimeout(timeout); reject(new Error(t('asrTest.wsFailed'))) }
         })
 
-        setResult({ text: r.text, asrMs: r.asrMs, mode: '服务器', model: '服务端 ASR', audioDurationSec })
+        setResult({ text: r.text, asrMs: r.asrMs, mode: 'server', model: '', audioDurationSec })
       }
     } catch (err) {
       const friendly = workMode === 'server'
@@ -179,18 +181,18 @@ export default function AsrTestSection({ workMode }: { workMode: WorkMode }) {
         {/* flex-wrap：最小窗口下标题 + 两个按钮挤一行会溢出 */}
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <h2 className="text-lg font-semibold">识别测试</h2>
+            <h2 className="text-lg font-semibold">{t('asrTest.title')}</h2>
             {/* 这张卡只测 ASR。服务器模式下请求里写着 disable_ai: true，本地和云 API 也
                 不经过 AI 整理——原来界面上还渲染一个恒为 0 的「LLM 0ms」，会让人以为
                 AI 整理坏了。现在把范围说清，并不再展示那个假字段。 */}
             <p className="mt-1 text-xs text-muted-foreground">
-              用内置的一段中文音频测当前模式的识别速度和准确率。只测语音识别，不含 AI 整理。
+              {t('asrTest.desc')}
             </p>
           </div>
           <div className="flex shrink-0 gap-2">
             <Button size="sm" variant="outline" className="h-9 gap-1.5" onClick={() => void handlePlay()}>
               {playing ? <Pause className="h-3.5 w-3.5" aria-hidden /> : <Play className="h-3.5 w-3.5" aria-hidden />}
-              {playing ? '暂停' : '播放'}
+              {playing ? t('asrTest.pause') : t('asrTest.play')}
             </Button>
             <Button
               size="sm"
@@ -199,7 +201,7 @@ export default function AsrTestSection({ workMode }: { workMode: WorkMode }) {
               onClick={() => void handleTest()}
               disabled={testing || draftDirty}
             >
-              {testing ? '识别中…' : '开始测试'}
+              {testing ? t('asrTest.testing') : t('asrTest.start')}
             </Button>
           </div>
         </div>
@@ -209,7 +211,7 @@ export default function AsrTestSection({ workMode }: { workMode: WorkMode }) {
           <Feedback
             className="mt-4"
             tone="warning"
-            message="上方还有没保存的配置。测试用的是已保存的值，先保存再测。"
+            message={t('asrTest.unsavedWarning')}
           />
         )}
 
@@ -217,21 +219,23 @@ export default function AsrTestSection({ workMode }: { workMode: WorkMode }) {
           <Feedback
             className="mt-4"
             tone="error"
-            message={`识别测试没通过：${error.message}`}
+            message={t('asrTest.failed', { message: error.message })}
             detail={error.detail}
-            actions={[{ label: '重试', onClick: () => void handleTest(), disabled: testing }]}
+            actions={[{ label: t('common.retry'), onClick: () => void handleTest(), disabled: testing }]}
           />
         )}
 
         {result && (
           <div className="mt-4 rounded-lg border border-border bg-muted/30 p-3">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-              <span className="rounded bg-primary/10 px-2 py-0.5 text-primary">{result.mode}</span>
-              <span className="rounded bg-muted px-2 py-0.5">{result.model}</span>
-              <span>音频 {result.audioDurationSec.toFixed(1)}s</span>
-              <span>识别耗时 {result.asrMs}ms</span>
+              <span className="rounded bg-primary/10 px-2 py-0.5 text-primary">
+                {t(result.mode === 'local' ? 'asrTest.modeLocal' : result.mode === 'cloud_api' ? 'asrTest.modeCloudApi' : 'asrTest.modeServer')}
+              </span>
+              <span className="rounded bg-muted px-2 py-0.5">{result.mode === 'server' ? t('asrTest.serverModel') : result.model}</span>
+              <span>{t('asrTest.audioLen', { sec: result.audioDurationSec.toFixed(1) })}</span>
+              <span>{t('asrTest.elapsed', { ms: result.asrMs })}</span>
             </div>
-            <p className="mt-2 text-sm text-foreground">{result.text || '（没有识别出内容）'}</p>
+            <p className="mt-2 text-sm text-foreground">{result.text || t('asrTest.noResult')}</p>
           </div>
         )}
       </CardContent>

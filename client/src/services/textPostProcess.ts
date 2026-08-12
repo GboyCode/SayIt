@@ -13,6 +13,7 @@ import { applyTextReplacements } from './textReplacement'
 import { segmentAsrText } from './textSegmenter'
 
 // ── 中文数字字符表 ──
+// i18n-allow-start: 中文数字解析算法的输入与输出标记
 const CN_DIGITS: Record<string, number> = {
   '零': 0, '〇': 0, '一': 1, '二': 2, '两': 2, '三': 3, '四': 4,
   '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '幺': 1,
@@ -234,6 +235,7 @@ export function convertChineseNumbers(text: string): string {
 
   return result
 }
+// i18n-allow-end
 
 /**
  * 还原被 ASR 拆开加空格的「无空格热词」（如豆包把热词 "SayIt" 识别成 "Say It"）。
@@ -276,7 +278,7 @@ export function stripTrailingPunctuation(text: string): string {
   if (!text) return text
   return text
     .split('\n')
-    .map((line) => line.replace(/[。．.，,、；;：:！!？?…⋯～~—－\s]+$/u, ''))
+    .map((line) => line.replace(/[。．.，,、；;：:！!？?…⋯～~—－\s]+$/u, '')) // i18n-allow: 中文标点数据
     .join('\n')
 }
 
@@ -287,7 +289,7 @@ export function stripTrailingPunctuation(text: string): string {
 export function replacePunctuationWithSpace(text: string): string {
   if (!text) return text
   let result = text.replace(
-    /(?<!\d)\.(?!\d)|[，。、；：！？…⋯""''‘’“”（）《》〈〉「」『』【】—－~～·!?,;:"'`()\[\]{}<>_=+|\\@#^&*-]/gu,
+    /(?<!\d)\.(?!\d)|[，。、；：！？…⋯""''‘’“”（）《》〈〉「」『』【】—－~～·!?,;:"'`()\[\]{}<>_=+|\\@#^&*-]/gu, // i18n-allow: 中文标点数据
     ' ',
   )
   result = result.replace(/[^\S\n]+/g, ' ').replace(/ *\n */g, '\n').trim()

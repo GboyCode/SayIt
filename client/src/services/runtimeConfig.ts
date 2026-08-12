@@ -1,4 +1,5 @@
 import * as bridge from './bridge'
+import { t } from '@/i18n'
 
 declare const __SAYIT_DEFAULT_SERVER_URL__: string
 
@@ -68,7 +69,7 @@ export function getBackendBaseUrl(): string {
 export async function setBackendBaseUrl(value: string): Promise<string> {
   const normalized = normalizeUrl(value)
   if (!normalized) {
-    throw new Error('服务地址不能为空')
+    throw new Error(t('runtimeConfig.emptyServerUrl'))
   }
   backendBaseUrl = normalized
   await bridge.storeSet(BACKEND_BASE_URL_STORE_KEY, normalized)

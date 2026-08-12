@@ -1,6 +1,8 @@
 ﻿import { useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import type { UpdateStatus } from '@/types/update'
+import { t } from '@/i18n'
+import { useLocale } from '@/i18n/useT'
 
 interface UpdateNoticeProps {
   updateStatus: UpdateStatus
@@ -12,6 +14,7 @@ function isVisiblePhase(phase: UpdateStatus['phase']) {
 }
 
 export default function UpdateNotice({ updateStatus, onInstallUpdate }: UpdateNoticeProps) {
+  const locale = useLocale()
   const [visible, setVisible] = useState(false)
 
   const noticeKey = `${updateStatus.phase}:${updateStatus.nextVersion || updateStatus.currentVersion}`
@@ -21,31 +24,32 @@ export default function UpdateNotice({ updateStatus, onInstallUpdate }: UpdateNo
   }, [noticeKey, updateStatus.phase])
 
   const content = useMemo(() => {
+    const version = updateStatus.nextVersion || ''
     switch (updateStatus.phase) {
       case 'available':
         return {
-          title: `发现新版本 v${updateStatus.nextVersion || ''}`,
-          description: '系统已开始在后台自动下载更新。下载完成后会再次提示你安装。',
+          title: t('update.availableTitle', { version }),
+          description: t('update.availableDesc'),
         }
       case 'downloading':
         return {
-          title: `正在下载新版本 v${updateStatus.nextVersion || ''}`,
-          description: '更新正在后台下载。你可以继续正常使用当前应用。',
+          title: t('update.downloadingTitle', { version }),
+          description: t('update.downloadingDesc'),
         }
       case 'downloaded':
         return {
-          title: `新版本 v${updateStatus.nextVersion || ''} 已下载完成`,
-          description: '现在可以立即安装。若暂不安装，关闭应用后也会自动完成更新。',
+          title: t('update.downloadedTitle', { version }),
+          description: t('update.downloadedDesc'),
         }
       case 'installing':
         return {
-          title: `正在安装更新 v${updateStatus.nextVersion || ''}`,
-          description: '应用将自动关闭并完成安装，请稍候。',
+          title: t('update.installingTitle', { version }),
+          description: t('update.installingDesc'),
         }
       default:
         return null
     }
-  }, [updateStatus.phase, updateStatus.nextVersion])
+  }, [updateStatus.phase, updateStatus.nextVersion, locale])
 
   if (!visible || !content) return null
 
@@ -58,7 +62,7 @@ export default function UpdateNotice({ updateStatus, onInstallUpdate }: UpdateNo
           {typeof updateStatus.progressPercent === 'number' ? (
             <div className="pt-2">
               <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
-                <span>下载进度</span>
+                <span>{t('update.progress')}</span>
                 <span>{updateStatus.progressPercent}%</span>
               </div>
               <div className="h-2 overflow-hidden rounded-full bg-muted">
@@ -75,15 +79,15 @@ export default function UpdateNotice({ updateStatus, onInstallUpdate }: UpdateNo
           {updateStatus.phase === 'downloaded' ? (
             <>
               <Button variant="outline" onClick={() => setVisible(false)}>
-                稍后安装
+                {t('update.later')}
               </Button>
               <Button onClick={onInstallUpdate}>
-                立即安装
+                {t('update.installNow')}
               </Button>
             </>
           ) : updateStatus.phase === 'installing' ? null : (
             <Button variant="outline" onClick={() => setVisible(false)}>
-              我知道了
+              {t('update.dismiss')}
             </Button>
           )}
         </div>

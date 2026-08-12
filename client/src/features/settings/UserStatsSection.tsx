@@ -4,14 +4,17 @@ import { summarizeDomainScenes } from '@/services/personalization/userStats'
 import type { UserStats } from '@/services/personalization/types'
 import { listHistory, type HistoryRecord } from '@/services/store'
 import { pickVoiceDurationSec } from '@/services/timeModel'
+import { getLocale, t, type TranslationKey } from '@/i18n'
+import { useT } from '@/i18n/useT'
+import { recordedAppDisplayName } from '@/i18n/displayNames'
 
 type TimeRange = 'today' | '7d' | '30d' | 'all'
 
-const RANGE_OPTIONS: { value: TimeRange; label: string }[] = [
-  { value: 'today', label: '今天' },
-  { value: '7d', label: '7 天' },
-  { value: '30d', label: '30 天' },
-  { value: 'all', label: '全部' },
+const RANGE_OPTIONS: { value: TimeRange; labelKey: TranslationKey }[] = [
+  { value: 'today', labelKey: 'range.today' },
+  { value: '7d', labelKey: 'range.7d' },
+  { value: '30d', labelKey: 'range.30d' },
+  { value: 'all', labelKey: 'range.all' },
 ]
 
 function getStartOfDay(date: Date): Date {
@@ -33,8 +36,8 @@ function formatPercent(value: number) {
 }
 
 function formatDate(timestamp: number | undefined) {
-  if (!timestamp) return '未知'
-  return new Date(timestamp).toLocaleDateString('zh-CN', {
+  if (!timestamp) return t('stats.unknown')
+  return new Date(timestamp).toLocaleDateString(getLocale(), {
     year: 'numeric', month: 'long', day: 'numeric',
   })
 }
@@ -55,7 +58,8 @@ function computeRangeStats(records: HistoryRecord[]): RangeStats {
     totalSessions++
     totalWords += r.charCount || 0
     if (r.appName || r.appId) {
-      const key = r.appName || r.appId || '未知'
+      const fallback = r.appName || r.appId || t('stats.unknown')
+      const key = recordedAppDisplayName(r.appId, fallback)
       appUsageCount[key] = (appUsageCount[key] || 0) + 1
     }
   }
@@ -68,6 +72,7 @@ function computeRangeStats(records: HistoryRecord[]): RangeStats {
 }
 
 export default function UserStatsSection({ userStats }: { userStats: UserStats }) {
+  useT()
   const [range, setRange] = useState<TimeRange>('today')
   const [records, setRecords] = useState<HistoryRecord[]>([])
 
@@ -101,9 +106,9 @@ export default function UserStatsSection({ userStats }: { userStats: UserStats }
       <CardContent className="space-y-4 p-6">
         <div className="flex items-start justify-between">
           <div>
-            <h2 className="text-lg font-semibold">使用统计</h2>
+            <h2 className="text-lg font-semibold">{t('stats.title')}</h2>
             <p className="mt-1 text-xs text-muted-foreground">
-              基于本地历史记录统计，数据不会上传。
+              {t('stats.desc')}
             </p>
           </div>
           <div className="flex gap-0.5">
@@ -111,13 +116,12 @@ export default function UserStatsSection({ userStats }: { userStats: UserStats }
               <button
                 key={opt.value}
                 onClick={() => setRange(opt.value)}
-                className={`rounded-md px-2.5 py-1 text-xs transition-colors ${
-                  range === opt.value
-                    ? 'bg-foreground text-background font-medium'
-                    : 'text-muted-foreground hover:bg-accent'
-                }`}
+                className={`rounded-md px-2.5 py-1 text-xs transition-colors ${range === opt.value
+                  ? 'bg-foreground text-background font-medium'
+                  : 'text-muted-foreground hover:bg-accent'
+                  }`}
               >
-                {opt.label}
+                {t(opt.labelKey)}
               </button>
             ))}
           </div>
@@ -125,16 +129,16 @@ export default function UserStatsSection({ userStats }: { userStats: UserStats }
 
         <div className="grid gap-3 sm:grid-cols-3">
           <div className="rounded-xl border bg-card px-4 py-3">
-            <p className="text-xs text-muted-foreground">输出字数</p>
-            <p className="mt-1 text-lg font-semibold">{displayStats.totalWords.toLocaleString('zh-CN')}</p>
+            <p className="text-xs text-muted-foreground">{t('stats.outputChars')}</p>
+            <p className="mt-1 text-lg font-semibold">{displayStats.totalWords.toLocaleString(getLocale())}</p>
           </div>
           <div className="rounded-xl border bg-card px-4 py-3">
-            <p className="text-xs text-muted-foreground">记录数</p>
-            <p className="mt-1 text-lg font-semibold">{displayStats.totalSessions.toLocaleString('zh-CN')}</p>
+            <p className="text-xs text-muted-foreground">{t('stats.records')}</p>
+            <p className="mt-1 text-lg font-semibold">{displayStats.totalSessions.toLocaleString(getLocale())}</p>
           </div>
           <div className="rounded-xl border bg-card px-4 py-3">
-            <p className="text-xs text-muted-foreground">平均每次字数</p>
-            <p className="mt-1 text-lg font-semibold">{displayStats.avgWords.toLocaleString('zh-CN')}</p>
+            <p className="text-xs text-muted-foreground">{t('stats.avgChars')}</p>
+            <p className="mt-1 text-lg font-semibold">{displayStats.avgWords.toLocaleString(getLocale())}</p>
           </div>
         </div>
 
@@ -142,11 +146,11 @@ export default function UserStatsSection({ userStats }: { userStats: UserStats }
           <div className="rounded-xl border bg-card px-4 py-3">
             <div className="flex items-center justify-between text-xs">
               <div>
-                <span className="text-muted-foreground">首次使用：</span>
+                <span className="text-muted-foreground">{t('stats.firstUsedLabel')}</span>
                 <span className="ml-1 font-medium">{formatDate(userStats.firstUsedAt)}</span>
               </div>
               <div>
-                <span className="text-muted-foreground">最近使用：</span>
+                <span className="text-muted-foreground">{t('stats.lastUsedLabel')}</span>
                 <span className="ml-1 font-medium">{formatDate(userStats.lastUsedAt)}</span>
               </div>
             </div>
@@ -155,12 +159,12 @@ export default function UserStatsSection({ userStats }: { userStats: UserStats }
 
         {range === 'all' && topScenes.length > 0 && (
           <div className="space-y-2">
-            <p className="text-xs font-medium text-muted-foreground">Top 3 应用场景</p>
+            <p className="text-xs font-medium text-muted-foreground">{t('stats.top3Scenes')}</p>
             {topScenes.map((scene) => (
               <div key={scene.id} className="flex items-center justify-between rounded-xl border bg-card px-4 py-3">
                 <div>
                   <p className="text-sm font-medium">{scene.label}</p>
-                  <p className="mt-1 text-xs text-muted-foreground">{scene.words.toLocaleString('zh-CN')} 字</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{t('stats.charsValue', { count: scene.words.toLocaleString(getLocale()) })}</p>
                 </div>
                 <span className="text-sm font-semibold text-foreground">{formatPercent(scene.ratio)}</span>
               </div>
@@ -170,12 +174,12 @@ export default function UserStatsSection({ userStats }: { userStats: UserStats }
 
         {appUsageEntries.length > 0 && (
           <div className="space-y-2">
-            <p className="text-xs font-medium text-muted-foreground">Top 5 应用使用次数</p>
+            <p className="text-xs font-medium text-muted-foreground">{t('stats.top5Apps')}</p>
             <div className="space-y-2">
               {appUsageEntries.map(([appId, count]) => (
                 <div key={appId} className="flex items-center justify-between rounded-xl border bg-card px-4 py-2.5">
                   <p className="text-sm font-medium">{appId}</p>
-                  <span className="text-sm font-semibold text-foreground">{count.toLocaleString('zh-CN')} 次</span>
+                  <span className="text-sm font-semibold text-foreground">{t('stats.timesValue', { count: count.toLocaleString(getLocale()) })}</span>
                 </div>
               ))}
             </div>

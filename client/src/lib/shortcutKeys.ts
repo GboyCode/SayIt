@@ -8,6 +8,8 @@
  * 新增或修改 PTT code 时必须同步 Rust 映射。
  */
 
+import { t, type TranslationKey } from '@/i18n'
+
 export interface SingleKeyDef {
   /** 存入设置、也等于 DOM KeyboardEvent.code */
   setting: string
@@ -17,6 +19,7 @@ export interface SingleKeyDef {
   label: string
 }
 
+// i18n-allow-start: Windows VK 源标签；展示层由 getSingleKeyDisplay 翻译覆盖
 export const SINGLE_KEYS: SingleKeyDef[] = [
   // 修饰键（左右分开）
   { setting: 'AltLeft', vk: 0xa4, label: '左 Alt' },
@@ -47,6 +50,7 @@ export const SINGLE_KEYS: SingleKeyDef[] = [
     label: `F${index + 1}`,
   })),
 ]
+// i18n-allow-end
 
 /** setting → 虚拟键码（旧单键与免提回退使用） */
 export const SETTING_TO_VK: Record<string, number> = Object.fromEntries(
@@ -72,6 +76,7 @@ export const PTT_MODIFIER_CODES = [
 const PTT_MODIFIER_SET = new Set<string>(PTT_MODIFIER_CODES)
 const PTT_MOUSE_CODES = new Set(['XButton1', 'XButton2', 'MButton'])
 
+// i18n-allow-start: Windows VK 源标签；展示层由 getSingleKeyDisplay 翻译覆盖
 const PTT_EXTRA_KEY_DEFS: SingleKeyDef[] = [
   { setting: 'MetaLeft', vk: 0x5b, label: '左 Win' },
   { setting: 'MetaRight', vk: 0x5c, label: '右 Win' },
@@ -99,6 +104,7 @@ const PTT_EXTRA_KEY_DEFS: SingleKeyDef[] = [
   { setting: 'PageUp', vk: 0x21, label: 'Page Up' },
   { setting: 'PageDown', vk: 0x22, label: 'Page Down' },
 ]
+// i18n-allow-end
 
 /** PTT 成员 code → Windows 虚拟键码。 */
 export const PTT_CODE_TO_VK: Record<string, number> = {
@@ -126,8 +132,39 @@ export function settingToCode(setting: string): string {
   return isSingleKeySetting(setting) ? setting : ''
 }
 
+/**
+ * 需要翻译的键名。
+ *
+ * 只列**含自然语言**的那些：`左 Alt` 在英文里是 `Left Alt`，`空格` 是 `Space`。
+ * `F1`、`Tab`、`Esc`、`Caps Lock`、字母数字、方向键这些本来就是语言中立的，
+ * 继续用上面表里的 `label`，不进 locale 文件 —— 翻译一份和原文一样的东西，
+ * 只会多一处将来会不同步的地方。
+ *
+ * ⚠️ 这里刻意**不改** `SINGLE_KEYS` 的 `label` 字段：那张表还同时供 `vk` 映射用，
+ * 动它的形状会牵连 webview 回退补发按键的逻辑。这里只加一层展示期的覆盖。
+ */
+const TRANSLATED_KEY_NAMES: Record<string, TranslationKey> = {
+  AltLeft: 'keyName.AltLeft',
+  AltRight: 'keyName.AltRight',
+  ControlLeft: 'keyName.ControlLeft',
+  ControlRight: 'keyName.ControlRight',
+  ShiftLeft: 'keyName.ShiftLeft',
+  ShiftRight: 'keyName.ShiftRight',
+  MetaLeft: 'keyName.MetaLeft',
+  MetaRight: 'keyName.MetaRight',
+  Space: 'keyName.Space',
+  ContextMenu: 'keyName.ContextMenu',
+  XButton1: 'keyName.XButton1',
+  XButton2: 'keyName.XButton2',
+  MButton: 'keyName.MButton',
+  BrowserBack: 'keyName.BrowserBack',
+  BrowserForward: 'keyName.BrowserForward',
+}
+
 /** 单键显示名（未知原样返回）。 */
 export function getSingleKeyDisplay(value: string): string {
+  const key = TRANSLATED_KEY_NAMES[value]
+  if (key) return t(key)
   return SINGLE_KEY_DISPLAY[value] || value
 }
 
@@ -179,9 +216,10 @@ export function canonicalizePTTShortcut(settingOrCodes: string | Iterable<string
 
 /** PTT 设置的按键标签，用于逐个渲染键帽。 */
 export function displayPTTShortcut(setting: string): string[] {
-  return parsePTTShortcut(canonicalizePTTShortcut(setting)).map(
-    (code) => PTT_CODE_DISPLAY[code] || code,
-  )
+  return parsePTTShortcut(canonicalizePTTShortcut(setting)).map((code) => {
+    const key = TRANSLATED_KEY_NAMES[code]
+    return key ? t(key) : PTT_CODE_DISPLAY[code] || code
+  })
 }
 
 export function isPTTModifierCode(code: string): boolean {
@@ -192,60 +230,114 @@ export function pttShortcutHasModifier(setting: string): boolean {
   return parsePTTShortcut(setting).some(isPTTModifierCode)
 }
 
-/** 返回中文错误；null 表示可保存。 */
+/** 按住说话可用、但可能与 Windows 辅助功能冲突的配置提示。 */
+export function getPTTShortcutWarning(setting: string): string | null {
+  return parsePTTShortcut(canonicalizePTTShortcut(setting)).includes('ShiftRight')
+    ? t('shortcut.warning.shiftRightFilterKeys')
+    : null
+}
+
+function normalizedAcceleratorParts(accelerator: string): string[] {
+  const aliases: Record<string, string> = {
+    Ctrl: 'Control',
+    CommandOrControl: 'Control',
+    Super: 'Meta',
+    Win: 'Meta',
+    Windows: 'Meta',
+    Return: 'Enter',
+    Up: 'ArrowUp',
+    Down: 'ArrowDown',
+    Left: 'ArrowLeft',
+    Right: 'ArrowRight',
+  }
+  return accelerator.split('+')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => aliases[part] || part)
+}
+
+/**
+ * 通用 accelerator 的 Windows 保留组合校验。
+ *
+ * PTT 使用物理 code，有自己的完整校验；免提与预设切换使用 Tauri accelerator，
+ * 也必须在试注册前挡住系统安全界面、窗口切换等无法可靠覆盖的组合。
+ */
+export function getAcceleratorShortcutValidationError(accelerator: string): string | null {
+  const parts = normalizedAcceleratorParts(accelerator)
+  const has = (key: string) => parts.includes(key)
+  const mainKeys = parts.filter((part) => !['Control', 'Meta', 'Alt', 'Shift'].includes(part))
+  const mainKey = mainKeys[0]
+
+  if (has('Control') && has('Alt') && mainKey === 'Delete') {
+    return t('shortcut.error.reservedCtrlAltDel')
+  }
+  if (has('Meta') && mainKey) {
+    return t('shortcut.error.reservedWindows')
+  }
+  if (has('Alt') && ['F4', 'Tab', 'Escape', 'Space'].includes(mainKey)) {
+    return t('shortcut.error.reservedAlt')
+  }
+  if (has('Control') && mainKey === 'Escape') {
+    return t('shortcut.error.reservedCtrlEsc')
+  }
+  return null
+}
+
+/** 返回本地化的错误提示；null 表示可保存。 */
 export function getPTTShortcutValidationError(setting: string): string | null {
   const rawCodes = setting.split('+').map((part) => part.trim())
   const codes = rawCodes.filter(Boolean)
-  if (codes.length === 0) return '请至少按下一个按键'
+  if (codes.length === 0) return t('shortcut.error.empty')
   if (rawCodes.length !== codes.length || new Set(codes).size !== codes.length) {
-    return '快捷键格式无效，请重新录制'
+    return t('shortcut.error.invalidFormat')
   }
 
   const unsupported = codes.find((code) => !(code in PTT_CODE_TO_VK))
-  if (unsupported) return `暂不支持按键 ${unsupported}，请换一个组合`
+  if (unsupported) return t('shortcut.error.unsupportedKey', { key: unsupported })
 
   if (codes.length === 1) {
     const code = codes[0]
     if (code === 'MetaLeft' || code === 'MetaRight') {
-      return 'Windows 键不能单独用于按住说话，请再搭配一个修饰键'
+      return t('shortcut.error.metaAlone')
     }
     if (!isSingleKeySetting(code)) {
-      return '字母、数字或导航键不能单独占用，请搭配 Ctrl、Win、Alt 或 Shift'
+      return t('shortcut.error.plainKeyAlone')
     }
     return null
   }
 
   if (codes.some((code) => PTT_MOUSE_CODES.has(code))) {
-    return '鼠标按键暂不支持与键盘组合，请单独使用'
+    return t('shortcut.error.mouseCombo')
   }
 
   const modifiers = codes.filter(isPTTModifierCode)
   const mainKeys = codes.filter((code) => !isPTTModifierCode(code))
   const modifierFamilies = modifiers.map((code) => code.replace(/(?:Left|Right)$/, ''))
   if (new Set(modifierFamilies).size !== modifierFamilies.length) {
-    return '同一类修饰键不能同时使用左右两侧，请保留其中一个'
+    return t('shortcut.error.sameModifierFamily')
   }
-  if (mainKeys.length > 1) return '组合键最多只能包含一个非修饰键'
+  if (mainKeys.length > 1) return t('shortcut.error.tooManyMainKeys')
   if (mainKeys.length === 1 && modifiers.length === 0) {
-    return '普通组合键至少需要一个 Ctrl、Win、Alt 或 Shift'
+    return t('shortcut.error.needModifier')
   }
   if (mainKeys.length === 0 && modifiers.length < 2) {
-    return '纯修饰键组合至少需要两个按键'
+    return t('shortcut.error.needTwoModifiers')
   }
 
   const hasFamily = (prefix: string) => modifiers.some((code) => code.startsWith(prefix))
   const mainKey = mainKeys[0]
   if (hasFamily('Control') && hasFamily('Alt') && mainKey === 'Delete') {
-    return 'Ctrl + Alt + Delete 是系统保留组合，请更换'
+    return t('shortcut.error.reservedCtrlAltDel')
   }
-  if (hasFamily('Meta') && (mainKey === 'KeyL' || mainKey === 'Tab')) {
-    return '该 Windows 系统组合会锁屏或切换窗口，请更换'
+  // 带主键的 Win 组合由 Windows Shell 保留；Ctrl + Win 这类纯修饰键组合仍可用。
+  if (hasFamily('Meta') && mainKey) {
+    return t('shortcut.error.reservedWindows')
   }
-  if (hasFamily('Alt') && (mainKey === 'F4' || mainKey === 'Tab')) {
-    return '该系统组合会关闭或切换窗口，请更换'
+  if (hasFamily('Alt') && ['F4', 'Tab', 'Escape', 'Space'].includes(mainKey)) {
+    return t('shortcut.error.reservedAlt')
   }
   if (hasFamily('Control') && mainKey === 'Escape') {
-    return 'Ctrl + Esc 会打开开始菜单，请更换'
+    return t('shortcut.error.reservedCtrlEsc')
   }
 
   return null

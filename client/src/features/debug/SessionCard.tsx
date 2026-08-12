@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { useT } from '@/i18n/useT'
 import { type DebugSession } from '@/services/debugLog'
 import { AudioPlayer, LogItem } from './DebugCards'
 import {
@@ -18,6 +19,7 @@ import {
 } from './debugUtils'
 
 export default function SessionCard({ session, defaultOpen }: { session: DebugSession; defaultOpen?: boolean }) {
+  const t = useT()
   const [open, setOpen] = useState(defaultOpen ?? false)
   const [showAllLogs, setShowAllLogs] = useState(false)
 
@@ -46,12 +48,12 @@ export default function SessionCard({ session, defaultOpen }: { session: DebugSe
           <div className="min-w-0 flex-1">
             <div className="mb-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
               <span>{formatTime(session.startTime)}</span>
-              <span>音频(发送) {formatDuration(audioDurationSec)}</span>
-              <span>日志 {session.messages.length}</span>
-              <span>采样率 {sampleRate}Hz</span>
+              <span>{t('debug.audioSent', { duration: formatDuration(audioDurationSec) })}</span>
+              <span>{t('debug.logCount', { count: session.messages.length })}</span>
+              <span>{t('debug.sampleRate', { rate: sampleRate })}</span>
             </div>
             <p className="truncate text-sm text-foreground">
-              {(final?.llm_text || final?.asr_text || asr?.text || '无结果') as string}
+              {(final?.llm_text || final?.asr_text || asr?.text || t('debug.noResult')) as string}
             </p>
           </div>
 
@@ -64,38 +66,38 @@ export default function SessionCard({ session, defaultOpen }: { session: DebugSe
         {open && (
           <>
             <div className="grid grid-cols-2 gap-2 text-xs md:grid-cols-5">
-              <div className="rounded border bg-muted p-2"><div className="text-muted-foreground">ASR 耗时</div><div className="font-medium">{Number(final?.asr_ms || asr?.asr_ms || 0)} ms</div></div>
-              <div className="rounded border bg-muted p-2"><div className="text-muted-foreground">LLM 耗时</div><div className="font-medium">{Number(final?.llm_ms || 0)} ms</div></div>
-              <div className="rounded border bg-muted p-2"><div className="text-muted-foreground">按住时长</div><div className="font-medium">{formatDuration(holdDurationSec)}</div></div>
-              <div className="rounded border bg-muted p-2"><div className="text-muted-foreground">ASR 音频时长</div><div className="font-medium">{formatDuration(asrDurationSec)}</div></div>
+              <div className="rounded border bg-muted p-2"><div className="text-muted-foreground">{t('debug.asrTime')}</div><div className="font-medium">{Number(final?.asr_ms || asr?.asr_ms || 0)} ms</div></div>
+              <div className="rounded border bg-muted p-2"><div className="text-muted-foreground">{t('debug.llmTime')}</div><div className="font-medium">{Number(final?.llm_ms || 0)} ms</div></div>
+              <div className="rounded border bg-muted p-2"><div className="text-muted-foreground">{t('debug.holdTime')}</div><div className="font-medium">{formatDuration(holdDurationSec)}</div></div>
+              <div className="rounded border bg-muted p-2"><div className="text-muted-foreground">{t('debug.asrAudioTime')}</div><div className="font-medium">{formatDuration(asrDurationSec)}</div></div>
               <div className="rounded border bg-muted p-2"><div className="text-muted-foreground">LLM Provider</div><div className="font-medium">{prompts.provider}</div></div>
             </div>
 
             <div className="rounded border bg-muted p-3 text-xs">
-              <p className="mb-2 font-medium text-foreground">会话参数</p>
+              <p className="mb-2 font-medium text-foreground">{t('debug.sessionParams')}</p>
               <div className="grid gap-x-4 gap-y-1 md:grid-cols-2">
                 <div className="text-muted-foreground">connection_id</div>
                 <div className="break-all font-mono text-xs">{ready?.connection_id || '-'}</div>
-                <div className="text-muted-foreground">后端能力</div>
+                <div className="text-muted-foreground">{t('debug.backendCapabilities')}</div>
                 <div>ASR: {ready?.asr ? 'ON' : 'OFF'} / LLM: {ready?.llm ? 'ON' : 'OFF'}</div>
-                <div className="text-muted-foreground">音频分片</div>
+                <div className="text-muted-foreground">{t('debug.audioChunks')}</div>
                 <div>{session.audioChunks.length} chunks</div>
-                <div className="text-muted-foreground">音频字节</div>
+                <div className="text-muted-foreground">{t('debug.audioBytes')}</div>
                 <div>{totalBytes} bytes</div>
               </div>
             </div>
 
             <div className="space-y-2 rounded border bg-card p-3">
               <div className="flex items-center justify-between">
-                <p className="text-xs font-medium">System Prompt（完整）</p>
+                <p className="text-xs font-medium">{t('debug.fullSystemPrompt')}</p>
               </div>
               <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-2 text-xs text-foreground">
-                {prompts.systemPrompt || '无'}
+                {prompts.systemPrompt || t('debug.none')}
               </pre>
 
-              <p className="text-xs font-medium">User Prompt（完整）</p>
+              <p className="text-xs font-medium">{t('debug.fullUserPrompt')}</p>
               <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-2 text-xs text-foreground">
-                {prompts.userPrompt || '无'}
+                {prompts.userPrompt || t('debug.none')}
               </pre>
 
               {prompts.rawOutput && (
@@ -110,10 +112,10 @@ export default function SessionCard({ session, defaultOpen }: { session: DebugSe
 
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <p className="text-xs font-medium">会话日志</p>
+                <p className="text-xs font-medium">{t('debug.sessionLog')}</p>
                 <div className="flex items-center gap-2">
                   {!showAllLogs && filteredOutCount > 0 && (
-                    <span className="text-xs text-muted-foreground">已隐藏 {filteredOutCount} 条低价值日志</span>
+                    <span className="text-xs text-muted-foreground">{t('debug.hiddenLogs', { count: filteredOutCount })}</span>
                   )}
                   <Button
                     type="button"
@@ -122,7 +124,7 @@ export default function SessionCard({ session, defaultOpen }: { session: DebugSe
                     className="h-7 px-2 text-xs"
                     onClick={() => setShowAllLogs((value) => !value)}
                   >
-                    {showAllLogs ? '仅看关键日志' : '显示全部日志'}
+                    {t(showAllLogs ? 'debug.keyLogsOnly' : 'debug.showAllLogs')}
                   </Button>
                 </div>
               </div>

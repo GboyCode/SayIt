@@ -22,7 +22,7 @@ export async function saveRecordingAudio(
   const expectedBytesPerSec = sampleRate * 2
   const durationSec = totalLen / expectedBytesPerSec
   if (durationSec > 600) {
-    console.warn('[audio] saveRecordingAudio: 异常长音频', {
+    console.warn('[audio] saveRecordingAudio: unusually long audio', {
       totalLen,
       durationSec: durationSec.toFixed(1),
       sampleRate,

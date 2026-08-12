@@ -55,10 +55,10 @@ pub async fn transcribe(
         &base64::engine::general_purpose::STANDARD,
         audio_pcm_b64,
     )
-    .map_err(|e| diag::fail(SCOPE, "decode_b64", format!("base64 解码失败: {}", e)))?;
+    .map_err(|e| diag::fail(SCOPE, "decode_b64", format!("Failed to decode base64 audio: {}", e)))?;
 
     if pcm_data.is_empty() {
-        diag::empty_result(SCOPE, "客户端送来的音频是空的，没有发起请求");
+        diag::empty_result(SCOPE, "Input audio was empty; provider request was skipped");
         return Ok(AsrResult {
             text: String::new(),
             elapsed_ms: 0,
@@ -71,10 +71,11 @@ pub async fn transcribe(
 
     let auth = DoubaoAuth::from_config(config);
     if let Some(missing) = auth.missing_field() {
-        return Err(diag::fail(
+        return Err(diag::fail_code(
             SCOPE,
             "credentials",
-            format!("豆包 ASR 缺少{}，请在设置里填好", missing),
+            "provider_bad_key",
+            format!("Doubao ASR is missing {}; complete it in Settings", missing),
         ));
     }
 
@@ -129,7 +130,7 @@ pub async fn transcribe(
         .timeout(std::time::Duration::from_secs(60))
         .send()
         .await
-        .map_err(|e| diag::fail(SCOPE, "http_send", format!("HTTP 请求失败: {}", e)))?;
+        .map_err(|e| diag::fail(SCOPE, "http_send", format!("HTTP request failed: {}", e)))?;
 
     let elapsed_ms = start.elapsed().as_millis() as u64;
     let http_summary = diag::http_summary(resp.status(), resp.headers());
@@ -160,7 +161,7 @@ pub async fn transcribe(
             SCOPE,
             "http_status",
             format!(
-                "豆包 ASR 请求失败 HTTP {} [{} status={} msg={}]: {}",
+                "Doubao ASR request failed with HTTP {} [{} status={} msg={}]: {}",
                 status,
                 http_summary,
                 if status_code.is_empty() { "-" } else { &status_code },
@@ -173,13 +174,13 @@ pub async fn transcribe(
     let body_text = resp
         .text()
         .await
-        .map_err(|e| diag::fail(SCOPE, "read_body", format!("读取响应失败: {}", e)))?;
+        .map_err(|e| diag::fail(SCOPE, "read_body", format!("Failed to read response: {}", e)))?;
     let data: serde_json::Value = serde_json::from_str(&body_text).map_err(|e| {
         diag::fail(
             SCOPE,
             "parse_json",
             format!(
-                "解析响应失败: {} [{}] 响应片段: {}",
+                "Failed to parse response: {} [{}] response excerpt: {}",
                 e,
                 http_summary,
                 diag::truncate(&body_text, 200)
@@ -200,7 +201,7 @@ pub async fn transcribe(
             SCOPE,
             "api_status",
             format!(
-                "豆包 ASR 错误 {}{}: {} [{}]",
+                "Doubao ASR error {}{}: {} [{}]",
                 status_code, hint, api_message, http_summary
             ),
         ));
@@ -216,7 +217,7 @@ pub async fn transcribe(
             SCOPE,
             "no_result_field",
             format!(
-                "豆包返回的响应里没有识别结果 [{} status={}] {}",
+                "Doubao response contained no recognition result [{} status={}] {}",
                 http_summary,
                 if status_code.is_empty() { "-" } else { &status_code },
                 diag::describe_json(&body_text)
@@ -234,7 +235,7 @@ pub async fn transcribe(
         diag::empty_result(
             SCOPE,
             &format!(
-                "有 result 但 text 为空 audio_sec={:.1} elapsed={}ms [{} status={} msg={}]",
+                "Result contained an empty transcript audio_sec={:.1} elapsed={}ms [{} status={} msg={}]",
                 audio_sec,
                 elapsed_ms,
                 http_summary,
@@ -260,7 +261,7 @@ pub async fn test_connection(config: &AsrProviderConfig) -> TestResult {
     if let Some(missing) = auth.missing_field() {
         return TestResult {
             ok: false,
-            message: format!("还没填{}", missing),
+            message: format!("{} has not been configured", missing),
             elapsed_ms: 0,
             detail: String::new(),
         };
@@ -310,14 +311,14 @@ pub async fn test_connection(config: &AsrProviderConfig) -> TestResult {
                 // 20000003 = 静音音频，也算连接成功
                 TestResult {
                     ok: true,
-                    message: format!("连接成功 ({}ms)", elapsed_ms),
+                    message: format!("Connection successful ({}ms)", elapsed_ms),
                     elapsed_ms,
                     detail: String::new(),
                 }
             } else if resp.status().is_success() {
                 TestResult {
                     ok: true,
-                    message: format!("连接成功 ({}ms)，状态码: {}", elapsed_ms, status_code),
+                    message: format!("Connection successful ({}ms), status code: {}", elapsed_ms, status_code),
                     elapsed_ms,
                     detail: String::new(),
                 }
@@ -329,7 +330,7 @@ pub async fn test_connection(config: &AsrProviderConfig) -> TestResult {
                     message: diag::fail(
                         "doubao/flash-test",
                         "http_status",
-                        format!("API 错误 {}: {}", status, diag::truncate(&body, 100)),
+                        format!("API error {}: {}", status, diag::truncate(&body, 100)),
                     ),
                     elapsed_ms,
                     detail: String::new(),
@@ -341,7 +342,7 @@ pub async fn test_connection(config: &AsrProviderConfig) -> TestResult {
             message: diag::fail(
                 "doubao/flash-test",
                 "http_send",
-                format!("连接失败: {}", e),
+                format!("Connection failed: {}", e),
             ),
             elapsed_ms,
             detail: String::new(),

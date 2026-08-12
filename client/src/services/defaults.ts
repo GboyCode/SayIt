@@ -11,6 +11,12 @@
 
 export const DEFAULTS: Record<string, unknown> = {
 
+  // ── 界面语言 ──
+  // 只管**界面文字**，不改识别语种。设置层已经有三个"语言"了
+  // （localAsr.language / server.language 是 ASR 语种，Preset 决定输出语种），
+  // 所以这个键必须带 ui. 前缀，别再起名叫 language。
+  'ui.language': 'auto', // 可选: 'auto'（跟随系统）| 'zh-CN' | 'en'
+
   // ── 工作模式 ──
   workMode: 'server', // 可选: 'server' | 'cloud_api' | 'local'
 
@@ -31,6 +37,7 @@ export const DEFAULTS: Record<string, unknown> = {
   // ── AI 校对 ──
   aiEnabled: true, // 是否开启 AI 校对。可选: true | false
   aiPromptAppend: '', // 全局附加 prompt
+  'ai.builtinPromptLanguage': 'zh-CN', // 内置 Prompt 内容语言；与界面语言相互独立
 
   // ── AI 供应商 ──
   // 下面这四个是**运行时生效的那一份**，录音链路、历史重跑、诊断页、反馈上报都只认它们。

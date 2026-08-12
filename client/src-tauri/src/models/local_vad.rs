@@ -35,11 +35,11 @@ pub fn detect_speech_span(
     }
 
     let mut vad = SileroVad::with_sample_rate(sample_rate)
-        .map_err(|e| format!("创建 Silero VAD 失败: {e}"))?;
+        .map_err(|e| format!("Failed to create Silero VAD: {e}"))?;
     let window_size_samples = vad.source_window_samples();
     let probabilities = vad
         .forward_audio(samples)
-        .map_err(|e| format!("Silero VAD 推理失败: {e}"))?;
+        .map_err(|e| format!("Silero VAD inference failed: {e}"))?;
 
     let segments = get_timestamps_from_probs_with_config(
         &probabilities,

@@ -1,4 +1,5 @@
 import type { ThemeDefinition } from './types'
+import { t } from '@/i18n'
 
 /**
  * 暗色主题 — VS Code 风格
@@ -6,7 +7,7 @@ import type { ThemeDefinition } from './types'
  */
 const dark: ThemeDefinition = {
   id: 'dark',
-  name: '深色',
+  get name() { return t('theme.dark') },
   isDark: true,
   previewColors: {
     bg: '#1e1e1e',

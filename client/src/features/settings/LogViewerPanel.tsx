@@ -3,6 +3,7 @@ import { FolderOpen, RefreshCw } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { readLogFile, openLogFolder } from '@/services/bridge'
+import { useT } from '@/i18n/useT'
 
 type LogLevel = 'all' | 'error' | 'warn' | 'info'
 type LogSource = 'current' | '1' | '2' | '3'
@@ -66,6 +67,7 @@ function LogLine({ entry }: { entry: ParsedLine }) {
 }
 
 export default function LogViewerPanel() {
+  const t = useT()
   const [logContent, setLogContent] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [levelFilter, setLevelFilter] = useState<LogLevel>('all')
@@ -116,17 +118,17 @@ export default function LogViewerPanel() {
   }, [parsed])
 
   const LEVEL_OPTIONS: { value: LogLevel; label: string; count: number }[] = [
-    { value: 'all', label: '全部', count: counts.total },
-    { value: 'error', label: '错误', count: counts.error },
-    { value: 'warn', label: '警告', count: counts.warn },
-    { value: 'info', label: '信息', count: counts.info },
+    { value: 'all', label: t('diagnostics.all'), count: counts.total },
+    { value: 'error', label: t('diagnostics.errors'), count: counts.error },
+    { value: 'warn', label: t('diagnostics.warnings'), count: counts.warn },
+    { value: 'info', label: t('logViewer.info'), count: counts.info },
   ]
 
   const SOURCE_OPTIONS: { value: LogSource; label: string }[] = [
-    { value: 'current', label: '当前日志' },
-    { value: '1', label: '日志 1' },
-    { value: '2', label: '日志 2' },
-    { value: '3', label: '日志 3' },
+    { value: 'current', label: t('logViewer.current') },
+    { value: '1', label: t('logViewer.rotated', { number: 1 }) },
+    { value: '2', label: t('logViewer.rotated', { number: 2 }) },
+    { value: '3', label: t('logViewer.rotated', { number: 3 }) },
   ]
 
   return (
@@ -134,17 +136,17 @@ export default function LogViewerPanel() {
       <CardContent className="p-6">
         <div className="mb-4 flex items-start justify-between gap-4">
           <div>
-            <h2 className="text-lg font-semibold">运行日志</h2>
-            <p className="mt-1 text-sm text-muted-foreground">查看应用运行日志，排查问题</p>
+            <h2 className="text-lg font-semibold">{t('diagnostics.runtimeLog')}</h2>
+            <p className="mt-1 text-sm text-muted-foreground">{t('logViewer.desc')}</p>
           </div>
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={() => openLogFolder()}>
               <FolderOpen className="mr-2 h-3.5 w-3.5" />
-              打开目录
+              {t('logViewer.openDirectory')}
             </Button>
             <Button variant="outline" size="sm" onClick={() => loadLog(source)} disabled={loading}>
               <RefreshCw className={`mr-2 h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
-              刷新
+              {t('logViewer.refresh')}
             </Button>
           </div>
         </div>
@@ -188,23 +190,23 @@ export default function LogViewerPanel() {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="搜索日志内容"
+            placeholder={t('logViewer.search')}
             className="ml-auto w-48 rounded-md border border-input-border bg-input-bg px-2.5 py-1 text-xs focus:border-input-focus-border focus:outline-none"
           />
         </div>
 
         <div className="custom-scrollbar max-h-[50vh] overflow-y-auto rounded-md border border-border bg-card">
           {loading ? (
-            <div className="py-8 text-center text-sm text-muted-foreground">加载中...</div>
+            <div className="py-8 text-center text-sm text-muted-foreground">{t('logViewer.loading')}</div>
           ) : filtered.length === 0 ? (
-            <div className="py-8 text-center text-sm text-muted-foreground">暂无日志</div>
+            <div className="py-8 text-center text-sm text-muted-foreground">{t('diagnostics.noLogs')}</div>
           ) : (
             filtered.map((entry, i) => <LogLine key={i} entry={entry} />)
           )}
         </div>
 
         <div className="mt-2 text-xs text-muted-foreground">
-          显示 {filtered.length} / {counts.total} 条
+          {t('logViewer.showing', { shown: filtered.length, total: counts.total })}
         </div>
       </CardContent>
     </Card>

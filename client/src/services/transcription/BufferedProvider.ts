@@ -42,13 +42,13 @@ export abstract class BufferedProvider implements TranscriptionProvider {
     const usable = await this.onConnect(callbacks)
     if (usable === false) {
       this.ready = false
-      addRuntimeEvent('warn', this.mode, 'Provider 连上但不可用，已标记未就绪')
+      addRuntimeEvent('warn', this.mode, 'Provider connected but is unavailable; marked not ready')
     }
   }
 
   start(opts: StartOptions): boolean {
     if (!this.ready) {
-      addRuntimeEvent('error', this.mode, 'start 失败：Provider 未就绪')
+      addRuntimeEvent('error', this.mode, 'Start failed: provider is not ready')
       return false
     }
     this.pcmBuffers = []
@@ -125,7 +125,7 @@ export abstract class BufferedProvider implements TranscriptionProvider {
 
       const durationSec = (totalBytes / 2) / 16000
       if (durationSec < 0.3) {
-        addRuntimeEvent('info', this.mode, '音频过短，跳过处理', { durationSec })
+      addRuntimeEvent('info', this.mode, 'Audio too short; skipped processing', { durationSec })
         if (this.isRunCurrent(runId)) {
           this.callbacks.onDone?.()
           if (this.isRunCurrent(runId)) this.activeRunId = 0
@@ -138,7 +138,7 @@ export abstract class BufferedProvider implements TranscriptionProvider {
       if (this.isRunCurrent(runId)) this.activeRunId = 0
     } catch (err) {
       if (!this.isRunCurrent(runId)) return
-      addRuntimeEvent('error', this.mode, '处理异常', { error: String(err) })
+      addRuntimeEvent('error', this.mode, 'Processing failed', { error: String(err) })
       this.callbacks.onError?.(String(err))
       this.callbacks.onDone?.()
       if (this.isRunCurrent(runId)) this.activeRunId = 0

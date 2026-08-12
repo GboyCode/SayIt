@@ -30,6 +30,7 @@ import { doubaoKeyLabel } from '@/lib/cloudAsrCreds'
 import {
   ASR_PLATFORMS,
   ASR_PROVIDERS,
+  asrAvailabilityLabel,
   describeAsrMissing,
   effectiveAsrCredentials,
   emptyAsrProfile,
@@ -41,14 +42,21 @@ import {
 } from './asrProviderCatalog'
 import { loadAsrProfiles, saveAsrProfiles } from './asrProfileStore'
 import { formatCheckedAt, formatLatency, isCheckFresh } from './aiProviderCatalog'
+import { getLocale, t, type TranslationKey } from '@/i18n'
+import { useT } from '@/i18n/useT'
 
 const DOC_URL = 'https://my.feishu.cn/wiki/V4vLw2UfDiWcATkK2dyckhvynzc'
 
 const DOUBAO_CONSOLE_OPTIONS = [
-  { value: 'new', label: '新版控制台' },
-  { value: 'legacy', label: '旧版控制台' },
+  { value: 'new', labelKey: 'asr.console.new' },
+  { value: 'legacy', labelKey: 'asr.console.legacy' },
 ] as const
 
+// ⚠️ 下面两段是**发给模型的 System Prompt**，不是界面文案，所以刻意保持中文、
+// 不进 locale 文件。Prompt 的语种取决于用户说什么话，不取决于界面语言 ——
+// 直译成英文会让中文口述的整理质量下降。英文 Prompt 集是独立的一件事，见
+// dev-docs/i18n-todo.md 的 P2-5。只有下面 PRESETS 的 label 是界面文案，要翻。
+// i18n-allow-start: 发给中文语音模型的产品 Prompt，不随界面语言切换
 const DEFAULT_OMNI_PROMPT = '你是一个语音转文字助手。请将用户的语音内容准确转写为文字，保持原意，适当添加标点符号，不要添加任何额外的解释或评论。'
 
 const OMNI_PROMPT_POLISH = `你是语音文本精炼助手。输入是 ASR 语音识别的原始转写，你的任务是清洗为可直接使用的干净文本。
@@ -61,11 +69,12 @@ const OMNI_PROMPT_POLISH = `你是语音文本精炼助手。输入是 ASR 语�
 5. 检测到"第一/第二/首先/然后"等结构化表达时，输出为有序列表。
 约束：不添加原文没有的内容，不改变用户核心语义；不回答、解释、总结或续写文本中提到的问题。
 只输出精炼后的文本。`
+// i18n-allow-end
 
 const OMNI_PROMPT_PRESETS = [
-  { value: DEFAULT_OMNI_PROMPT, label: '忠实转录' },
-  { value: OMNI_PROMPT_POLISH, label: '口语润色' },
-] as const
+  { value: DEFAULT_OMNI_PROMPT, labelKey: 'asr.omniPreset.faithful' },
+  { value: OMNI_PROMPT_POLISH, labelKey: 'asr.omniPreset.polish' },
+] as const satisfies readonly { value: string; labelKey: TranslationKey }[]
 
 const inputClass = 'h-9 w-full rounded-md border border-input-border bg-input-bg px-3 text-sm transition-colors focus:border-input-focus-border'
 const selectClass = 'h-9 w-full rounded-md border border-input-border bg-input-bg px-2 text-sm transition-colors focus:border-input-focus-border'
@@ -116,7 +125,7 @@ async function runAsrTest(
 ): Promise<AsrTestOutcome> {
   const entry = findAsrProvider(profile.provider)
   if (!entry) {
-    return { ok: false, check: { ok: false, at: Date.now(), reason: '未知的供应商' }, message: '未知的供应商' }
+    return { ok: false, check: { ok: false, at: Date.now(), reason: t('asr.err.unknownProvider') }, message: t('asr.err.unknownProvider') }
   }
   try {
     const creds = effectiveAsrCredentials(profile)
@@ -142,8 +151,8 @@ async function runAsrTest(
       // 连通了但一个字都没出：多半是资源没开通或额度问题，不能算可用
       return {
         ok: false,
-        check: { ok: false, at: Date.now(), reason: '返回了空文本' },
-        message: '连通了，但没返回任何文字，请检查资源是否已开通。',
+        check: { ok: false, at: Date.now(), reason: t('asr.err.emptyText') },
+        message: t('asr.msg.emptyText'),
       }
     }
     return {
@@ -158,7 +167,7 @@ async function runAsrTest(
     return {
       ok: false,
       check: { ok: false, at: Date.now(), reason: friendly.message },
-      message: `测试没通过：${friendly.message}`,
+      message: t('asr.msg.testFailed', { message: friendly.message }),
       detail: friendly.detail,
     }
   }
@@ -174,6 +183,7 @@ function profileTitle(profile: AsrProfile, siblings: number): string {
 }
 
 export default function CloudAPISection() {
+  useT()
   const [profiles, setProfiles] = useState<AsrProfile[]>([])
   const [activeId, setActiveId] = useState('')
   const [loaded, setLoaded] = useState(false)
@@ -256,7 +266,7 @@ export default function CloudAPISection() {
     if (!entry) return
     const missing = describeAsrMissing(profile)
     if (missing) {
-      setNotice({ tone: 'warning', message: `${entry.label}：${missing}，先编辑这份配置再测。` })
+      setNotice({ tone: 'warning', message: t('asr.msg.missingBeforeTest', { label: entry.label, missing }) })
       return
     }
     setTestingId(profile.id)
@@ -274,13 +284,13 @@ export default function CloudAPISection() {
       const grade = gradeAsrLatency(outcome.latencyMs, outcome.audioSec)
       setNotice({
         tone: grade.tone === 'bad' ? 'warning' : 'success',
-        message: `${entry.label} 可用，转写 ${outcome.audioSec.toFixed(1)}s 音频用了 ${formatLatency(outcome.latencyMs)}（${grade.label}）。`,
-        detail: `识别结果：${outcome.text}`,
+        message: t('asr.msg.testOk', { label: entry.label, sec: outcome.audioSec.toFixed(1), latency: formatLatency(outcome.latencyMs), grade: grade.label }),
+        detail: t('asr.msg.testDetail', { text: outcome.text }),
       })
     } catch (err) {
       // 只有准备测试音频这一步会漏到这里；识别本身的失败由 runAsrTest 收成 outcome
       const friendly = describeProviderError(err)
-      setNotice({ tone: 'error', message: `${entry.label} 测试没跑起来：${friendly.message}`, detail: friendly.detail })
+      setNotice({ tone: 'error', message: t('asr.msg.testCrashed', { label: entry.label, message: friendly.message }), detail: friendly.detail })
     } finally {
       setTestingId('')
     }
@@ -308,7 +318,7 @@ export default function CloudAPISection() {
     if (targets.length === 0) {
       setNotice({
         tone: 'warning',
-        message: '没有配置完整的服务可测。先把密钥填上，再来一键测试。',
+        message: t('asr.msg.nothingToTest'),
       })
       return
     }
@@ -346,27 +356,28 @@ export default function CloudAPISection() {
         if (outcome.ok) {
           okCount += 1
           const grade = gradeAsrLatency(outcome.latencyMs, outcome.audioSec)
-          return `${label}：可用 · ${formatLatency(outcome.latencyMs)}（${grade.label}）`
+          return t('asr.msg.batchLine', { label, latency: formatLatency(outcome.latencyMs), grade: grade.label })
         }
         failCount += 1
-        return `${label}：${outcome.message}`
+        return `${label}: ${outcome.message}`
       })
 
-      const parts = [`${okCount} 张可用`]
-      if (failCount > 0) parts.push(`${failCount} 张不可用`)
-      if (skipped > 0) parts.push(`${skipped} 张没配完（已跳过）`)
+      const parts = [t('asr.msg.batchOk', { count: okCount })]
+      if (failCount > 0) parts.push(t('asr.msg.batchFail', { count: failCount }))
+      if (skipped > 0) parts.push(t('asr.msg.batchSkipped', { count: skipped }))
       if (targets.length > 1) {
-        lines.push('', '这批是并发测的，耗时互相有影响，不宜横向比较；要准确数字请单张测试。')
+        lines.push('', t('asr.msg.batchNote'))
       }
       setNotice({
         tone: failCount > 0 ? 'warning' : 'success',
-        message: `测试完成：${parts.join('，')}。`,
+        // 连接词也走 locale：中文用「，」，英文用「, 」
+        message: t('asr.msg.batchDone', { parts: parts.join(t('asr.listSeparator')) }),
         detail: lines.join('\n'),
       })
     } catch (err) {
       // 只有准备测试音频这一步会漏到这里；识别本身的失败由 runAsrTest 收成 outcome
       const friendly = describeProviderError(err)
-      setNotice({ tone: 'error', message: `测试没跑起来：${friendly.message}`, detail: friendly.detail })
+      setNotice({ tone: 'error', message: t('asr.msg.batchCrashed', { message: friendly.message }), detail: friendly.detail })
     } finally {
       setTestingIds([])
       setBatch(null)
@@ -460,8 +471,8 @@ export default function CloudAPISection() {
       setEngineDraftDirty(false)
       const missing = describeAsrMissing(saved)
       setNotice(missing
-        ? { tone: 'warning', message: `已保存，但${missing}。` }
-        : { tone: 'success', message: '已保存，点卡片上的测试按钮验证一下。' })
+        ? { tone: 'warning', message: t('asr.msg.savedWithMissing', { missing }) }
+        : { tone: 'success', message: t('asr.msg.saved') })
     } finally {
       setSaving(false)
     }
@@ -492,46 +503,53 @@ export default function CloudAPISection() {
 
   function describeCard(profile: AsrProfile): CardStatus {
     if (isTesting(profile.id)) {
-      return { label: '测试中', tone: 'neutral', spoken: '正在测试', hint: '正在用测试音频跑一次识别' }
+      return { label: t('asr.status.testing'), tone: 'neutral', spoken: t('asr.status.testingSpoken'), hint: t('asr.status.testingHint') }
     }
     const missing = describeAsrMissing(profile)
     if (missing) {
-      return { label: '待配置', tone: 'warn', spoken: missing, hint: missing, needsSetup: true }
+      return { label: t('asr.status.needsSetup'), tone: 'warn', spoken: missing, hint: missing, needsSetup: true }
     }
     const entry = findAsrProvider(profile.provider)
     if (entry?.needsWorkspaceId && !profile.workspaceId.trim()) {
       return {
-        label: '缺空间 ID',
+        label: t('asr.status.missingWorkspace'),
         tone: 'warn',
-        spoken: '还没填业务空间 ID',
-        hint: '流式识别需要百炼「业务空间 ID」，在这份配置里一起填',
+        spoken: t('asr.status.missingWorkspaceSpoken'),
+        hint: t('asr.status.missingWorkspaceHint'),
         needsSetup: true,
       }
     }
     const check = profile.check
     if (!check) {
-      return { label: '未测试', tone: 'neutral', spoken: '尚未测试', hint: '还没测过，点测试按钮验证可用性与速度' }
+      return { label: t('asr.status.untested'), tone: 'neutral', spoken: t('asr.status.untestedSpoken'), hint: t('asr.status.untestedHint') }
     }
     if (!check.ok) {
+      const reason = check.reason ?? t('common.unknownReason')
       return {
-        label: '不可用',
+        label: t('asr.status.unavailable'),
         tone: 'bad',
-        spoken: `不可用：${check.reason ?? '未知原因'}`,
-        hint: `${formatCheckedAt(check.at)}测试：${check.reason ?? '未知原因'}`,
+        spoken: t('asr.status.unavailableSpoken', { reason }),
+        hint: t('asr.status.unavailableHint', { when: formatCheckedAt(check.at), reason }),
       }
     }
     const fresh = isCheckFresh(check)
     const ms = check.latencyMs
     if (ms === undefined) {
-      return { label: '可用', tone: fresh ? 'ok' : 'neutral', spoken: '可用', hint: `${formatCheckedAt(check.at)}测试通过` }
+      return { label: t('asr.status.available'), tone: fresh ? 'ok' : 'neutral', spoken: t('asr.status.available'), hint: t('asr.status.availableHint', { when: formatCheckedAt(check.at) }) }
     }
     const grade = gradeAsrLatency(ms, check.audioSec ?? 0)
     return {
       label: formatLatency(ms),
       // 结论过期就把颜色收回中性：绿色只代表「刚刚验过，可以信」
       tone: fresh ? grade.tone : 'neutral',
-      spoken: `可用 · ${grade.label} ${formatLatency(ms)}`,
-      hint: `${formatCheckedAt(check.at)}测试：转写 ${(check.audioSec ?? 0).toFixed(1)}s 音频用了 ${formatLatency(ms)}（${grade.label}）${fresh ? '' : '，结论已超过 24 小时，建议重测'}`,
+      spoken: t('asr.status.availableSpoken', { grade: grade.label, latency: formatLatency(ms) }),
+      hint: t('asr.status.availableDetailHint', {
+        when: formatCheckedAt(check.at),
+        sec: (check.audioSec ?? 0).toFixed(1),
+        latency: formatLatency(ms),
+        grade: grade.label,
+        stale: fresh ? '' : t('asr.staleSuffix'),
+      }),
     }
   }
 
@@ -563,14 +581,14 @@ export default function CloudAPISection() {
           type="button"
           role="radio"
           aria-checked={isActive}
-          aria-label={`${title}（${entry.model}）·${status.spoken}`}
+          aria-label={t('common.cardStatusAria', { title, subtitle: entry.model, status: status.spoken })}
           onClick={() => void handleActivate(profile.id)}
           className="absolute inset-0 rounded-lg"
         />
         <div className="flex items-center gap-1.5">
           {isActive && (
-            <Tooltip className="pointer-events-auto relative z-10 shrink-0" content="使用中">
-              <CheckCircle2 className="h-4 w-4 shrink-0 cursor-help text-success-strong" aria-label="使用中" />
+            <Tooltip className="pointer-events-auto relative z-10 shrink-0" content={t('common.inUse')}>
+              <CheckCircle2 className="h-4 w-4 shrink-0 cursor-help text-success-strong" aria-label={t('common.inUse')} />
             </Tooltip>
           )}
           <span className="min-w-0 flex-1 truncate text-xs font-medium" title={title}>{title}</span>
@@ -592,33 +610,33 @@ export default function CloudAPISection() {
               status.needsSetup ? 'opacity-100' : 'opacity-0',
             )}
           >
-            <Tooltip className="pointer-events-auto" content="测试">
+            <Tooltip className="pointer-events-auto" content={t('common.test')}>
               <button
                 type="button"
                 onClick={() => void handleTest(profile)}
                 disabled={busy}
-                aria-label={`测试 ${title} 是否可用`}
+                aria-label={t('asr.testAria', { title })}
                 className={cardIconButtonClass}
               >
                 <RefreshCw className={cn('h-3.5 w-3.5', isTesting(profile.id) && 'animate-spin')} aria-hidden />
               </button>
             </Tooltip>
-            <Tooltip className="pointer-events-auto" content="编辑">
+            <Tooltip className="pointer-events-auto" content={t('common.edit')}>
               <button
                 type="button"
                 onClick={() => openEditor({ ...profile }, false)}
-                aria-label={`编辑 ${title}`}
+                aria-label={t('asr.editAria', { title })}
                 className={cardIconButtonClass}
               >
                 <Pencil className="h-3.5 w-3.5" aria-hidden />
               </button>
             </Tooltip>
-            <Tooltip className="pointer-events-auto" content="删除">
+            <Tooltip className="pointer-events-auto" content={t('common.delete')}>
               <button
                 type="button"
                 onClick={() => setPendingDeleteId(profile.id)}
                 disabled={busy}
-                aria-label={`删除 ${title}`}
+                aria-label={t('asr.deleteAria', { title })}
                 className={cardIconButtonClass}
               >
                 <Trash2 className="h-3.5 w-3.5" aria-hidden />
@@ -627,7 +645,7 @@ export default function CloudAPISection() {
           </div>
         </div>
         <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-muted-foreground/80">
-          {entry.blurb}
+          {entry.blurb} <span className="font-medium">{asrAvailabilityLabel(entry)}</span>
         </p>
       </div>
     )
@@ -638,10 +656,11 @@ export default function CloudAPISection() {
   function renderEditor() {
     if (!draft) return null
     const platformInfo = ASR_PLATFORMS[draftPlatform]
+    const draftEntry = findAsrProvider(draft.provider)
     const keyLabel = draftIsDoubao ? doubaoKeyLabel(draft.console) : 'API Key'
     return (
       <Modal
-        title={draftIsNew ? '新建语音识别服务' : '编辑语音识别服务'}
+        title={draftIsNew ? t('asr.editorNew') : t('asr.editorEdit')}
         onClose={closeEditor}
         locked={saving}
         showCloseButton
@@ -649,7 +668,7 @@ export default function CloudAPISection() {
       >
         <div className="mt-4 space-y-3">
           <div>
-            <label htmlFor="asr-provider" className="mb-1 block text-sm text-muted-foreground">供应商</label>
+            <label htmlFor="asr-provider" className="mb-1 block text-sm text-muted-foreground">{t('asr.provider')}</label>
             <select
               id="asr-provider"
               value={draft.provider}
@@ -660,23 +679,29 @@ export default function CloudAPISection() {
                 <option key={p.id} value={p.id}>{p.label} · {p.model}</option>
               ))}
             </select>
-            <p className="mt-1 text-xs text-muted-foreground">{findAsrProvider(draft.provider)?.blurb}</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {draftEntry?.blurb}{' '}
+              {draftEntry && (
+                <span className="font-medium">{asrAvailabilityLabel(draftEntry)}</span>
+              )}
+            </p>
           </div>
 
           {draftIsDoubao && (
             <div>
-              <label className="mb-1.5 block text-sm text-muted-foreground">控制台版本</label>
+              <label className="mb-1.5 block text-sm text-muted-foreground">{t('asr.consoleVersion')}</label>
               <Segmented
-                label="火山引擎控制台版本"
+                label={t('asr.consoleVersionLabel')}
                 size="sm"
                 value={draft.console}
-                options={DOUBAO_CONSOLE_OPTIONS}
+                // 常量表存的是 key，到这里才翻成当前语言
+                options={DOUBAO_CONSOLE_OPTIONS.map((o) => ({ value: o.value, label: t(o.labelKey) }))}
                 onChange={switchConsole}
               />
               <p className="mt-1.5 text-xs text-muted-foreground">
                 {draft.console === 'new'
-                  ? '控制台只给了一个 API Key（APP Key）时选这个，不需要 App ID。'
-                  : '控制台给的是 App ID + Access Token 两样时选这个。'}
+                  ? t('asr.consoleNewHint')
+                  : t('asr.consoleLegacyHint')}
               </p>
             </div>
           )}
@@ -689,11 +714,11 @@ export default function CloudAPISection() {
                 value={draft.appId}
                 onChange={(e) => patchDraft({ appId: e.target.value })}
                 onKeyDown={(e) => { if (e.key === 'Enter') void handleSaveDraft() }}
-                placeholder="输入 App ID"
+                placeholder={t('asr.appIdPlaceholder')}
                 className={inputClass}
               />
               {draft.appId.trim() && !/^\d+$/.test(draft.appId.trim()) && (
-                <FormatHint text="App ID 通常为纯数字，请确认是否包含了多余字符" />
+                <FormatHint text={t('asr.hint.appId')} />
               )}
             </div>
           )}
@@ -708,49 +733,50 @@ export default function CloudAPISection() {
               value={draft.apiKey}
               onChange={(v) => patchDraft({ apiKey: v })}
               onSubmit={() => void handleSaveDraft()}
-              placeholder={`粘贴${platformInfo.label}的${keyLabel}`}
+              placeholder={t('asr.keyPlaceholder', { platform: platformInfo.label, keyLabel })}
               className={inputClass}
             />
             {/\s/.test(draft.apiKey) && (
-              <FormatHint text="密钥不应包含空格或换行，请确认是否粘贴了多余字符" />
+              <FormatHint text={t('asr.hint.key')} />
             )}
             {draftPlatform === 'qwen' && draft.apiKey.trim() && !/^sk-/.test(draft.apiKey.trim()) && (
-              <FormatHint text="百炼 API Key 通常以 sk- 开头，请确认格式是否正确" />
+              <FormatHint text={t('asr.hint.bailianKey')} />
             )}
             {/* 密钥不是凭空出现的：说一句它从哪来，免得用户以为自己看错了 */}
             {draftKeyInherited && (
               <p className="mt-1 text-[11px] text-muted-foreground">
-                已沿用同一平台上一份配置的密钥，换个服务即可；要用另一个账号就改掉它。
+                {t('asr.keyReused')}
               </p>
             )}
             <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1">
               <button type="button" onClick={() => void shellOpen(platformInfo.consoleUrl)} className={linkClass}>
-                打开{platformInfo.label}控制台
+                {t('asr.openConsole', { platform: platformInfo.label })}
                 <ExternalLink className="h-3 w-3" aria-hidden />
               </button>
-              <button type="button" onClick={() => void shellOpen(DOC_URL)} className={linkClass}>
-                怎么申请密钥？看配置文档
-                <ExternalLink className="h-3 w-3" aria-hidden />
-              </button>
+              {getLocale() === 'zh-CN' && (
+                <button type="button" onClick={() => void shellOpen(DOC_URL)} className={linkClass}>
+                  {t('asr.howToGetKey')}
+                  <ExternalLink className="h-3 w-3" aria-hidden />
+                </button>
+              )}
             </div>
           </div>
 
           {draftEntry?.needsWorkspaceId && (
             <div>
               <label htmlFor="qwen-workspace-id" className="mb-1 block text-sm text-muted-foreground">
-                业务空间 ID
+                {t('asr.workspaceId')}
               </label>
               <PasswordInput
                 id="qwen-workspace-id"
-                label="业务空间 ID"
+                label={t('asr.workspaceId')}
                 value={draft.workspaceId}
                 onChange={(v) => patchDraft({ workspaceId: v })}
-                placeholder="如 ws-xxxxxxxx"
+                placeholder={t('asr.workspacePlaceholder')}
                 className={inputClass}
               />
               <p className="mt-1.5 text-xs text-muted-foreground">
-                流式识别走地域专属端点，必须填这个才能用。登录百炼控制台后，
-                鼠标移到右上角「默认业务空间」即可查看。
+                {t('asr.workspaceHint')}
               </p>
             </div>
           )}
@@ -764,10 +790,10 @@ export default function CloudAPISection() {
               </label>
               <Segmented
                 className="mb-1.5"
-                label="System Prompt 预设"
+                label={t('asr.systemPromptPreset')}
                 size="sm"
                 value={draft.omniPrompt}
-                options={OMNI_PROMPT_PRESETS}
+                options={OMNI_PROMPT_PRESETS.map((o) => ({ value: o.value, label: t(o.labelKey) }))}
                 onChange={(v) => patchDraft({ omniPrompt: v })}
               />
               <textarea
@@ -779,15 +805,15 @@ export default function CloudAPISection() {
                 className="w-full resize-y rounded-md border border-input-border bg-input-bg px-3 py-2 text-sm transition-colors focus:border-input-focus-border"
               />
               <p className="mt-1.5 text-xs text-muted-foreground">
-                这个模型自己就能听懂并整理，侧栏「AI 整理」里的供应商配置对它不生效。
+                {t('asr.omniNote')}
               </p>
             </div>
           )}
 
           <div className="flex items-center justify-end gap-2 pt-1">
-            <Button variant="outline" size="sm" onClick={closeEditor} disabled={saving}>取消</Button>
+            <Button variant="outline" size="sm" onClick={closeEditor} disabled={saving}>{t('common.cancel')}</Button>
             <Button size="sm" onClick={() => void handleSaveDraft()} disabled={saving || !draftDirty}>
-              {saving ? '保存中…' : '保存'}
+              {saving ? t('common.saving') : t('common.save')}
             </Button>
           </div>
         </div>
@@ -800,20 +826,19 @@ export default function CloudAPISection() {
   return (
     <Card>
       <CardContent className="p-6">
-        <div className="mb-3 flex items-start justify-between gap-3">
-          <div className="min-w-0">
+        <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 grow basis-[18rem]">
             <div className="flex items-center gap-2">
-              <h2 id="asr-service-heading" className="text-lg font-semibold">语音识别 (ASR)</h2>
+              <h2 id="asr-service-heading" className="text-lg font-semibold">{t('asr.title')}</h2>
               <Tooltip
                 variant="light"
-                content={'首选豆包 ASR：中文准确率高、速度快。\n多语种或想让识别与整理一步完成时，再看千问那几个。\n\n同一家可以存多份（比如两个账号），点一张即启用。'}
+                content={t('asr.help')}
               >
-                <Info aria-label="语音识别说明" className={helpIconClass} />
+                <Info aria-label={t('asr.helpAria')} className={helpIconClass} />
               </Tooltip>
             </div>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              点一张即启用，它的供应商与密钥会一起生效。卡上的耗时是用内置测试音频真跑一次
-              识别测出来的（会产生一次真实计费调用）。
+              {t('asr.desc')}
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
@@ -827,20 +852,20 @@ export default function CloudAPISection() {
               disabled={busy || profiles.length === 0}
             >
               <RefreshCw className={cn('mr-1 h-3.5 w-3.5', batch && 'animate-spin')} aria-hidden />
-              {batch ? `测试中（${batch.done}/${batch.total}）` : '测试全部'}
+              {batch ? t('asr.testingBatch', { done: batch.done, total: batch.total }) : t('asr.testAll')}
             </Button>
             <Button variant="outline" size="sm" className="h-8 shrink-0" onClick={handleNew} disabled={busy}>
               <Plus className="mr-1 h-3.5 w-3.5" aria-hidden />
-              新建
+              {t('common.new')}
             </Button>
           </div>
         </div>
 
         {!loaded ? (
-          <p className="py-2 text-sm text-muted-foreground">正在读取已保存的服务…</p>
+          <p className="py-2 text-sm text-muted-foreground">{t('asr.loading')}</p>
         ) : profiles.length === 0 ? (
           <p className="rounded-lg border border-dashed border-border px-4 py-4 text-center text-sm text-muted-foreground">
-            还没有配置语音识别服务。点右上角「新建」加一份，豆包 ASR 是最省事的起点。
+            {t('asr.empty')}
           </p>
         ) : (
           <div
@@ -860,15 +885,14 @@ export default function CloudAPISection() {
       {renderEditor()}
 
       {pendingDelete && (
-        <Modal title="删除这份服务？" onClose={() => setPendingDeleteId('')} showCloseButton panelClassName="w-[420px]">
+        <Modal title={t('asr.deleteTitle')} onClose={() => setPendingDeleteId('')} showCloseButton panelClassName="w-[420px]">
           <div className="mt-3 space-y-4">
             <p className="text-sm text-muted-foreground">
-              将删除「{profileTitle(pendingDelete, profiles.filter((p) => p.provider === pendingDelete.provider).length)}」
-              的配置与密钥。此操作不可撤销。
+              {t('asr.deleteBody', { name: profileTitle(pendingDelete, profiles.filter((p) => p.provider === pendingDelete.provider).length) })}
             </p>
             <div className="flex items-center justify-end gap-2">
-              <Button variant="outline" size="sm" onClick={() => setPendingDeleteId('')}>取消</Button>
-              <Button size="sm" onClick={() => void handleDelete(pendingDelete.id)}>删除</Button>
+              <Button variant="outline" size="sm" onClick={() => setPendingDeleteId('')}>{t('common.cancel')}</Button>
+              <Button size="sm" onClick={() => void handleDelete(pendingDelete.id)}>{t('common.delete')}</Button>
             </div>
           </div>
         </Modal>

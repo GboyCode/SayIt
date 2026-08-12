@@ -144,6 +144,17 @@ export function getClientRuntimeInfo() {
   }>('get_client_runtime_info')
 }
 
+/**
+ * 系统**显示语言**，返回 `zh-CN` / `en`。
+ *
+ * 与 `getClientRuntimeInfo().systemLocale` 不是一回事：那个是**区域格式**
+ * （日期货币怎么写），诊断用；这个是 Windows 界面本身的语言，决定界面语言。
+ * 判定只在 Rust 一处（`locale::system_ui_lang`），托盘和界面才不会各说一套。
+ */
+export function getSystemUiLanguage() {
+  return invoke<string>('get_system_ui_language')
+}
+
 export function copyText(text: string) {
   return invoke('copy_text', { text })
 }

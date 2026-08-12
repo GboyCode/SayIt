@@ -6,7 +6,7 @@
 //  - 实时显示模式（realtime=true）：后台 reader 持续读取识别事件，把中间结果通过
 //    `asr-partial` 事件上抛给前端做悬浮窗实时上屏；finish 返回累计的最终文本。
 
-use super::types::AsrProviderConfig;
+use super::{diag, types::AsrProviderConfig};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -108,11 +108,11 @@ pub async fn qwen_stream_open(
     let mut request = url
         .as_str()
         .into_client_request()
-        .map_err(|e| format!("构建请求失败: {}", e))?;
+        .map_err(|e| diag::fail("qwen/realtime", "build_request", format!("Failed to build request: {}", e)))?;
     request.headers_mut().insert(
         AUTHORIZATION,
         HeaderValue::from_str(&format!("Bearer {}", config.api_key))
-            .map_err(|e| format!("Authorization 请求头无效: {}", e))?,
+            .map_err(|e| diag::fail_code("qwen/realtime", "authorization_header", "provider_bad_key", format!("Invalid Authorization header: {}", e)))?,
     );
     request.headers_mut().insert(
         USER_AGENT,
@@ -121,7 +121,7 @@ pub async fn qwen_stream_open(
 
     let (mut ws, response) = tokio_tungstenite::connect_async(request)
         .await
-        .map_err(|e| format!("WebSocket 连接失败: {}", e))?;
+        .map_err(|e| diag::fail("qwen/realtime", "connect", format!("WebSocket connection failed: {}", e)))?;
     crate::commands::system::write_log_line(&format!(
         "[RUST] [qwen_stream] connected status={} model={} realtime={}",
         response.status(),
@@ -160,14 +160,14 @@ pub async fn qwen_stream_open(
         serde_json::to_string(&session_update).unwrap().into(),
     ))
     .await
-    .map_err(|e| format!("发送 session.update 失败: {}", e))?;
+    .map_err(|e| diag::fail("qwen/realtime", "send_session_update", format!("Failed to send session.update: {}", e)))?;
 
     // 必须等到 session.updated 才算就绪（说明配置被接受、模型可用）。
     // 若额度耗尽/无权限，服务端会在 session.created 后直接关闭连接（携带原因），
     // 此时下面循环拿不到 session.updated → 返回 Err → 上层回退到一次性识别。
     let mut session_ready = false;
     while let Some(msg) = ws.next().await {
-        let msg = msg.map_err(|e| format!("接收确认失败: {}", e))?;
+        let msg = msg.map_err(|e| diag::fail("qwen/realtime", "recv_ack", format!("Failed to receive acknowledgement: {}", e)))?;
         match msg {
             tungstenite::Message::Text(text) => {
                 if let Ok(data) = serde_json::from_str::<serde_json::Value>(&text) {
@@ -182,26 +182,26 @@ pub async fn qwen_stream_open(
                             .get("error")
                             .and_then(|e| e.get("message"))
                             .and_then(|m| m.as_str())
-                            .unwrap_or("未知错误");
-                        return Err(format!("服务端错误: {}", err_msg));
+                            .unwrap_or("Unknown error");
+                        return Err(diag::fail("qwen/realtime", "server_error", format!("Server error: {}", err_msg)));
                     }
                 }
             }
             tungstenite::Message::Close(frame) => {
                 let reason = frame
                     .map(|f| f.reason.to_string())
-                    .unwrap_or_else(|| "无原因".to_string());
+                    .unwrap_or_else(|| "No reason".to_string());
                 crate::commands::system::write_log_line(&format!(
                     "[RUST] [qwen_stream] closed before ready: {}",
                     reason
                 ));
-                return Err(format!("会话被服务端关闭: {}", reason));
+                return Err(diag::fail("qwen/realtime", "closed_before_ready", format!("Server closed the session: {}", reason)));
             }
             _ => {}
         }
     }
     if !session_ready {
-        return Err("WebSocket 在就绪前已关闭".to_string());
+        return Err(diag::fail("qwen/realtime", "closed_before_ready", "WebSocket closed before the session became ready".to_string()));
     }
 
     if realtime {
@@ -327,7 +327,7 @@ async fn run_realtime_reader(
                     .get("error")
                     .and_then(|e| e.get("message"))
                     .and_then(|m| m.as_str())
-                    .unwrap_or("未知错误")
+                    .unwrap_or("Unknown error")
                     .to_string();
                 let mut s = state.lock().await;
                 s.error = Some(err_msg);
@@ -370,18 +370,18 @@ pub async fn qwen_stream_send(pcm_b64: String) -> Result<(), String> {
 
     if RT_ACTIVE.load(Ordering::SeqCst) {
         let mut sink = RT_SINK.lock().await;
-        let s = sink.as_mut().ok_or("会话未建立")?;
+        let s = sink.as_mut().ok_or_else(|| diag::fail("qwen/realtime", "send_without_session", "Session is not open".to_string()))?;
         s.send(tungstenite::Message::Text(payload.into()))
             .await
-            .map_err(|e| format!("发送音频失败: {}", e))?;
+            .map_err(|e| diag::fail("qwen/realtime", "send_audio", format!("Failed to send audio: {}", e)))?;
         return Ok(());
     }
 
     let mut session = SESSION.lock().await;
-    let ws = session.as_mut().ok_or("会话未建立")?;
+    let ws = session.as_mut().ok_or_else(|| diag::fail("qwen/realtime", "send_without_session", "Session is not open".to_string()))?;
     ws.send(tungstenite::Message::Text(payload.into()))
         .await
-        .map_err(|e| format!("发送音频失败: {}", e))?;
+        .map_err(|e| diag::fail("qwen/realtime", "send_audio", format!("Failed to send audio: {}", e)))?;
 
     Ok(())
 }
@@ -399,10 +399,10 @@ pub async fn qwen_stream_finish() -> Result<String, String> {
     if RT_ACTIVE.load(Ordering::SeqCst) {
         {
             let mut sink = RT_SINK.lock().await;
-            let s = sink.as_mut().ok_or("会话未建立")?;
+            let s = sink.as_mut().ok_or_else(|| diag::fail("qwen/realtime", "finish_without_session", "Session is not open".to_string()))?;
             s.send(tungstenite::Message::Text(finish_payload.into()))
                 .await
-                .map_err(|e| format!("发送 finish 失败: {}", e))?;
+                .map_err(|e| diag::fail("qwen/realtime", "send_finish", format!("Failed to send finish event: {}", e)))?;
         }
 
         let deadline = Instant::now() + Duration::from_secs(15);
@@ -413,7 +413,7 @@ pub async fn qwen_stream_finish() -> Result<String, String> {
                     if let Some(err) = st.error.clone() {
                         drop(st);
                         cleanup_realtime().await;
-                        return Err(format!("识别错误: {}", err));
+                        return Err(diag::fail("qwen/realtime", "recognition_error", format!("Recognition error: {}", err)));
                     }
                     // display() = 已确定分句 + 尚未 completed 的当前句，避免丢掉最后一句
                     let text = st.display();
@@ -435,17 +435,17 @@ pub async fn qwen_stream_finish() -> Result<String, String> {
 
     // 普通模式：整条会话同步收结果
     let mut session = SESSION.lock().await;
-    let ws = session.as_mut().ok_or("会话未建立")?;
+    let ws = session.as_mut().ok_or_else(|| diag::fail("qwen/realtime", "finish_without_session", "Session is not open".to_string()))?;
 
     ws.send(tungstenite::Message::Text(finish_payload.into()))
         .await
-        .map_err(|e| format!("发送 finish 失败: {}", e))?;
+        .map_err(|e| diag::fail("qwen/realtime", "send_finish", format!("Failed to send finish event: {}", e)))?;
 
     let mut final_text = String::new();
     let mut completed_count = 0usize;
 
     while let Some(msg) = ws.next().await {
-        let msg = msg.map_err(|e| format!("接收结果失败: {}", e))?;
+        let msg = msg.map_err(|e| diag::fail("qwen/realtime", "recv", format!("Failed to receive result: {}", e)))?;
         if let tungstenite::Message::Text(text) = msg {
             if let Ok(data) = serde_json::from_str::<serde_json::Value>(&text) {
                 let event_type = data.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -470,10 +470,10 @@ pub async fn qwen_stream_finish() -> Result<String, String> {
                             .get("error")
                             .and_then(|e| e.get("message"))
                             .and_then(|m| m.as_str())
-                            .unwrap_or("未知错误");
+                            .unwrap_or("Unknown error");
                         let _ = ws.close(None).await;
                         *session = None;
-                        return Err(format!("识别错误: {}", err_msg));
+                        return Err(diag::fail("qwen/realtime", "recognition_error", format!("Recognition error: {}", err_msg)));
                     }
                     _ => {}
                 }

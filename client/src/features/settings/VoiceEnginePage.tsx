@@ -12,8 +12,10 @@ import CloudAPISection from './CloudAPISection'
 import LocalModeSection, { LocalModeAdvancedSection } from './LocalModeSection'
 import ServerSection from './ServerSection'
 import AsrTestSection from './AsrTestSection'
+import { useT } from '@/i18n/useT'
 
 export default function VoiceEnginePage() {
+  const t = useT()
   const [workMode, setWorkMode] = useState<WorkMode>(getWorkMode)
   // 本地模式的次级设置默认收起。原来这 4 张卡与"选模型"完全等权地平铺在一起，
   // 本地模式一屏 7 个同级标题、27 个控件，用户没法判断哪几个是必须做的。
@@ -40,9 +42,9 @@ export default function VoiceEnginePage() {
 
   return (
     <div className="mx-auto max-w-4xl">
-      <h1 className="mb-2 text-2xl font-bold">语音引擎</h1>
+      <h1 className="mb-2 text-2xl font-bold">{t('nav.voiceEngine')}</h1>
       <p className="mb-6 text-sm text-muted-foreground">
-        选择语音转文字的运行方式，并配置对应的识别服务。
+        {t('voiceEngine.subtitle')}
       </p>
 
       <div className="space-y-6">
@@ -70,8 +72,8 @@ export default function VoiceEnginePage() {
                 className={`h-4 w-4 shrink-0 transition-transform ${advancedOpen ? 'rotate-180' : ''}`}
                 aria-hidden
               />
-              <span className="font-medium">高级设置</span>
-              <span className="text-xs">识别语言 · 计算后端 · 模型驻留 · 存储位置</span>
+              <span className="font-medium">{t('voiceEngine.advanced')}</span>
+              <span className="text-xs">{t('voiceEngine.advancedDesc')}</span>
               <span className="h-px flex-1 bg-border" aria-hidden />
             </button>
 

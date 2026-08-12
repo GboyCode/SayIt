@@ -22,6 +22,7 @@ import {
   type HistoryRecord,
 } from '@/services/store'
 import { loadAudioAsDataUrl } from '@/services/audioFileService'
+import { useT } from '@/i18n/useT'
 import { applyTextTransforms, restoreHotwordSpacing } from '@/services/textPostProcess'
 import { buildHotwordInjectionPart } from '@/services/personalization/promptRouter'
 import {
@@ -62,7 +63,7 @@ async function reprocessViaServer(
   return new Promise<ReprocessResult>((resolve, reject) => {
     const timeout = window.setTimeout(() => {
       try { socket.close() } catch { /* ignore */ }
-      reject(new Error('重新识别超时'))
+      reject(new Error('Retranscription timed out'))
     }, 30_000) // ASR 最多 30 秒
 
     const socket = new WebSocket(wsUrl)
@@ -141,7 +142,7 @@ async function reprocessViaServer(
       if (!resolved) {
         resolved = true
         clearTimeout(timeout)
-        reject(new Error('WebSocket 连接错误'))
+        reject(new Error('WebSocket connection error'))
       }
     }
 
@@ -149,7 +150,7 @@ async function reprocessViaServer(
       if (!resolved) {
         resolved = true
         clearTimeout(timeout)
-        reject(new Error(`WebSocket 连接意外关闭 code=${ev.code}`))
+        reject(new Error(`WebSocket closed unexpectedly, code=${ev.code}`))
       }
     }
   })
@@ -303,6 +304,7 @@ async function buildReprocessMetadata(
 }
 
 export default function History() {
+  const t = useT()
   const [records, setRecords] = useState<HistoryRecord[]>([])
   const [keyword, setKeyword] = useState('')
   const [debouncedKeyword, setDebouncedKeyword] = useState('')
@@ -477,7 +479,7 @@ export default function History() {
     <div className="mx-auto max-w-4xl">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-4">
-          <h1 className="text-2xl font-bold">历史记录</h1>
+          <h1 className="text-2xl font-bold">{t('history.title')}</h1>
           <div className="flex gap-1 rounded-lg border border-border p-0.5">
             <button
               type="button"
@@ -486,7 +488,7 @@ export default function History() {
                 'rounded-md px-3 py-1 text-xs transition-colors',
                 !favoriteOnly ? 'bg-accent font-medium text-foreground' : 'text-muted-foreground hover:text-foreground',
               )}
-            >全部</button>
+            >{t('history.filterAll')}</button>
             <button
               type="button"
               onClick={() => setFavoriteOnly(true)}
@@ -494,7 +496,7 @@ export default function History() {
                 'rounded-md px-3 py-1 text-xs transition-colors',
                 favoriteOnly ? 'bg-accent font-medium text-foreground' : 'text-muted-foreground hover:text-foreground',
               )}
-            >收藏</button>
+            >{t('history.filterFavorites')}</button>
           </div>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
@@ -503,18 +505,18 @@ export default function History() {
             <input
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
-              placeholder="搜索历史关键词"
+              placeholder={t('history.searchPlaceholder')}
               className="w-64 rounded-md border border-input-border bg-input-bg py-1.5 pl-8 pr-3 text-sm"
             />
           </div>
-          <Tooltip content="导出数据">
+          <Tooltip content={t('history.export')}>
             <Button
               variant="ghost"
               size="icon"
               className="h-8 w-8 text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
               onClick={() => void handleExport()}
-              aria-label="导出数据"
-              title="导出数据"
+              aria-label={t('history.export')}
+              title={t('history.export')}
             >
               <Download className="h-4 w-4" />
             </Button>
@@ -525,7 +527,7 @@ export default function History() {
       {exportResult && !exportResult.canceled && exportResult.filePath && (
         <div className="mb-3 flex items-center gap-2 text-xs text-success">
           <Check className="h-3.5 w-3.5 shrink-0" />
-          <span className="min-w-0 truncate">已保存到 {exportResult.filePath}</span>
+          <span className="min-w-0 truncate">{t('history.savedTo', { path: exportResult.filePath })}</span>
           <button
             onClick={() => void invoke('reveal_file_in_folder', { filePath: exportResult.filePath })}
             className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
@@ -535,7 +537,7 @@ export default function History() {
         </div>
       )}
       {exportResult?.canceled && (
-        <p className="mb-3 text-xs text-muted-foreground">已取消导出。</p>
+        <p className="mb-3 text-xs text-muted-foreground">{t('history.exportCanceled')}</p>
       )}
 
       <HistoryRecordList
@@ -545,13 +547,13 @@ export default function History() {
         onReprocess={handleReprocess}
         onEdit={handleEdit}
         highlight={debouncedKeyword}
-        emptyText={keyword.trim() ? '没有匹配的历史记录' : favoriteOnly ? '还没有收藏记录，去历史记录里点一下星标吧。' : '还没有记录，去语音工作台试试吧'}
+        emptyText={keyword.trim() ? t('history.emptyNoMatch') : favoriteOnly ? t('history.emptyFavorites') : t('history.empty')}
       />
 
       {totalCount > records.length && (
         <div className="mt-4 flex justify-center">
           <Button variant="outline" size="sm" onClick={() => setVisibleCount((count) => count + HISTORY_PAGE_SIZE)}>
-            加载更多
+            {t('history.loadMore')}
           </Button>
         </div>
       )}

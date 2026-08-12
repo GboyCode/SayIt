@@ -8,6 +8,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-dialog'
 import type { TextReplacementRule } from './textReplacement'
+import { t } from '@/i18n'
 
 export interface ExportResult {
   canceled: boolean
@@ -26,11 +27,16 @@ export type ConfigExportSelection =
 
 export interface ConfigImportSectionPreview {
   kind: string
-  label: string
   total: number
   added: number
   updated: number
   skipped: number
+}
+
+export interface ConfigImportWarning {
+  code: 'hotwordLimit' | 'fullOverwrite' | string
+  current: number | null
+  limit: number | null
 }
 
 export interface ConfigImportPreview {
@@ -38,7 +44,7 @@ export interface ConfigImportPreview {
   formatVersion: number
   importToken: string
   sections: ConfigImportSectionPreview[]
-  warnings: string[]
+  warnings: ConfigImportWarning[]
   requiresRestart: boolean
 }
 
@@ -89,8 +95,8 @@ export async function exportFullFile(): Promise<ExportResult> {
 export async function pickImportFile(kind: 'config' | 'full'): Promise<string | null> {
   const filters =
     kind === 'config'
-      ? [{ name: 'SayIt 配置', extensions: ['json'] }]
-      : [{ name: 'SayIt 备份', extensions: ['zip'] }]
+      ? [{ name: t('configTransfer.fileConfig'), extensions: ['json'] }]
+      : [{ name: t('configTransfer.fileBackup'), extensions: ['zip'] }]
   const picked = await open({ multiple: false, directory: false, filters })
   return typeof picked === 'string' ? picked : null
 }
@@ -107,7 +113,7 @@ export async function runImport(
   expectedImportToken?: string,
 ): Promise<ConfigImportResult | null> {
   if (kind === 'config') {
-    if (!expectedImportToken) throw new Error('缺少配置导入确认信息，请重新选择文件')
+    if (!expectedImportToken) throw new Error(t('configTransfer.missingConfirmation'))
     return invoke<ConfigImportResult>('import_config', { inPath, expectedImportToken })
   }
   await invoke('import_full', { inPath })

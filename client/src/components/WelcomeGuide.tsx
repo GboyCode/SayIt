@@ -13,6 +13,8 @@ import {
 } from '@/lib/shortcutKeys'
 import { refreshPTTSetting } from '@/services/webviewKeyboardFallback'
 import appIcon from '@/assets/icon-128.png'
+import { t, type TranslationKey } from '@/i18n'
+import { useT } from '@/i18n/useT'
 
 /** 简化键盘布局，高亮当前快捷键 */
 function KeyboardHint({ activeKey, pressed }: { activeKey: string; pressed?: boolean }) {
@@ -30,7 +32,7 @@ function KeyboardHint({ activeKey, pressed }: { activeKey: string; pressed?: boo
       { code: 'ControlLeft', label: 'Ctrl', w: 42 },
       { code: 'MetaLeft', label: 'Win', w: 34 },
       { code: 'AltLeft', label: 'Alt', w: 34 },
-      { code: 'Space', label: '空格', w: 148 },
+      { code: 'Space', label: t('keyName.Space'), w: 148 },
       { code: 'AltRight', label: 'Alt', w: 34 },
       { code: 'ControlRight', label: 'Ctrl', w: 42 },
     ],
@@ -68,10 +70,37 @@ function KeyboardHint({ activeKey, pressed }: { activeKey: string; pressed?: boo
   )
 }
 
-const MODE_LABELS: Record<string, string> = {
-  server: '服务器模式',
-  cloud_api: '云 API 模式',
-  local: '本地模式',
+const MODE_LABEL_KEYS: Record<string, TranslationKey> = {
+  server: 'mode.server',
+  cloud_api: 'mode.cloudApi',
+  local: 'mode.local',
+}
+
+/**
+ * 把带 `{key}` 占位的句子渲染成「文字 + 加粗键名 + 文字」。
+ * 按占位符切分，键名在句中的位置就由译文决定（中英语序不同）。
+ */
+function HotkeyPrompt({ template, keyLabel }: { template: string; keyLabel: string }) {
+  const [before, after = ''] = template.split('{key}')
+  return (
+    <>
+      {before}
+      <span className="font-medium text-foreground">{keyLabel}</span>
+      {after}
+    </>
+  )
+}
+
+/** 同 HotkeyPrompt，只是键名用键帽样式。 */
+function ReadyHint({ template, keyLabel }: { template: string; keyLabel: string }) {
+  const [before, after = ''] = template.split('{key}')
+  return (
+    <>
+      {before}
+      <span className="rounded border border-border bg-muted/50 px-1.5 py-0.5 font-medium text-foreground">{keyLabel}</span>
+      {after}
+    </>
+  )
 }
 
 interface WelcomeGuideProps {
@@ -79,9 +108,10 @@ interface WelcomeGuideProps {
 }
 
 export default function WelcomeGuide({ onComplete }: WelcomeGuideProps) {
+  const t = useT()
   const [step, setStep] = useState(0)
   const [hfKey, setHfKey] = useState('AltRight')
-  const [hfLabel, setHfLabel] = useState('右 Alt')
+  const hfLabel = displayShortcut(hfKey).join(' + ')
   const [workMode, setWorkMode] = useState('')
   const [serverOk, setServerOk] = useState<boolean | null>(null)
   const [testText, setTestText] = useState('')
@@ -97,7 +127,6 @@ export default function WelcomeGuide({ onComplete }: WelcomeGuideProps) {
     getSetting('shortcutHandsFree', 'AltRight').then((k) => {
       const key = k as string
       setHfKey(key)
-      setHfLabel(displayShortcut(key).join(' + '))
       hfKeyRef.current = key
     })
     const mode = getWorkMode()
@@ -115,13 +144,11 @@ export default function WelcomeGuide({ onComplete }: WelcomeGuideProps) {
     const pressedKeyCodeRef = { current: '' } // 当前按住的键
 
     const confirmKey = (code: string) => {
-      const label = getSingleKeyDisplay(code)
       // 保存到 ref，避免 state 更新触发 effect 重启
       hfKeyRef.current = code
       settingsDirtyRef.current = true
       // 更新 UI 状态（state 更新不会触发 effect 重建，因为 state 不在依赖里）
       setHfKey(code)
-      setHfLabel(label)
       setKeyPressed(true)
       keyPressedRef.current = true
       pressedKeyCodeRef.current = code
@@ -201,7 +228,6 @@ export default function WelcomeGuide({ onComplete }: WelcomeGuideProps) {
       const code = e.code
       if (isSingleKeySetting(code)) {
         setHfKey(code)
-        setHfLabel(getSingleKeyDisplay(code))
         void (async () => {
           await setSetting('shortcutHandsFree', code)
           bridge.notifyShortcutsChanged()
@@ -226,9 +252,9 @@ export default function WelcomeGuide({ onComplete }: WelcomeGuideProps) {
         return (
           <div className="flex flex-col items-center text-center">
             <img src={appIcon} alt="SayIt" className="mb-6 h-20 w-20 rounded-2xl" />
-            <h1 className="text-3xl font-bold tracking-tight" style={{ fontFamily: "'Nunito', sans-serif", fontWeight: 800 }}>欢迎使用 SayIt</h1>
-            <p className="mt-3 text-base text-muted-foreground">语音输入，AI 润色</p>
-            <p className="mt-1.5 text-sm text-muted-foreground/70">按一下开始说话，再按一下完成输入</p>
+            <h1 className="text-3xl font-bold tracking-tight" style={{ fontFamily: "'Nunito', sans-serif", fontWeight: 800 }}>{t('welcome.title')}</h1>
+            <p className="mt-3 text-base text-muted-foreground">{t('welcome.tagline')}</p>
+            <p className="mt-1.5 text-sm text-muted-foreground/70">{t('welcome.subtitle')}</p>
           </div>
         )
 
@@ -236,12 +262,12 @@ export default function WelcomeGuide({ onComplete }: WelcomeGuideProps) {
       case 1:
         return (
           <div>
-            <h2 className="mb-5 text-center text-xl font-bold">核心功能</h2>
+            <h2 className="mb-5 text-center text-xl font-bold">{t('welcome.featuresTitle')}</h2>
             <div className="space-y-3">
               {[
-                { icon: Mic, title: '免提语音输入', desc: '按一下开始说话，再按一下停止，文字自动输入到光标位置', color: 'text-blue-500 bg-blue-500/10' },
-                { icon: Sparkles, title: 'AI 智能润色', desc: '口语自动转书面语，支持自定义 Prompt，完全掌控 AI 行为', color: 'text-amber-500 bg-amber-500/10' },
-                { icon: Globe, title: '灵活部署', desc: '支持服务器、云 API、本地三种模式，按需选择，数据流向透明可控', color: 'text-emerald-500 bg-emerald-500/10' },
+                { icon: Mic, title: t('welcome.feature.handsFree.title'), desc: t('welcome.feature.handsFree.desc'), color: 'text-blue-500 bg-blue-500/10' },
+                { icon: Sparkles, title: t('welcome.feature.ai.title'), desc: t('welcome.feature.ai.desc'), color: 'text-amber-500 bg-amber-500/10' },
+                { icon: Globe, title: t('welcome.feature.deploy.title'), desc: t('welcome.feature.deploy.desc'), color: 'text-emerald-500 bg-emerald-500/10' },
               ].map(({ icon: Icon, title, desc, color }) => (
                 <Card key={title}>
                   <CardContent className="flex items-center gap-4 p-4">
@@ -266,11 +292,11 @@ export default function WelcomeGuide({ onComplete }: WelcomeGuideProps) {
             <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10">
               <Keyboard className="h-7 w-7 text-primary" />
             </div>
-            <h2 className="text-xl font-bold">设置免提热键</h2>
+            <h2 className="text-xl font-bold">{t('welcome.hotkeyTitle')}</h2>
             <p className="mt-2 text-sm text-muted-foreground">
               {keyConfirmed
-                ? '热键已确认，你可以继续下一步'
-                : <>默认热键为 <span className="font-medium text-foreground">右 Alt</span>，按下即可确认；也可以按其他按键更换</>}
+                ? t('welcome.hotkeyConfirmed')
+                : <HotkeyPrompt template={t('welcome.hotkeyPrompt')} keyLabel={getSingleKeyDisplay('AltRight')} />}
             </p>
 
             {/* 大号按键展示 */}
@@ -289,18 +315,18 @@ export default function WelcomeGuide({ onComplete }: WelcomeGuideProps) {
 
             {/* 键盘位置示意 */}
             <div className="w-full rounded-xl border bg-card p-3">
-              <p className="mb-2 text-[11px] text-muted-foreground">按键位置</p>
+              <p className="mb-2 text-[11px] text-muted-foreground">{t('welcome.keyPosition')}</p>
               <KeyboardHint activeKey={hfKey} pressed={keyPressed} />
             </div>
 
             {!keyConfirmed && (
               <p className="mt-4 text-xs text-muted-foreground/60">
-                支持的按键：左/右 Alt、左/右 Ctrl、左/右 Shift、空格、CapsLock、F1–F12
+                {t('welcome.supportedKeys')}
               </p>
             )}
             {keyConfirmed && (
               <p className="mt-4 text-xs text-muted-foreground">
-                如需更换，直接按下其他按键即可
+                {t('welcome.changeHint')}
               </p>
             )}
           </div>
@@ -310,7 +336,7 @@ export default function WelcomeGuide({ onComplete }: WelcomeGuideProps) {
       case 3:
         return (
           <div>
-            <h2 className="mb-5 text-center text-xl font-bold">试一试</h2>
+            <h2 className="mb-5 text-center text-xl font-bold">{t('welcome.tryTitle')}</h2>
 
             <Card className="mb-4">
               <CardContent className="flex items-center justify-between p-4">
@@ -319,8 +345,8 @@ export default function WelcomeGuide({ onComplete }: WelcomeGuideProps) {
                     <Keyboard className="h-5 w-5 text-primary" />
                   </div>
                   <div>
-                    <p className="text-sm font-medium">免提快捷键</p>
-                    <p className="mt-0.5 text-xs text-muted-foreground">点击右侧按钮修改</p>
+                    <p className="text-sm font-medium">{t('welcome.handsFreeShortcut')}</p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">{t('welcome.clickToChange')}</p>
                   </div>
                 </div>
                 <button
@@ -330,7 +356,7 @@ export default function WelcomeGuide({ onComplete }: WelcomeGuideProps) {
                     : 'border-border bg-muted/50 text-foreground hover:border-primary/50'
                     }`}
                 >
-                  {listeningKey ? '按下新按键...' : hfLabel}
+                  {listeningKey ? t('welcome.pressNewKey') : hfLabel}
                 </button>
               </CardContent>
             </Card>
@@ -338,45 +364,45 @@ export default function WelcomeGuide({ onComplete }: WelcomeGuideProps) {
             <Card className="mb-4">
               <CardContent className="flex items-center justify-between p-4">
                 <div>
-                  <p className="text-sm font-medium">当前模式</p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">{MODE_LABELS[workMode] || workMode}</p>
+                  <p className="text-sm font-medium">{t('welcome.currentMode')}</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">{MODE_LABEL_KEYS[workMode] ? t(MODE_LABEL_KEYS[workMode]) : workMode}</p>
                 </div>
                 {workMode === 'server' && (
                   <div className="flex items-center gap-1.5">
                     {serverOk === null ? (
-                      <span className="text-xs text-muted-foreground">检测中...</span>
+                      <span className="text-xs text-muted-foreground">{t('common.checking')}</span>
                     ) : serverOk ? (
-                      <><CheckCircle2 className="h-4 w-4 text-emerald-500" /><span className="text-xs text-emerald-600">已连接</span></>
+                      <><CheckCircle2 className="h-4 w-4 text-emerald-500" /><span className="text-xs text-emerald-600">{t('welcome.connected')}</span></>
                     ) : (
-                      <><AlertCircle className="h-4 w-4 text-destructive" /><span className="text-xs text-destructive">未连接</span></>
+                      <><AlertCircle className="h-4 w-4 text-destructive" /><span className="text-xs text-destructive">{t('welcome.notConnected')}</span></>
                     )}
                   </div>
                 )}
                 {workMode !== 'server' && (
-                  <span className="text-xs text-muted-foreground">需在设置中配置</span>
+                  <span className="text-xs text-muted-foreground">{t('welcome.needsSetup')}</span>
                 )}
               </CardContent>
             </Card>
 
             <Card>
               <CardContent className="p-4">
-                <p className="mb-2 text-sm font-medium">{canTest ? '语音输入测试' : '语音测试'}</p>
+                <p className="mb-2 text-sm font-medium">{canTest ? t('welcome.voiceTestReady') : t('welcome.voiceTest')}</p>
                 {canTest && (
-                  <p className="mb-2 text-xs text-muted-foreground">按一下 {hfLabel} 开始说话，再按一下自动插入文本</p>
+                  <p className="mb-2 text-xs text-muted-foreground">{t('welcome.testHint', { key: hfLabel })}</p>
                 )}
                 <textarea
                   value={testText}
                   onChange={(e) => setTestText(e.target.value)}
                   placeholder={canTest
-                    ? `按 ${hfLabel} 开始说话，再按一次插入文本到这里...`
-                    : '当前模式暂不支持在此测试。完成向导后，可在设置中配置语音引擎，然后在任意应用中使用。'}
+                    ? t('welcome.testPlaceholder', { key: hfLabel })
+                    : t('welcome.testUnavailable')}
                   className="w-full resize-none rounded-lg border border-input-border bg-input-bg p-3 text-sm leading-relaxed placeholder:text-muted-foreground/40 focus:border-input-focus-border focus:outline-none"
                   rows={4}
                   readOnly={!canTest}
                 />
                 {!canTest && (
                   <p className="mt-2 text-xs text-muted-foreground">
-                    提示：完成向导后，前往「语音引擎」或「AI 供应商」配置后即可在任何应用中按 {hfLabel} 使用
+                    {t('welcome.testUnavailableHint', { key: hfLabel })}
                   </p>
                 )}
               </CardContent>
@@ -391,11 +417,11 @@ export default function WelcomeGuide({ onComplete }: WelcomeGuideProps) {
             <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/10">
               <CheckCircle2 className="h-8 w-8 text-emerald-500" />
             </div>
-            <h2 className="text-xl font-bold">准备就绪</h2>
+            <h2 className="text-xl font-bold">{t('welcome.readyTitle')}</h2>
             <p className="mt-3 text-sm text-muted-foreground">
-              在任何应用中按 <span className="rounded border border-border bg-muted/50 px-1.5 py-0.5 font-medium text-foreground">{hfLabel}</span> 开始说话
+              <ReadyHint template={t('welcome.readyHint')} keyLabel={hfLabel} />
             </p>
-            <p className="mt-1.5 text-xs text-muted-foreground/70">再按一次停止，文字自动输入到光标位置</p>
+            <p className="mt-1.5 text-xs text-muted-foreground/70">{t('welcome.readySubHint')}</p>
           </div>
         )
 
@@ -427,7 +453,7 @@ export default function WelcomeGuide({ onComplete }: WelcomeGuideProps) {
                 className="flex items-center gap-1 rounded-lg px-4 py-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
               >
                 <ArrowLeft className="h-3.5 w-3.5" />
-                上一步
+                {t('common.back')}
               </button>
             )}
             {!isLast && step === 0 && (
@@ -435,14 +461,14 @@ export default function WelcomeGuide({ onComplete }: WelcomeGuideProps) {
                 onClick={onComplete}
                 className="rounded-lg px-4 py-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
               >
-                跳过
+                {t('common.skip')}
               </button>
             )}
             <button
               onClick={() => isLast ? onComplete() : setStep(step + 1)}
               className="flex items-center gap-1.5 rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
             >
-              {isLast ? '开始使用' : '下一步'}
+              {isLast ? t('welcome.start') : t('common.next')}
               <ArrowRight className="h-3.5 w-3.5" />
             </button>
           </div>

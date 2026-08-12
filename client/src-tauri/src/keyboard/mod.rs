@@ -72,7 +72,7 @@ pub fn set_escape_action_mode(mode: &str, token: u64) -> Result<(), String> {
         "cancel_recording" => (ESCAPE_MODE_CANCEL_RECORDING, 11 * 60 * 1000),
         "cancel_processing" => (ESCAPE_MODE_CANCEL_PROCESSING, 2 * 60 * 1000),
         "dismiss_fallback" => (ESCAPE_MODE_DISMISS_FALLBACK, 30 * 1000),
-        _ => return Err(format!("未知 Esc 动作模式: {mode}")),
+        _ => return Err(format!("Unknown Escape action mode: {mode}")),
     };
     // 先关闭模式，再按 token/deadline/final mode 的顺序发布一组一致快照。
     // 钩子只有看到最终非 off 模式后才会读取对应 token。

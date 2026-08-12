@@ -1,4 +1,5 @@
 import type { ThemeDefinition } from './types'
+import { t } from '@/i18n'
 
 /**
  * 青绿深色主题 — 墨玉
@@ -6,7 +7,7 @@ import type { ThemeDefinition } from './types'
  */
 const tealDark: ThemeDefinition = {
   id: 'teal-dark',
-  name: '墨玉',
+  get name() { return t('theme.tealDark') },
   isDark: true,
   previewColors: {
     bg: '#191d1d',

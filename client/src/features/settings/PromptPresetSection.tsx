@@ -3,9 +3,16 @@ import { Pencil, Plus, Trash2 } from 'lucide-react'
 import { useSortable, DragHandle } from '@/components/ui/sortable'
 import { Card, CardContent } from '@/components/ui/card'
 import { Select } from '@/components/ui/select'
-import { BUILTIN_PRESETS, type PromptPreset } from '@/services/store'
+import { Segmented } from '@/components/ui/segmented'
+import {
+  getBuiltinPromptPresets,
+  type BuiltinPromptLanguage,
+  type PromptPreset,
+} from '@/services/store'
 import { ComboShortcutInput, type ShortcutValidate } from './ShortcutInputs'
 import { displayAccelerator } from './utils'
+import { useT } from '@/i18n/useT'
+import { promptPresetDisplayName } from '@/i18n/displayNames'
 
 export default function PromptPresetSection({
   presets,
@@ -13,7 +20,10 @@ export default function PromptPresetSection({
   editingPreset,
   presetShortcuts,
   editingShortcut,
+  promptLanguage,
+  promptLanguageChanging,
   onSelectPreset,
+  onPromptLanguageChange,
   onStartNewPreset,
   onStartEditing,
   onEditingPresetChange,
@@ -30,7 +40,10 @@ export default function PromptPresetSection({
   presetShortcuts: Record<string, string>
   /** 编辑中的快捷键草稿。**不即时落库** —— 见下方 onEditingShortcutChange 的说明 */
   editingShortcut: string
+  promptLanguage: BuiltinPromptLanguage
+  promptLanguageChanging?: boolean
   onSelectPreset: (id: string) => void
+  onPromptLanguageChange: (language: BuiltinPromptLanguage) => void
   onStartNewPreset: () => void
   onStartEditing: (preset: PromptPreset) => void
   onEditingPresetChange: (preset: PromptPreset) => void
@@ -48,9 +61,11 @@ export default function PromptPresetSection({
   onMovePreset: (from: number, to: number) => void
   validateShortcut?: ShortcutValidate
 }) {
+  const t = useT()
   const presetSortable = useSortable({ onMove: onMovePreset })
   const nameInputRef = useRef<HTMLInputElement>(null)
   const [templateId, setTemplateId] = useState('')
+  const editingPresetName = editingPreset ? promptPresetDisplayName(editingPreset) : ''
 
   // 是否在"新建"（草稿的 id 还不在已有列表里）
   const isCreating = !!editingPreset && !presets.some((preset) => preset.id === editingPreset.id)
@@ -81,32 +96,46 @@ export default function PromptPresetSection({
   return (
     <Card>
       <CardContent className="p-6">
-        <div className="mb-4 flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-semibold">润色模式</h2>
-            <p className="text-xs text-muted-foreground">选择或自定义 AI 对语音文本的处理方式。</p>
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 grow basis-[18rem]">
+            <h2 className="text-lg font-semibold">{t('promptPreset.title')}</h2>
+            <p className="text-xs text-muted-foreground">{t('promptPreset.desc')}</p>
           </div>
-          <button
-            onClick={onStartNewPreset}
-            className="flex items-center gap-1 rounded-md border px-2 py-1 text-xs transition-colors hover:bg-accent"
-          >
-            <Plus className="h-3 w-3" /> 新建
-          </button>
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <Segmented
+              label={t('promptPreset.promptLanguage')}
+              value={promptLanguage}
+              options={[
+                { value: 'zh-CN', label: t('promptPreset.languageZh') },
+                { value: 'en', label: t('promptPreset.languageEn') },
+              ]}
+              onChange={onPromptLanguageChange}
+              size="sm"
+              disabled={promptLanguageChanging}
+              className="gap-1"
+            />
+            <button
+              onClick={onStartNewPreset}
+              className="flex items-center gap-1 rounded-md border px-2 py-1 text-xs transition-colors hover:bg-accent"
+            >
+              <Plus className="h-3 w-3" /> {t('promptPreset.new')}
+            </button>
+          </div>
         </div>
 
         {/* 编辑/新建表单放在列表**上方**：以前在整个列表下面，列表一长就在屏幕外，
             点了「新建」看着像没反应。 */}
         {editingPreset && (
           <div className="mb-4 space-y-3 rounded-lg border border-primary/30 bg-muted p-4">
-            <p className="text-sm font-medium">{isCreating ? '新建润色模式' : `编辑「${editingPreset.name}」`}</p>
+            <p className="text-sm font-medium">{isCreating ? t('promptPreset.createTitle') : t('promptPreset.editTitle', { name: editingPresetName })}</p>
 
             <div>
-              <label className="mb-1.5 block text-xs font-medium text-foreground">名称</label>
+              <label className="mb-1.5 block text-xs font-medium text-foreground">{t('promptPreset.name')}</label>
               <input
                 ref={nameInputRef}
-                value={editingPreset.name}
+                value={editingPreset.builtin ? editingPresetName : editingPreset.name}
                 onChange={(event) => onEditingPresetChange({ ...editingPreset, name: event.target.value })}
-                placeholder="例如：会议纪要整理"
+                placeholder={t('promptPreset.namePlaceholder')}
                 className="h-9 w-full rounded-md border border-input-border bg-input-bg px-3 text-sm"
                 disabled={editingPreset.builtin}
               />
@@ -115,33 +144,35 @@ export default function PromptPresetSection({
             {/* 新建时给个起点：从零写 System Prompt 门槛太高，内置模式本身就是好模板 */}
             {isCreating && (
               <div>
-                <label className="mb-1.5 block text-xs font-medium text-foreground">以现有模式为模板（可选）</label>
+                <label className="mb-1.5 block text-xs font-medium text-foreground">{t('promptPreset.template')}</label>
                 <Select
                   value={templateId}
                   onChange={applyTemplate}
                   options={[
-                    { value: '', label: '不使用模板，自己写' },
+                    { value: '', label: t('promptPreset.noTemplate') },
                     ...presets.map((preset) => ({
                       value: preset.id,
-                      label: preset.builtin ? `${preset.name}（内置）` : preset.name,
+                      label: preset.builtin
+                        ? t('promptPreset.builtinSuffix', { name: promptPresetDisplayName(preset) })
+                        : preset.name,
                     })),
                   ]}
                 />
                 <p className="mt-1.5 text-xs text-muted-foreground">
-                  选中后会把该模式的提示词填入下面，改几句就能用。
+                  {t('promptPreset.templateHint')}
                 </p>
               </div>
             )}
 
             <div>
-              <label className="mb-1.5 block text-xs font-medium text-foreground">系统提示词（System Prompt）</label>
+              <label className="mb-1.5 block text-xs font-medium text-foreground">{t('promptPreset.systemPrompt')}</label>
               <p className="mb-2 text-xs text-muted-foreground">
-                定义 AI 的角色和处理规则，语音文本会自动附加为用户消息。
+                {t('promptPreset.systemPromptHint')}
               </p>
               <textarea
                 value={editingPreset.systemPrompt}
                 onChange={(event) => onEditingPresetChange({ ...editingPreset, systemPrompt: event.target.value })}
-                placeholder="定义 AI 的角色、行为和处理规则..."
+                placeholder={t('promptPreset.systemPromptPlaceholder')}
                 rows={8}
                 className="w-full resize-y rounded-md border border-input-border bg-input-bg px-3 py-2 text-xs leading-normal"
               />
@@ -152,8 +183,8 @@ export default function PromptPresetSection({
                 value={editingShortcut}
                 onChange={onEditingShortcutChange}
                 validate={validateShortcut}
-                label="快捷键（可选）"
-                description="设置组合键随时切换到此模式，如 Alt+1、Alt+2（需含修饰键）。保存后生效"
+                label={t('promptPreset.shortcut')}
+                description={t('promptPreset.shortcutHint')}
                 comboOnly
               />
             </div>
@@ -162,19 +193,23 @@ export default function PromptPresetSection({
               {/* 保存不可点时说明原因，而不是干灰着 */}
               {(missingName || missingPrompt) && (
                 <span className="mr-auto text-xs text-muted-foreground">
-                  {missingName && missingPrompt ? '请填写名称和提示词' : missingName ? '请填写名称' : '请填写提示词'}
+                  {missingName && missingPrompt
+                    ? t('promptPreset.missingBoth')
+                    : missingName ? t('promptPreset.missingName') : t('promptPreset.missingPrompt')}
                 </span>
               )}
 
               {editingPreset.builtin && (
                 <button
                   onClick={() => {
-                    const original = BUILTIN_PRESETS.find((builtin) => builtin.id === editingPreset.id)
+                    const language = editingPreset.builtinPromptLanguage ?? promptLanguage
+                    const original = getBuiltinPromptPresets(language)
+                      .find((builtin) => builtin.id === editingPreset.id)
                     if (original) onEditingPresetChange({ ...original })
                   }}
                   className="px-2 py-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
                 >
-                  恢复默认
+                  {t('promptPreset.restoreDefault')}
                 </button>
               )}
 
@@ -182,14 +217,14 @@ export default function PromptPresetSection({
                 onClick={onCancelEditing}
                 className="rounded-md border px-3 py-1 text-xs transition-colors hover:bg-accent"
               >
-                取消
+                {t('promptPreset.cancel')}
               </button>
               <button
                 disabled={missingName || missingPrompt}
                 onClick={() => onSavePreset(editingPreset)}
                 className="rounded-md bg-primary px-3 py-1 text-xs text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
               >
-                保存
+                {t('promptPreset.save')}
               </button>
             </div>
           </div>
@@ -200,6 +235,7 @@ export default function PromptPresetSection({
             const customPresets = presets.filter((item) => !item.builtin)
             const customIndex = customPresets.findIndex((item) => item.id === preset.id)
             const canMove = !preset.builtin && customPresets.length > 1
+            const presetName = promptPresetDisplayName(preset)
             return (
               <div
                 key={preset.id}
@@ -214,7 +250,7 @@ export default function PromptPresetSection({
                   <div className="flex min-w-0 items-center gap-3">
                     {canMove && (
                       <DragHandle
-                        {...presetSortable.handleProps(customIndex, `拖动 ${preset.name}`)}
+                        {...presetSortable.handleProps(customIndex, t('promptPreset.drag', { name: presetName }))}
                         onClick={(event) => event.stopPropagation()}
                       />
                     )}
@@ -227,9 +263,16 @@ export default function PromptPresetSection({
 
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
-                        <p className="text-sm font-medium">{preset.name}</p>
+                        <p className="text-sm font-medium">{presetName}</p>
                         {preset.builtin && (
-                          <span className="rounded border px-1 text-xs text-muted-foreground">内置</span>
+                          <span className="rounded border px-1 text-xs text-muted-foreground">{t('promptPreset.builtin')}</span>
+                        )}
+                        {preset.builtinPromptModified && (
+                          <span className="rounded border border-warning/40 bg-warning/10 px-1 text-xs text-warning-strong">
+                            {preset.builtinPromptUpdateAvailable
+                              ? t('promptPreset.updateAvailable')
+                              : t('promptPreset.modified')}
+                          </span>
                         )}
                         {presetShortcuts[preset.id] && (
                           <span className="rounded border border-primary/30 bg-primary/5 px-1.5 text-xs text-muted-foreground">
@@ -248,7 +291,7 @@ export default function PromptPresetSection({
                         onStartEditing({ ...preset })
                       }}
                       className="rounded p-1.5 hover:bg-accent"
-                      aria-label="编辑"
+                      aria-label={t('promptPreset.edit')}
                     >
                       <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
                     </button>
@@ -260,7 +303,7 @@ export default function PromptPresetSection({
                           onDeletePreset(preset.id)
                         }}
                         className="rounded p-1.5 hover:bg-accent"
-                        aria-label="删除"
+                        aria-label={t('promptPreset.delete')}
                       >
                         <Trash2 className="h-3.5 w-3.5 text-destructive" />
                       </button>

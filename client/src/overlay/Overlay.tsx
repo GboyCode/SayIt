@@ -1,6 +1,8 @@
 import * as bridge from '../services/bridge'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Copy, Check, X } from 'lucide-react'
+import { isLocale, setLocale } from '@/i18n'
+import { useT } from '@/i18n/useT'
 import { addRuntimeEvent } from '../services/debugLog'
 import { formatRecordingTimer } from '../services/recorder/types'
 
@@ -25,6 +27,8 @@ interface OverlayPayload {
   toastTone?: 'info' | 'warn'
   streaming?: boolean
   streamingText?: string
+  /** 界面语言，由主窗随每次更新下发（见 OverlayCommonPayload.locale）。 */
+  locale?: string
   _overlayShowId?: number
   _overlayGeneration?: number
   _overlayProbe?: boolean
@@ -72,6 +76,7 @@ function getThinkingColor(theme: OverlayWaveTheme): string {
 }
 
 export default function Overlay() {
+  const t = useT()
   const [state, setState] = useState<OverlayState>('waiting')
   const [bars, setBars] = useState<number[]>(IDLE_BARS)
   const [elapsedSec, setElapsedSec] = useState(0)
@@ -110,6 +115,9 @@ export default function Overlay() {
 
     const handleOverlayState = (data: unknown) => {
       const payload = data as OverlayPayload
+      // 语言先落地再渲染本帧：悬浮窗没有自己的初始化时机，语言只能随 payload 来。
+      // setLocale 对同值是空操作，所以每帧都调也不会造成额外重渲染。
+      if (isLocale(payload.locale)) setLocale(payload.locale)
       const nextElapsedSec = typeof payload.elapsedSec === 'number'
         ? payload.elapsedSec
         : elapsedSecRef.current
@@ -246,7 +254,7 @@ export default function Overlay() {
     try {
       await bridge.copyText(fallbackText)
       setCopied(true)
-      addRuntimeEvent('info', 'overlay', '兜底卡片复制成功', { textLen: fallbackText.length })
+      addRuntimeEvent('info', 'overlay', 'Fallback card copied', { textLen: fallbackText.length })
 
       if (hideTimerRef.current) {
         clearTimeout(hideTimerRef.current)
@@ -257,12 +265,12 @@ export default function Overlay() {
         hideTimerRef.current = null
       }, 500)
     } catch (error) {
-      addRuntimeEvent('error', 'overlay', '兜底卡片复制失败', { error: String(error) })
+      addRuntimeEvent('error', 'overlay', 'Fallback card copy failed', { error: String(error) })
     }
   }
 
   const handleDismissFallback = () => {
-    addRuntimeEvent('info', 'overlay', '用户关闭兜底卡片')
+    addRuntimeEvent('info', 'overlay', 'Fallback card dismissed by user')
     void bridge.setEscapeActionMode('off')
     void bridge.hideOverlay()
   }
@@ -284,16 +292,16 @@ export default function Overlay() {
         >
           <div className="flex items-start justify-between gap-3">
             <div className="space-y-1">
-              <span className="block text-xs font-medium tracking-[0.16em]" style={{ color: 'var(--overlay-text-muted)' }}>识别文本</span>
+              <span className="block text-xs font-medium tracking-[0.16em]" style={{ color: 'var(--overlay-text-muted)' }}>{t('overlay.recognizedText')}</span>
               <span className="block text-xs" style={{ color: 'var(--overlay-text-dim)' }}>
-                当前目标不支持直接写入。你可以复制文本，或关闭本提示。
+                {t('overlay.fallbackHint')}
               </span>
             </div>
             <div className="flex shrink-0 items-center gap-2">
               <button
                 type="button"
                 onClick={handleCopyFallback}
-                title={copied ? '已复制' : '复制文本'}
+                title={copied ? t('overlay.copied') : t('overlay.copyText')}
                 className={`inline-flex h-8 w-8 items-center justify-center rounded-lg border transition-colors ${copied
                   ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-200'
                   : 'border-white/10 bg-white/10 text-white/90 hover:bg-white/20'
@@ -304,8 +312,8 @@ export default function Overlay() {
               <button
                 type="button"
                 onClick={handleDismissFallback}
-                title="关闭"
-                aria-label="关闭识别文本提示"
+                title={t('window.close')}
+                aria-label={t('overlay.dismissAria')}
                 className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-white/60 transition-colors hover:bg-white/15 hover:text-white"
               >
                 <X className="h-4 w-4" />
@@ -314,7 +322,7 @@ export default function Overlay() {
           </div>
           <div className="mt-4 flex-1 overflow-hidden rounded-lg px-3 py-3" style={{ background: 'var(--overlay-surface)' }}>
             <p className="max-h-[108px] overflow-auto pr-1 text-sm leading-6 select-text">
-              {fallbackText || '（无文本）'}
+              {fallbackText || t('overlay.noText')}
             </p>
           </div>
         </div>
@@ -333,7 +341,7 @@ export default function Overlay() {
                 className="mb-1 text-[10px] font-medium tracking-[0.18em]"
                 style={{ color: 'var(--overlay-text-muted)' }}
               >
-                实时识别
+                {t('overlay.liveCaption')}
               </span>
               {/* 内容驱动尺寸：小默认，随文字增行慢慢变大，超过 3 行才滚动，只显示最新内容 */}
               <div
@@ -341,7 +349,7 @@ export default function Overlay() {
                 style={{ color: hasStreamingText ? 'var(--overlay-text)' : 'var(--overlay-text-dim)' }}
               >
                 <div>
-                  {hasStreamingText ? streamingText : '正在聆听…'}
+                  {hasStreamingText ? streamingText : t('overlay.listening')}
                   {hasStreamingText && (
                     <span
                       className="ml-0.5 inline-block h-[1.05em] w-[2px] rounded-full align-middle"
@@ -461,7 +469,7 @@ export default function Overlay() {
                     }}
                   />
                 </div>
-                <span className="text-xs whitespace-nowrap" style={{ color: thinkingColor }}>处理中</span>
+                <span className="text-xs whitespace-nowrap" style={{ color: thinkingColor }}>{t('overlay.processing')}</span>
                 {/* 这里**故意**不写「Esc 取消」。Esc 取消的能力照常生效（原生钩子 +
                     escape-action，与本组件无关），只是这行提示不该出现在悬浮窗上：
                     悬浮窗是贴在光标附近、每次口述都会闪一下的东西，越安静越好，而
@@ -473,7 +481,7 @@ export default function Overlay() {
 
             {state === 'error' && (
               <div className="flex items-center gap-2">
-                <span className="text-xs text-red-400">{errorMessage || '出错了'}</span>
+                <span className="text-xs text-red-400">{errorMessage || t('overlay.genericError')}</span>
               </div>
             )}
 

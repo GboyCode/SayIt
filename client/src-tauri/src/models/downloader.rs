@@ -5,6 +5,24 @@ use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use tauri::{AppHandle, Emitter};
 
+use crate::error_protocol;
+
+fn download_error(code: &str, detail: impl AsRef<str>) -> String {
+    error_protocol::encode(code, detail)
+}
+
+fn download_io_error(context: &str, error: std::io::Error) -> String {
+    let code = if error.kind() == std::io::ErrorKind::PermissionDenied {
+        "download_permission"
+    } else if matches!(error.raw_os_error(), Some(28 | 112)) {
+        // ENOSPC on Unix and ERROR_DISK_FULL on Windows.
+        "download_no_space"
+    } else {
+        "download_failed"
+    };
+    download_error(code, format!("{}: {}", context, error))
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct DownloadProgress {
     pub model_id: String,
@@ -63,7 +81,7 @@ fn build_http_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .user_agent("SayIt/1.0")
         .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))
+        .map_err(|e| download_error("download_network", format!("Failed to create HTTP client: {}", e)))
 }
 
 /// 下载单个文件，支持进度回调
@@ -82,10 +100,10 @@ pub async fn download_file(
 
     // 确保目录存在（file_name 可能含子路径，如 tokenizer/merges.txt，需创建其父目录）
     std::fs::create_dir_all(dest_dir)
-        .map_err(|e| format!("创建目录失败: {}", e))?;
+        .map_err(|e| download_io_error("Failed to create model directory", e))?;
     if let Some(parent) = dest_path.parent() {
         std::fs::create_dir_all(parent)
-            .map_err(|e| format!("创建目录失败: {}", e))?;
+            .map_err(|e| download_io_error("Failed to create model subdirectory", e))?;
     }
 
     // 检查是否已有部分下载（断点续传）
@@ -106,7 +124,7 @@ pub async fn download_file(
             return Ok(());
         }
         log::warn!(
-            "已存在的 {} 大小 {} 与期望 {} 不符，删除后重新下载",
+            "Existing {} has size {}, expected {}; deleting it before redownloading",
             file_name,
             size,
             expected_size
@@ -142,10 +160,10 @@ pub async fn download_file(
     let resp = request
         .send()
         .await
-        .map_err(|e| format!("下载请求失败: {}", e))?;
+        .map_err(|e| download_error("download_network", format!("Download request failed: {}", e)))?;
 
     if !resp.status().is_success() && resp.status().as_u16() != 206 {
-        let msg = format!("下载失败 HTTP {}", resp.status());
+        let msg = download_error("download_network", format!("Download failed with HTTP {}", resp.status()));
         emit_progress(&app, model_id, file_name, downloaded, expected_size, "failed", Some(&msg), file_index, file_count);
         return Err(msg);
     }
@@ -164,7 +182,7 @@ pub async fn download_file(
         .create(true)
         .append(true)
         .open(&temp_path)
-        .map_err(|e| format!("打开文件失败: {}", e))?;
+        .map_err(|e| download_io_error("Failed to open partial download", e))?;
 
     let mut stream = resp.bytes_stream();
     use futures_util::StreamExt;
@@ -172,9 +190,9 @@ pub async fn download_file(
     let mut last_emit = std::time::Instant::now();
 
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("下载中断: {}", e))?;
+        let chunk = chunk.map_err(|e| download_error("download_network", format!("Download interrupted: {}", e)))?;
         file.write_all(&chunk)
-            .map_err(|e| format!("写入文件失败: {}", e))?;
+            .map_err(|e| download_io_error("Failed to write partial download", e))?;
         downloaded += chunk.len() as u64;
 
         // 每 200ms 发送一次进度
@@ -184,12 +202,12 @@ pub async fn download_file(
         }
     }
 
-    file.flush().map_err(|e| format!("flush 失败: {}", e))?;
+    file.flush().map_err(|e| download_io_error("Failed to flush partial download", e))?;
     drop(file);
 
     // 下载完成，重命名 .part → 最终文件名
     std::fs::rename(&temp_path, &dest_path)
-        .map_err(|e| format!("重命名文件失败: {}", e))?;
+        .map_err(|e| download_io_error("Failed to finalize downloaded file", e))?;
 
     emit_progress(&app, model_id, file_name, downloaded, total, "completed", None, file_index, file_count);
     log::info!("Download completed: {} ({} bytes)", file_name, downloaded);
@@ -272,10 +290,10 @@ async fn download_archive_once(
     let resp = request
         .send()
         .await
-        .map_err(|e| format!("下载请求失败: {}", e))?;
+        .map_err(|e| download_error("download_network", format!("Download request failed: {}", e)))?;
 
     if !resp.status().is_success() && resp.status().as_u16() != 206 {
-        return Err(format!("下载失败 HTTP {}", resp.status()));
+        return Err(download_error("download_network", format!("Download failed with HTTP {}", resp.status())));
     }
 
     let content_length = resp.content_length().unwrap_or(0);
@@ -286,15 +304,15 @@ async fn download_archive_once(
         .create(true)
         .append(true)
         .open(temp_path)
-        .map_err(|e| format!("打开文件失败: {}", e))?;
+        .map_err(|e| download_io_error("Failed to open partial archive", e))?;
 
     let mut stream = resp.bytes_stream();
     use futures_util::StreamExt;
     let mut last_emit = std::time::Instant::now();
 
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("下载中断: {}", e))?;
-        file.write_all(&chunk).map_err(|e| format!("写入失败: {}", e))?;
+        let chunk = chunk.map_err(|e| download_error("download_network", format!("Download interrupted: {}", e)))?;
+        file.write_all(&chunk).map_err(|e| download_io_error("Failed to write partial archive", e))?;
         downloaded += chunk.len() as u64;
 
         if last_emit.elapsed().as_millis() >= 300 {
@@ -303,7 +321,7 @@ async fn download_archive_once(
         }
     }
 
-    file.flush().map_err(|e| format!("flush 失败: {}", e))?;
+    file.flush().map_err(|e| download_io_error("Failed to flush partial archive", e))?;
     drop(file);
     Ok(())
 }
@@ -318,7 +336,7 @@ pub async fn download_and_extract_tar_bz2(
     let temp_path = dest_dir.with_extension("tar.bz2.part");
 
     std::fs::create_dir_all(&dest_dir)
-        .map_err(|e| format!("创建目录失败: {}", e))?;
+        .map_err(|e| download_io_error("Failed to create model directory", e))?;
 
     // 如果已经解压过（目录中有 onnx 文件），跳过下载
     // funasr-nano: encoder_adaptor.int8.onnx / paraformer: model.int8.onnx / qwen3-asr: encoder.int8.onnx
@@ -333,13 +351,13 @@ pub async fn download_and_extract_tar_bz2(
     // 多源下载：GitHub 地址自动优先走国内加速代理，失败再回退直连。
     // 各镜像内容一致，可跨源断点续传（沿用已有 .part）。
     let candidates = build_archive_candidates(url);
-    let mut last_err = String::from("无可用下载源");
+    let mut last_err = download_error("download_network", "No download source is available");
     let mut ok = false;
     for (idx, cand) in candidates.iter().enumerate() {
         match download_archive_once(&app, model_id, cand, &temp_path).await {
             Ok(()) => { ok = true; break; }
             Err(e) => {
-                log::warn!("archive 源 {}/{} 失败: {}", idx + 1, candidates.len(), e);
+                log::warn!("Archive source {}/{} failed: {}", idx + 1, candidates.len(), e);
                 last_err = e;
             }
         }
@@ -350,20 +368,20 @@ pub async fn download_and_extract_tar_bz2(
     }
 
     std::fs::rename(&temp_path, &archive_path)
-        .map_err(|e| format!("重命名失败: {}", e))?;
+        .map_err(|e| download_io_error("Failed to finalize downloaded archive", e))?;
 
     log::info!("Archive downloaded: {}", model_id);
     emit_progress(&app, model_id, "extracting", 0, 0, "downloading", None, 1, 1);
 
     // 解压 tar.bz2
     let archive_file = std::fs::File::open(&archive_path)
-        .map_err(|e| format!("打开压缩包失败: {}", e))?;
+        .map_err(|e| download_io_error("Failed to open downloaded archive", e))?;
     let bz_decoder = bzip2::read::BzDecoder::new(archive_file);
     let mut archive = tar::Archive::new(bz_decoder);
 
-    for entry in archive.entries().map_err(|e| format!("读取压缩包失败: {}", e))? {
-        let mut entry = entry.map_err(|e| format!("读取条目失败: {}", e))?;
-        let path = entry.path().map_err(|e| format!("读取路径失败: {}", e))?;
+    for entry in archive.entries().map_err(|e| download_error("download_failed", format!("Failed to read archive: {}", e)))? {
+        let mut entry = entry.map_err(|e| download_error("download_failed", format!("Failed to read archive entry: {}", e)))?;
+        let path = entry.path().map_err(|e| download_error("download_failed", format!("Failed to read archive path: {}", e)))?;
         let path_str = path.to_string_lossy().to_string();
 
         // 跳过 test_wavs/ 和 README.md
@@ -386,9 +404,9 @@ pub async fn download_and_extract_tar_bz2(
                 std::fs::create_dir_all(parent).ok();
             }
             let mut out = std::fs::File::create(&dest)
-                .map_err(|e| format!("创建文件失败 {:?}: {}", relative, e))?;
+                .map_err(|e| download_io_error(&format!("Failed to create extracted file {:?}", relative), e))?;
             std::io::copy(&mut entry, &mut out)
-                .map_err(|e| format!("解压文件失败 {:?}: {}", relative, e))?;
+                .map_err(|e| download_io_error(&format!("Failed to extract file {:?}", relative), e))?;
         }
     }
 

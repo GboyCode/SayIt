@@ -103,10 +103,10 @@ pub async fn transcribe(
 ) -> Result<AsrResult, String> {
     let pcm = base64::Engine::decode(
         &base64::engine::general_purpose::STANDARD, audio_pcm_b64,
-    ).map_err(|e| diag::fail(SCOPE, "decode_b64", format!("base64 解码失败: {}", e)))?;
+    ).map_err(|e| diag::fail(SCOPE, "decode_b64", format!("Failed to decode base64 audio: {}", e)))?;
 
     if pcm.is_empty() {
-        diag::empty_result(SCOPE, "客户端送来的音频是空的，没有发起请求");
+        diag::empty_result(SCOPE, "Input audio was empty; provider request was skipped");
         return Ok(AsrResult { text: String::new(), elapsed_ms: 0 });
     }
 
@@ -162,7 +162,7 @@ pub async fn transcribe(
         .timeout(std::time::Duration::from_secs(60))
         .send()
         .await
-        .map_err(|e| diag::fail(SCOPE, "http_send", format!("请求失败: {}", e)))?;
+        .map_err(|e| diag::fail(SCOPE, "http_send", format!("Request failed: {}", e)))?;
 
     let elapsed_ms = start.elapsed().as_millis() as u64;
     let http_summary = diag::http_summary(resp.status(), resp.headers());
@@ -176,7 +176,7 @@ pub async fn transcribe(
             // 曾经这里是 `&body[..body.len().min(300)]`：DashScope 的报错体是中文，
             // 按字节切会切在汉字中间直接 panic —— 一出错就崩，反而什么都查不到
             format!(
-                "千问 ASR 错误 {} [{}]: {}",
+                "Qwen ASR error {} [{}]: {}",
                 status,
                 http_summary,
                 diag::truncate(&body, 300)
@@ -187,13 +187,13 @@ pub async fn transcribe(
     let body_text = resp
         .text()
         .await
-        .map_err(|e| diag::fail(SCOPE, "read_body", format!("读取响应失败: {}", e)))?;
+        .map_err(|e| diag::fail(SCOPE, "read_body", format!("Failed to read response: {}", e)))?;
     let data: serde_json::Value = serde_json::from_str(&body_text).map_err(|e| {
         diag::fail(
             SCOPE,
             "parse_json",
             format!(
-                "解析响应失败: {} [{}] 响应片段: {}",
+                "Failed to parse response: {} [{}] response excerpt: {}",
                 e,
                 http_summary,
                 diag::truncate(&body_text, 200)
@@ -223,7 +223,7 @@ pub async fn transcribe(
         diag::log(
             SCOPE,
             "hotword_echo_stripped",
-            &format!("原文 {} 字被判为热词回显并清空 hotwords={}", raw_chars, words.len()),
+            &format!("Stripped a {}-character hotword echo hotwords={}", raw_chars, words.len()),
         );
     }
 
@@ -231,7 +231,7 @@ pub async fn transcribe(
         diag::empty_result(
             SCOPE,
             &format!(
-                "文本为空 audio_sec={:.1} elapsed={}ms [{}] {}",
+                "Response contained no transcript audio_sec={:.1} elapsed={}ms [{}] {}",
                 audio_sec,
                 elapsed_ms,
                 http_summary,
@@ -277,7 +277,7 @@ pub async fn test_connection(config: &AsrProviderConfig) -> TestResult {
     match result {
         Ok(resp) if resp.status().is_success() => TestResult {
             ok: true,
-            message: format!("连接成功 ({}ms)", elapsed_ms),
+            message: format!("Connection successful ({}ms)", elapsed_ms),
             elapsed_ms,
             detail: String::new(),
         },
@@ -291,7 +291,7 @@ pub async fn test_connection(config: &AsrProviderConfig) -> TestResult {
                     "qwen/asr-flash-test",
                     "http_status",
                     format!(
-                        "API 错误 {} [{}]: {}",
+                        "API error {} [{}]: {}",
                         status,
                         summary,
                         diag::truncate(&body, 100)
@@ -306,7 +306,7 @@ pub async fn test_connection(config: &AsrProviderConfig) -> TestResult {
             message: diag::fail(
                 "qwen/asr-flash-test",
                 "http_send",
-                format!("连接失败: {}", e),
+                format!("Connection failed: {}", e),
             ),
             elapsed_ms,
             detail: String::new(),

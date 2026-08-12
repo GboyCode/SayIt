@@ -1,4 +1,5 @@
 import type { ThemeDefinition } from './types'
+import { t } from '@/i18n'
 
 /**
  * 默认亮色主题 — 简洁黑白灰
@@ -6,7 +7,7 @@ import type { ThemeDefinition } from './types'
  */
 const light: ThemeDefinition = {
   id: 'light',
-  name: '浅色',
+  get name() { return t('theme.light') },
   isDark: false,
   previewColors: {
     bg: '#ffffff',

@@ -4,6 +4,8 @@
 import { useEffect, useState } from 'react'
 import { Info, AlertTriangle, Megaphone, X } from 'lucide-react'
 import { open as shellOpen } from '@tauri-apps/plugin-shell'
+import { t } from '@/i18n'
+import { useLocale } from '@/i18n/useT'
 import {
   fetchActiveNotice,
   dismissNotice,
@@ -39,12 +41,13 @@ function prettyUrl(url: string): string {
 }
 
 export default function NoticeBanner() {
+  const locale = useLocale()
   const [notice, setNotice] = useState<RemoteNotice | null>(null)
 
   useEffect(() => {
     let alive = true
     const load = () => {
-      void fetchActiveNotice(__APP_VERSION__).then((n) => {
+      void fetchActiveNotice(__APP_VERSION__, locale).then((n) => {
         if (alive) setNotice(n)
       })
     }
@@ -54,7 +57,7 @@ export default function NoticeBanner() {
       alive = false
       clearInterval(timer)
     }
-  }, [])
+  }, [locale])
 
   if (!notice) return null
 
@@ -107,7 +110,7 @@ export default function NoticeBanner() {
           type="button"
           onClick={handleDismiss}
           className="shrink-0 rounded-full p-1 text-muted-foreground/60 transition-colors hover:bg-foreground/10 hover:text-foreground"
-          aria-label="关闭通知"
+          aria-label={t('notice.dismiss')}
         >
           <X className="h-4 w-4" />
         </button>

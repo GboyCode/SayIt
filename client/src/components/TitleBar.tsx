@@ -6,8 +6,11 @@ import { useAiEnabled, useAiEnabledReady } from '@/hooks/useAiEnabled'
 import { useActivePreset } from '@/hooks/useActivePreset'
 import { toggleAiEnabled } from '@/stores/aiEnabled'
 import { Tooltip } from '@/components/ui/tooltip'
+import { useT } from '@/i18n/useT'
+import { recordedPromptPresetDisplayName } from '@/i18n/displayNames'
 
 export default function TitleBar() {
+  const t = useT()
   const aiEnabled = useAiEnabled()
   // 冷启动时 AI 初始值异步读回：就绪前开关先隐藏、不放动画，避免自己从关跳到开
   const ready = useAiEnabledReady()
@@ -20,28 +23,30 @@ export default function TitleBar() {
     return () => cancelAnimationFrame(id)
   }, [ready, animate])
   const activePreset = useActivePreset()
-  const presetName = activePreset.name || '默认'
+  const presetName = activePreset.name
+    ? recordedPromptPresetDisplayName(activePreset.id, activePreset.name)
+    : t('titleBar.defaultPreset')
 
   return (
     <div className="flex h-10 items-center justify-between bg-titlebar border-b select-none"
-         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
+      style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
       <div className="flex items-center gap-2.5 pl-3">
         <img src={appIcon} alt="SayIt" className="h-7 w-7" draggable={false} />
         <span className="text-sm text-foreground" style={{ fontFamily: "'Nunito', sans-serif", fontWeight: 800, letterSpacing: '0.01em' }}>SayIt</span>
       </div>
       <div className="flex items-center">
         <div className="flex items-center pr-2" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-          <Tooltip content={`润色模式：${presetName}`}>
+          <Tooltip content={t('titleBar.presetTooltip', { name: presetName })}>
             <button
               type="button"
               role="switch"
               aria-checked={aiEnabled}
               onClick={() => { void toggleAiEnabled() }}
               className="flex items-center gap-1.5 rounded-md px-2 py-1 transition-colors hover:bg-accent"
-              aria-label="AI 整理开关"
+              aria-label={t('titleBar.aiCleanupToggle')}
             >
               <Wand2 className={aiEnabled ? 'h-3.5 w-3.5 text-primary' : 'h-3.5 w-3.5 text-muted-foreground'} />
-              <span className={aiEnabled ? 'text-xs text-foreground' : 'text-xs text-muted-foreground'}>AI 整理</span>
+              <span className={aiEnabled ? 'text-xs text-foreground' : 'text-xs text-muted-foreground'}>{t('titleBar.aiCleanup')}</span>
               <span className={`relative h-4 w-7 shrink-0 rounded-full ${animate ? 'transition-colors' : ''} ${aiEnabled ? 'bg-primary' : 'bg-muted'}`} style={ready ? undefined : { visibility: 'hidden' }}>
                 <span className={`absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-card shadow ${animate ? 'transition-transform' : ''} ${aiEnabled ? 'translate-x-3' : ''}`} />
               </span>
@@ -50,18 +55,18 @@ export default function TitleBar() {
         </div>
         <div className="flex" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           <button onClick={() => bridge.minimize()}
-                  className="flex h-10 w-11 items-center justify-center hover:bg-accent"
-                  aria-label="最小化">
+            className="flex h-10 w-11 items-center justify-center hover:bg-accent"
+            aria-label={t('window.minimize')}>
             <Minus className="h-4 w-4" />
           </button>
           <button onClick={() => bridge.maximize()}
-                  className="flex h-10 w-11 items-center justify-center hover:bg-accent"
-                  aria-label="最大化">
+            className="flex h-10 w-11 items-center justify-center hover:bg-accent"
+            aria-label={t('window.maximize')}>
             <Square className="h-3 w-3" />
           </button>
           <button onClick={() => bridge.close()}
-                  className="flex h-10 w-11 items-center justify-center hover:bg-titlebar-close-hover hover:text-titlebar-close-hover-text"
-                  aria-label="关闭">
+            className="flex h-10 w-11 items-center justify-center hover:bg-titlebar-close-hover hover:text-titlebar-close-hover-text"
+            aria-label={t('window.close')}>
             <X className="h-4 w-4" />
           </button>
         </div>

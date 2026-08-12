@@ -70,10 +70,10 @@ pub async fn transcribe(
 ) -> Result<AsrResult, String> {
     let pcm = base64::engine::general_purpose::STANDARD
         .decode(audio_pcm_b64)
-        .map_err(|e| diag::fail(SCOPE, "decode_b64", format!("base64 解码失败: {}", e)))?;
+        .map_err(|e| diag::fail(SCOPE, "decode_b64", format!("Failed to decode base64 audio: {}", e)))?;
 
     if pcm.is_empty() {
-        diag::empty_result(SCOPE, "客户端送来的音频是空的，没有发起请求");
+        diag::empty_result(SCOPE, "Input audio was empty; provider request was skipped");
         return Ok(AsrResult {
             text: String::new(),
             elapsed_ms: 0,
@@ -99,7 +99,7 @@ pub async fn transcribe(
         .header("Upgrade", "websocket")
         .header("Host", "dashscope.aliyuncs.com")
         .body(())
-        .map_err(|e| diag::fail(SCOPE, "build_request", format!("构建请求失败: {}", e)))?;
+        .map_err(|e| diag::fail(SCOPE, "build_request", format!("Failed to build request: {}", e)))?;
 
     let audio_sec = pcm.len() as f64 / 32000.0; // 16kHz / 16bit / mono
     diag::log(
@@ -118,7 +118,7 @@ pub async fn transcribe(
 
     let (mut ws, _) = tokio_tungstenite::connect_async(request)
         .await
-        .map_err(|e| diag::fail(SCOPE, "connect", format!("WebSocket 连接失败: {}", e)))?;
+        .map_err(|e| diag::fail(SCOPE, "connect", format!("WebSocket connection failed: {}", e)))?;
 
     // 等待 session.created
     wait_for_event(&mut ws, "session.created", SCOPE).await?;
@@ -136,7 +136,7 @@ pub async fn transcribe(
     ws.send(tungstenite::Message::Text(session_update.to_string().into()))
         .await
         .map_err(|e| {
-            diag::fail(SCOPE, "send_session_update", format!("发送 session.update 失败: {}", e))
+            diag::fail(SCOPE, "send_session_update", format!("Failed to send session.update: {}", e))
         })?;
 
     // 等待 session.updated
@@ -160,7 +160,7 @@ pub async fn transcribe(
                 diag::fail(
                     SCOPE,
                     "send_audio",
-                    format!("发送音频失败（第 {}/{} 包）: {}", idx + 1, total_chunks, e),
+                    format!("Failed to send audio chunk {}/{}: {}", idx + 1, total_chunks, e),
                 )
             })?;
     }
@@ -169,13 +169,13 @@ pub async fn transcribe(
     let commit = serde_json::json!({ "type": "input_audio_buffer.commit" });
     ws.send(tungstenite::Message::Text(commit.to_string().into()))
         .await
-        .map_err(|e| diag::fail(SCOPE, "send_commit", format!("发送 commit 失败: {}", e)))?;
+        .map_err(|e| diag::fail(SCOPE, "send_commit", format!("Failed to send commit: {}", e)))?;
 
     let create_response = serde_json::json!({ "type": "response.create" });
     ws.send(tungstenite::Message::Text(create_response.to_string().into()))
         .await
         .map_err(|e| {
-            diag::fail(SCOPE, "send_response_create", format!("发送 response.create 失败: {}", e))
+            diag::fail(SCOPE, "send_response_create", format!("Failed to send response.create: {}", e))
         })?;
 
     diag::log(SCOPE, "audio_sent", &format!("chunks={}", total_chunks));
@@ -193,7 +193,7 @@ pub async fn transcribe(
                     SCOPE,
                     "recv_timeout",
                     format!(
-                        "等待响应超时 (60s)（音频 {:.1}s，已收 {} 字符）",
+                        "Timed out waiting for a response (60s); audio={:.1}s received_chars={}",
                         audio_sec,
                         result_text.chars().count()
                     ),
@@ -206,11 +206,11 @@ pub async fn transcribe(
                     diag::log(
                         SCOPE,
                         "recv_error_after_result",
-                        &format!("已有结果，按成功处理: {}", diag::truncate(&e.to_string(), 200)),
+                        &format!("A result was already received; treating as success: {}", diag::truncate(&e.to_string(), 200)),
                     );
                     break;
                 }
-                return Err(diag::fail(SCOPE, "recv", format!("接收消息失败: {}", e)));
+                return Err(diag::fail(SCOPE, "recv", format!("Failed to receive message: {}", e)));
             }
             Ok(Some(Ok(m))) => m,
         };
@@ -263,7 +263,7 @@ pub async fn transcribe(
                             .get("error")
                             .and_then(|e| e.get("message"))
                             .and_then(|m| m.as_str())
-                            .unwrap_or("未知错误");
+                            .unwrap_or("Unknown error");
                         let err_code = event
                             .get("error")
                             .and_then(|e| e.get("code"))
@@ -273,7 +273,7 @@ pub async fn transcribe(
                         return Err(diag::fail(
                             SCOPE,
                             "server_error",
-                            format!("Qwen Omni 错误 [{}]: {}", err_code, err_msg),
+                            format!("Qwen Omni error [{}]: {}", err_code, err_msg),
                         ));
                     }
                     _ => {}
@@ -282,7 +282,7 @@ pub async fn transcribe(
             tungstenite::Message::Close(frame) => {
                 let reason = frame
                     .map(|f| format!("code={} reason={}", f.code, diag::truncate(&f.reason, 200)))
-                    .unwrap_or_else(|| "无详情".to_string());
+                    .unwrap_or_else(|| "No details".to_string());
                 diag::log(SCOPE, "close", &reason);
                 break;
             }
@@ -305,7 +305,7 @@ pub async fn transcribe(
         diag::empty_result(
             SCOPE,
             &format!(
-                "对话结束但没有拿到任何文本 audio_sec={:.1} elapsed={}ms model={} chunks={}",
+                "Conversation ended without any transcript audio_sec={:.1} elapsed={}ms model={} chunks={}",
                 audio_sec, elapsed_ms, model, total_chunks
             ),
         );
@@ -313,7 +313,7 @@ pub async fn transcribe(
         diag::ok(SCOPE, elapsed_ms, final_text.chars().count());
         if used_input_transcript {
             // 模型没给回答、只给了输入转写。结果可用，但说明 instructions 可能没生效
-            diag::log(SCOPE, "used_input_transcript", "模型未输出文本，回落到输入转写");
+            diag::log(SCOPE, "used_input_transcript", "Model produced no output; used the input transcript fallback");
         }
     }
 
@@ -337,18 +337,18 @@ async fn wait_for_event(
                 return Err(diag::fail(
                     scope,
                     &stage,
-                    format!("等待 {} 超时", expected_type),
+                    format!("Timed out waiting for {}", expected_type),
                 ))
             }
             Ok(None) => {
                 return Err(diag::fail(
                     scope,
                     &stage,
-                    format!("等待 {} 时连接关闭", expected_type),
+                    format!("Connection closed while waiting for {}", expected_type),
                 ))
             }
             Ok(Some(Err(e))) => {
-                return Err(diag::fail(scope, &stage, format!("接收消息失败: {}", e)))
+                return Err(diag::fail(scope, &stage, format!("Failed to receive message: {}", e)))
             }
             Ok(Some(Ok(m))) => m,
         };
@@ -356,7 +356,7 @@ async fn wait_for_event(
         match msg {
             tungstenite::Message::Text(text) => {
                 let event: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
-                    diag::fail(scope, &stage, format!("解析事件失败: {}", e))
+                    diag::fail(scope, &stage, format!("Failed to parse event: {}", e))
                 })?;
 
                 let event_type = event
@@ -369,7 +369,7 @@ async fn wait_for_event(
                         .get("error")
                         .and_then(|e| e.get("message"))
                         .and_then(|m| m.as_str())
-                        .unwrap_or("未知错误");
+                        .unwrap_or("Unknown error");
                     let err_code = event
                         .get("error")
                         .and_then(|e| e.get("code"))
@@ -378,7 +378,7 @@ async fn wait_for_event(
                     return Err(diag::fail(
                         scope,
                         &stage,
-                        format!("Qwen Omni 错误 [{}]: {}", err_code, err_msg),
+                        format!("Qwen Omni error [{}]: {}", err_code, err_msg),
                     ));
                 }
 
@@ -389,11 +389,11 @@ async fn wait_for_event(
             tungstenite::Message::Close(frame) => {
                 let reason = frame
                     .map(|f| format!("code={}, reason={}", f.code, diag::truncate(&f.reason, 200)))
-                    .unwrap_or_else(|| "无详情".to_string());
+                    .unwrap_or_else(|| "No details".to_string());
                 return Err(diag::fail(
                     scope,
                     &stage,
-                    format!("等待 {} 时服务端关闭了连接 ({})", expected_type, reason),
+                    format!("Server closed the connection while waiting for {} ({})", expected_type, reason),
                 ));
             }
             _ => {}
@@ -427,15 +427,17 @@ pub async fn test_connection(config: &AsrProviderConfig) -> TestResult {
             match result {
                 Ok(_) => TestResult {
                     ok: true,
-                    message: format!("连接成功，模型: {} ({}ms)", model, elapsed_ms),
+                    message: format!("Connection successful, model: {} ({}ms)", model, elapsed_ms),
                     elapsed_ms,
                     detail: String::new(),
                 },
                 Err(e) => TestResult {
                     ok: false,
-                    message: format!("连接后握手失败: {} ({}ms)", e, elapsed_ms),
+                    // wait_for_event already returns a stable sayit_error envelope. Do not
+                    // bury it inside another sentence or the frontend can no longer decode it.
+                    message: e,
                     elapsed_ms,
-                    detail: String::new(),
+                    detail: format!("Protocol handshake failed after {}ms", elapsed_ms),
                 },
             }
         }
@@ -443,7 +445,7 @@ pub async fn test_connection(config: &AsrProviderConfig) -> TestResult {
             let elapsed_ms = start.elapsed().as_millis() as u64;
             TestResult {
                 ok: false,
-                message: diag::fail("qwen/omni-test", "connect", format!("连接失败: {}", e)),
+                message: diag::fail("qwen/omni-test", "connect", format!("Connection failed: {}", e)),
                 elapsed_ms,
                 detail: String::new(),
             }

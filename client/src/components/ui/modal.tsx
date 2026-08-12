@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
+import { useT } from '@/i18n/useT'
 import { cn } from '@/lib/utils'
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
@@ -33,6 +34,7 @@ export function Modal({
   panelClassName,
   children,
 }: ModalProps) {
+  const t = useT()
   const panelRef = useRef<HTMLDivElement>(null)
   const titleId = useRef(`modal-title-${Math.random().toString(36).slice(2, 8)}`).current
 
@@ -114,7 +116,7 @@ export function Modal({
           <button
             type="button"
             onClick={requestClose}
-            aria-label="关闭"
+            aria-label={t('window.close')}
             className="absolute right-3 top-3 rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
             <X className="h-4 w-4" aria-hidden />

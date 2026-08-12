@@ -3,6 +3,8 @@ import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle, CheckCircle2, SquareTerminal } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { getLocale } from '@/i18n'
+import { useT } from '@/i18n/useT'
 import { OverlayService } from '@/services/recorder/OverlayService'
 import { PasteService, type PasteResult, type ProbeResult } from '@/services/recorder/PasteService'
 import {
@@ -13,22 +15,27 @@ import { elapsedSecFromPerf } from '@/services/timeModel'
 import { setLabEnabled } from '@/services/webviewKeyboardFallback'
 
 type LabState = 'armed' | 'holding' | 'resolving'
+type LabEventSummary =
+  | { kind: 'waiting' | 'holding' | 'injecting' }
+  | { kind: 'result'; text: string }
 
 function formatTime(ts = Date.now()) {
-  return new Date(ts).toLocaleTimeString('zh-CN', { hour12: false })
+  return new Date(ts).toLocaleTimeString(getLocale(), { hour12: false })
 }
 
 export default function PTTLab() {
+  const t = useT()
+  const defaultText = t('pttLab.defaultText')
   const [state, setState] = useState<LabState>('armed')
-  const [testText, setTestText] = useState('PTT Lab 注入测试文本 ✅')
+  const [testText, setTestText] = useState(defaultText)
   const [logs, setLogs] = useState<string[]>([])
   const [holdElapsed, setHoldElapsed] = useState(0)
   const [lastProbe, setLastProbe] = useState<ProbeResult | null>(null)
   const [lastPaste, setLastPaste] = useState<PasteResult | null>(null)
   const [internalText, setInternalText] = useState('')
-  const [lastEventSummary, setLastEventSummary] = useState('等待右 Ctrl 按键...')
+  const [lastEventSummary, setLastEventSummary] = useState<LabEventSummary>({ kind: 'waiting' })
 
-  const testTextRef = useRef('PTT Lab 注入测试文本 ✅')
+  const testTextRef = useRef(defaultText)
   const holdStartPerfRef = useRef(0)
   const holdElapsedRef = useRef(0)
   const holdTickerRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -67,14 +74,14 @@ export default function PTTLab() {
   const copyFallbackText = async (reason: string) => {
     const text = testTextRef.current
     await bridge.copyText(text)
-    appendLog('已复制测试文本到剪贴板', { reason, textLen: text.length })
+    appendLog('Copied test text to clipboard', { reason, textLen: text.length })
   }
 
   /** Core inject logic */
   const doInject = async (probe: ProbeResult) => {
     const text = testTextRef.current
     setLastProbe(probe)
-    appendLog('probe 完成', {
+    appendLog('Probe completed', {
       editable: probe.editable,
       hwnd: probe.hwnd,
       focusHwnd: probe.focusHwnd,
@@ -91,7 +98,7 @@ export default function PTTLab() {
     if (probe.isCurrentAppProcess) {
       // SayIt 自身是 Chromium 窗口，renderer 直插对 React 受控组件无效，
       // 走和外部窗口一样的 Rust paste（Ctrl+V）路径。
-      appendLog('命中 SayIt 自身进程，走 Rust paste', { hwnd: probe.hwnd })
+      appendLog('Target is the SayIt process; using Rust paste', { hwnd: probe.hwnd })
       // Fall through to normal editable / not_editable flow
     }
 
@@ -99,8 +106,8 @@ export default function PTTLab() {
       await copyFallbackText('not_editable')
       overlayServiceRef.current.showFallback(text, 'not_editable')
       setLastPaste({ ok: false, reason: 'not_editable', detail: probe.detail })
-      appendLog('目标不可编辑，已显示复制卡片', { process: probe.process, verdict: probe.verdict })
-      setLastEventSummary(`❌ not_editable (${probe.process || '-'})`)
+      appendLog('Target is not editable; copy card shown', { process: probe.process, verdict: probe.verdict })
+      setLastEventSummary({ kind: 'result', text: `❌ not_editable (${probe.process || '-'})` })
       resetToArmed()
       return
     }
@@ -110,16 +117,16 @@ export default function PTTLab() {
     setLastPaste(result)
     if (result.ok) {
       overlayServiceRef.current.hide()
-      appendLog('外部注入成功', { strategy: result.strategy, detail: result.detail })
-      setLastEventSummary(`✅ ${result.strategy || 'paste_success'}`)
+      appendLog('External insertion succeeded', { strategy: result.strategy, detail: result.detail })
+      setLastEventSummary({ kind: 'result', text: `✅ ${result.strategy || 'paste_success'}` })
       resetToArmed()
       return
     }
 
     await copyFallbackText(result.reason || 'paste_failed')
     overlayServiceRef.current.showFallback(text, result.reason || 'paste_failed')
-    appendLog('外部注入失败，回退到复制卡片', result)
-    setLastEventSummary(`❌ ${result.reason || 'paste_failed'}`)
+    appendLog('External insertion failed; falling back to copy card', result)
+    setLastEventSummary({ kind: 'result', text: `❌ ${result.reason || 'paste_failed'}` })
     resetToArmed()
   }
 
@@ -155,10 +162,10 @@ export default function PTTLab() {
       setHoldElapsed(Math.round(sec * 10) / 10)
     }, 100)
 
-    appendLog('右 Ctrl down — 开始按住', {
+    appendLog('Right Ctrl down — hold started', {
       probe: { editable: probe.editable, process: probe.process, verdict: probe.verdict },
     })
-    setLastEventSummary('🔴 按住中...')
+    setLastEventSummary({ kind: 'holding' })
   }
 
   const handleLabUp = async () => {
@@ -173,8 +180,8 @@ export default function PTTLab() {
     overlayServiceRef.current.stopListeningTicker()
     overlayServiceRef.current.showThinking(elapsed)
 
-    appendLog('右 Ctrl up — 开始注入', { holdSec: elapsed.toFixed(1) })
-    setLastEventSummary('⏳ 注入中...')
+    appendLog('Right Ctrl up — insertion started', { holdSec: elapsed.toFixed(1) })
+    setLastEventSummary({ kind: 'injecting' })
 
     const probe = cachedProbeRef.current
       ?? await pasteServiceRef.current.getProbeResult()
@@ -191,8 +198,8 @@ export default function PTTLab() {
     console.log('[PTTLab] useEffect mount, calling setPTTLabConfig')
     bridge.setPTTLabConfig({ enabled: true, vkCode: 0xA3 })
     setLabEnabled(true)
-    appendLog('PTT Lab 已启用，测试热键: 右 Ctrl')
-    appendLog('按住右 Ctrl → 切到目标窗口 → 松手 → 自动注入测试文本')
+    appendLog('PTT Lab enabled; test shortcut: Right Ctrl')
+    appendLog('Hold Right Ctrl, switch to the target window, then release to insert the test text')
 
     // Listen to lab-specific events (independent from main PTT)
     bridge.onPTTLabEvent((payload: unknown) => {
@@ -219,7 +226,7 @@ export default function PTTLab() {
   const handleShowFallbackOnly = async () => {
     await copyFallbackText('manual_preview')
     overlayServiceRef.current.showFallback(testText, 'manual_preview')
-    appendLog('已手动展示复制卡片')
+    appendLog('Copy card shown manually')
   }
 
   return (
@@ -227,7 +234,7 @@ export default function PTTLab() {
       <div>
         <h1 className="text-2xl font-bold">PTT Lab</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          测试 probe → 文本注入 → fallback 流程，不经过录音和转录。测试热键：右 Ctrl（不影响按住说话热键）。
+          {t('pttLab.desc')}
         </p>
       </div>
 
@@ -236,32 +243,38 @@ export default function PTTLab() {
           <div className="flex flex-wrap items-center gap-3">
             <Button onClick={handleShowFallbackOnly} variant="outline" className="gap-2">
               <SquareTerminal className="h-4 w-4" />
-              预览复制卡片
+              {t('pttLab.previewFallback')}
             </Button>
           </div>
 
           <div className="grid gap-3 md:grid-cols-2">
             <div className="rounded-lg border bg-card p-3">
-              <div className="text-xs font-medium text-muted-foreground">状态</div>
+              <div className="text-xs font-medium text-muted-foreground">{t('pttLab.status')}</div>
               <div className="mt-1 text-sm font-medium text-foreground">
-                {state === 'armed' && '✅ 就绪'}
-                {state === 'holding' && `🔴 按住中 ${holdElapsed.toFixed(1)}s`}
-                {state === 'resolving' && '⏳ 注入中...'}
+                {state === 'armed' && t('pttLab.ready')}
+                {state === 'holding' && t('pttLab.holdingTime', { seconds: holdElapsed.toFixed(1) })}
+                {state === 'resolving' && t('pttLab.injecting')}
               </div>
-              <div className="mt-2 text-xs text-muted-foreground">{lastEventSummary}</div>
+              <div className="mt-2 text-xs text-muted-foreground">
+                {lastEventSummary.kind === 'result'
+                  ? lastEventSummary.text
+                  : t(lastEventSummary.kind === 'waiting'
+                    ? 'pttLab.waiting'
+                    : lastEventSummary.kind === 'holding' ? 'pttLab.holding' : 'pttLab.injecting')}
+              </div>
             </div>
             <div className="rounded-lg border bg-card p-3">
-              <div className="text-xs font-medium text-muted-foreground">使用方法</div>
+              <div className="text-xs font-medium text-muted-foreground">{t('pttLab.instructions')}</div>
               <div className="mt-1 text-xs text-muted-foreground space-y-1">
-                <div>1. 切到目标窗口，光标放在输入框里</div>
-                <div>2. 按住右 Ctrl → 松手 → 自动注入测试文本</div>
-                <div>3. 按住说话（右 Alt）不受影响，可以同时使用</div>
+                <div>{t('pttLab.step1')}</div>
+                <div>{t('pttLab.step2')}</div>
+                <div>{t('pttLab.step3')}</div>
               </div>
             </div>
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium text-foreground">测试文本</label>
+            <label className="text-sm font-medium text-foreground">{t('pttLab.testText')}</label>
             <textarea
               value={testText}
               onChange={(e) => { setTestText(e.target.value); testTextRef.current = e.target.value }}
@@ -276,13 +289,13 @@ export default function PTTLab() {
         <CardContent className="space-y-3 p-4">
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-sm font-medium text-foreground">内部可编辑目标</div>
+              <div className="text-sm font-medium text-foreground">{t('pttLab.internalTarget')}</div>
               <div className="text-xs text-muted-foreground">
-                聚焦此输入框后按右 Ctrl，松手后应直接写入测试文本。
+                {t('pttLab.internalTargetHint')}
               </div>
             </div>
             <Button variant="outline" size="sm" onClick={() => textAreaRef.current?.focus()}>
-              聚焦
+              {t('pttLab.focus')}
             </Button>
           </div>
           <textarea
@@ -291,11 +304,11 @@ export default function PTTLab() {
             onChange={(e) => setInternalText(e.target.value)}
             onFocus={(e) => {
               captureActiveInsertionTarget(e.currentTarget, { preserveExistingOnFailure: true })
-              appendLog('内部目标已聚焦')
+              appendLog('Internal target focused')
             }}
             rows={3}
             className="w-full rounded-md border border-input-border bg-input-bg px-3 py-2 text-sm outline-none focus:border-input-focus-border"
-            placeholder="SayIt 内部可编辑目标"
+            placeholder={t('pttLab.internalPlaceholder')}
           />
         </CardContent>
       </Card>
@@ -305,7 +318,7 @@ export default function PTTLab() {
           <CardContent className="space-y-3 p-4">
             <div className="flex items-center gap-2 text-sm font-medium text-foreground">
               <CheckCircle2 className="h-4 w-4 text-success" />
-              最近 Probe
+              {t('pttLab.recentProbe')}
             </div>
             {lastProbe ? (
               <div className="space-y-1 rounded-lg border bg-card p-3 text-xs text-foreground">
@@ -322,7 +335,7 @@ export default function PTTLab() {
                 <div className="break-all text-muted-foreground">{lastProbe.detail}</div>
               </div>
             ) : (
-              <div className="text-xs text-muted-foreground">还没有 probe 结果。</div>
+              <div className="text-xs text-muted-foreground">{t('pttLab.noProbe')}</div>
             )}
           </CardContent>
         </Card>
@@ -331,7 +344,7 @@ export default function PTTLab() {
           <CardContent className="space-y-3 p-4">
             <div className="flex items-center gap-2 text-sm font-medium text-foreground">
               <AlertTriangle className="h-4 w-4 text-warning" />
-              最近注入
+              {t('pttLab.recentInsertion')}
             </div>
             {lastPaste ? (
               <div className="space-y-1 rounded-lg border bg-card p-3 text-xs text-foreground">
@@ -341,7 +354,7 @@ export default function PTTLab() {
                 <div className="break-all text-muted-foreground">{lastPaste.detail || '-'}</div>
               </div>
             ) : (
-              <div className="text-xs text-muted-foreground">还没有注入结果。</div>
+              <div className="text-xs text-muted-foreground">{t('pttLab.noInsertion')}</div>
             )}
           </CardContent>
         </Card>
@@ -349,12 +362,12 @@ export default function PTTLab() {
 
       <Card>
         <CardContent className="p-4">
-          <div className="mb-2 text-sm font-medium text-foreground">实验日志</div>
+          <div className="mb-2 text-sm font-medium text-foreground">{t('pttLab.experimentLog')}</div>
           <div className="h-72 overflow-y-auto rounded-lg bg-[#1a1a1a] p-3 font-mono text-xs text-emerald-400">
             {logs.length > 0 ? (
               logs.map((line, i) => <div key={`${line}-${i}`}>{line}</div>)
             ) : (
-              <div className="text-muted-foreground">等待右 Ctrl 事件...</div>
+              <div className="text-muted-foreground">{t('pttLab.waitingEvent')}</div>
             )}
           </div>
         </CardContent>

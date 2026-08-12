@@ -1,5 +1,6 @@
 import { forwardRef, useState, useRef, useEffect } from 'react'
 import { ChevronDown, Check } from 'lucide-react'
+import { useT } from '@/i18n/useT'
 import { cn } from '@/lib/utils'
 
 export interface SelectOption {
@@ -18,7 +19,8 @@ export interface SelectProps {
 }
 
 const Select = forwardRef<HTMLDivElement, SelectProps>(
-  ({ value, onChange, options, children, className, placeholder = '请选择', disabled = false }, ref) => {
+  ({ value, onChange, options, children, className, placeholder, disabled = false }, ref) => {
+    const t = useT()
     const [isOpen, setIsOpen] = useState(false)
     const containerRef = useRef<HTMLDivElement>(null)
 
@@ -72,7 +74,7 @@ const Select = forwardRef<HTMLDivElement, SelectProps>(
           )}
         >
           <span className={cn('truncate', !selectedOption && 'text-input-placeholder')}>
-            {selectedOption?.label || placeholder}
+            {selectedOption?.label || placeholder || t('ui.selectPlaceholder')}
           </span>
           <ChevronDown
             className={cn(

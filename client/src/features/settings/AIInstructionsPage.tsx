@@ -17,22 +17,29 @@ import { useActivePreset } from '@/hooks/useActivePreset'
 import { refreshActivePreset, setActivePresetKnown } from '@/stores/activePreset'
 import {
   deletePromptPreset,
+  getBuiltinPromptLanguage,
   getPromptPresets,
   moveCustomPromptPreset,
   getPresetShortcuts,
   getSetting,
   savePromptPreset,
   setActivePresetId,
+  setBuiltinPromptLanguage,
   setPresetShortcuts,
+  type BuiltinPromptLanguage,
   type PromptPreset,
 } from '@/services/store'
 import AIProofreadToggle from './AIProofreadToggle'
 import HotwordPromptInjectToggle from './HotwordPromptInjectToggle'
 import AppPromptRulesSection from './AppPromptRulesSection'
 import PromptPresetSection from './PromptPresetSection'
+import { useT } from '@/i18n/useT'
 
 export default function AIInstructionsPage() {
+  const t = useT()
   const [presets, setPresets] = useState<PromptPreset[]>([])
+  const [promptLanguage, setPromptLanguage] = useState<BuiltinPromptLanguage>('zh-CN')
+  const [promptLanguageChanging, setPromptLanguageChanging] = useState(false)
   const activePreset = useActivePreset()
   const activePresetId = activePreset.id
   const [editingPreset, setEditingPreset] = useState<PromptPreset | null>(null)
@@ -42,11 +49,42 @@ export default function AIInstructionsPage() {
   const [presetShortcuts, setPresetShortcutsState] = useState<Record<string, string>>({})
 
   useEffect(() => {
-    getPromptPresets().then(setPresets)
+    void getBuiltinPromptLanguage().then(async (language) => {
+      const loadedPresets = await getPromptPresets(language)
+      setPromptLanguage(language)
+      setPresets(loadedPresets)
+    })
     getAppPromptRules().then(setAppPromptRules)
     getPresetShortcuts().then(setPresetShortcutsState)
     void refreshActivePreset()
   }, [])
+
+  const handlePromptLanguageChange = async (language: BuiltinPromptLanguage) => {
+    if (language === promptLanguage || promptLanguageChanging) return
+
+    const previousLanguage = promptLanguage
+    setPromptLanguageChanging(true)
+    try {
+      await setBuiltinPromptLanguage(language)
+      const nextPresets = await getPromptPresets(language)
+      setPromptLanguage(language)
+      setPresets(nextPresets)
+      setPromptPresetsCache(nextPresets)
+      setEditingPreset(null)
+      setEditingShortcut('')
+      await refreshActivePreset()
+    } catch (error) {
+      console.error('[AIInstructionsPage] Failed to switch built-in prompt language:', error)
+      try {
+        await setBuiltinPromptLanguage(previousLanguage)
+      } catch (rollbackError) {
+        console.error('[AIInstructionsPage] Failed to restore built-in prompt language:', rollbackError)
+      }
+      setPromptLanguage(previousLanguage)
+    } finally {
+      setPromptLanguageChanging(false)
+    }
+  }
 
   // 预设切换快捷键不能和录音热键（免提 / 按住说话）相同，否则一次按键触发两个功能。
   // 预设之间的重复不在这里拦：handleSetPresetShortcut 会自动把旧的清掉（后设的赢）。
@@ -54,8 +92,8 @@ export default function AIInstructionsPage() {
     if (!value) return null
     const ptt = await getSetting('shortcutPTT', 'AltRight') as string
     const handsFree = await getSetting('shortcutHandsFree', 'Alt+L') as string
-    if (value === ptt) return '与「按住说话」的快捷键相同，请更换一个组合键'
-    if (value === handsFree) return '与「免提模式」的快捷键相同，请更换一个组合键'
+    if (value === ptt) return t('aiInstructions.conflictPtt')
+    if (value === handsFree) return t('aiInstructions.conflictHandsFree')
     return null
   }
 
@@ -198,9 +236,9 @@ export default function AIInstructionsPage() {
 
   return (
     <div className="mx-auto max-w-4xl">
-      <h1 className="mb-2 text-2xl font-bold">AI 整理</h1>
+      <h1 className="mb-2 text-2xl font-bold">{t('nav.aiInstructions')}</h1>
       <p className="mb-6 text-sm text-muted-foreground">
-        配置 AI 如何整理识别出的文字（校对开关、提示词预设、按应用的规则）。选择使用哪家 AI，请前往「AI 供应商」。
+        {t('aiInstructions.subtitle')}
       </p>
 
       <div className="space-y-6">
@@ -213,8 +251,11 @@ export default function AIInstructionsPage() {
           editingPreset={editingPreset}
           presetShortcuts={presetShortcuts}
           editingShortcut={editingShortcut}
+          promptLanguage={promptLanguage}
+          promptLanguageChanging={promptLanguageChanging}
           validateShortcut={validatePresetShortcut}
           onSelectPreset={handleSelectPreset}
+          onPromptLanguageChange={handlePromptLanguageChange}
           onStartNewPreset={handleNewPreset}
           onStartEditing={handleStartEditing}
           onEditingPresetChange={setEditingPreset}

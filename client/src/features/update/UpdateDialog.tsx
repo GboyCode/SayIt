@@ -6,8 +6,10 @@
 import { useEffect, useState } from 'react'
 import { Download, RefreshCw } from 'lucide-react'
 import { onAutoUpdateChange, getAutoUpdateState, type AutoUpdateState } from './autoUpdate'
+import { useT } from '@/i18n/useT'
 
 export default function UpdateDialog() {
+  const t = useT()
   const [state, setState] = useState<AutoUpdateState>(getAutoUpdateState)
 
   useEffect(() => {
@@ -25,9 +27,9 @@ export default function UpdateDialog() {
             <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-primary/10">
               <Download className="h-7 w-7 text-primary animate-bounce" />
             </div>
-            <h3 className="text-lg font-semibold">发现新版本</h3>
+            <h3 className="text-lg font-semibold">{t('update.dialogFound')}</h3>
             <p className="mt-2 text-sm text-muted-foreground">
-              正在下载 v{state.version}，请稍候...
+              {t('update.dialogDownloading', { version: state.version || '' })}
             </p>
             <div className="mt-4 h-1.5 w-full overflow-hidden rounded-full bg-muted">
               <div
@@ -45,12 +47,12 @@ export default function UpdateDialog() {
             <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500/10">
               <RefreshCw className="h-7 w-7 text-emerald-500 animate-spin" />
             </div>
-            <h3 className="text-lg font-semibold">准备安装</h3>
+            <h3 className="text-lg font-semibold">{t('update.dialogPreparing')}</h3>
             <p className="mt-2 text-sm text-muted-foreground">
-              v{state.version} 下载完成，即将自动安装并重启应用...
+              {t('update.dialogReady', { version: state.version || '' })}
             </p>
             <p className="mt-3 text-xs text-muted-foreground/60">
-              请勿关闭应用
+              {t('update.doNotClose')}
             </p>
           </div>
         )}

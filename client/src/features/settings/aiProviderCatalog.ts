@@ -12,8 +12,18 @@
  * MiMo 的示例写 `mimo-v2.5-pro` 而默认选中的是 `mimo-v2.5`。
  * 合并成一张表后，示例直接由 defaultModels[0] 派生，漂移不可能再发生。
  */
+import { getLocale, t } from '@/i18n'
+
 export interface AiProvider {
   value: string
+  /**
+   * 展示名。品牌名用官方英文写法（Qwen / Doubao (Volcengine Ark) / Xiaomi MiMo），
+   * 不是直译 —— 中文语境习惯叫「通义千问」，所以它仍然要跟界面语言走。
+   *
+   * ⚠️ 表里几条用的是 **getter**，不是普通字符串字段。原因：这张表是模块级常量，
+   * 普通字段会在模块加载那一刻把当时的语言固化下来，切语言后不再变。改成 getter
+   * 就能保留 `.label` 这个读法 —— 二十多个调用点和三个测试文件都不用动。
+   */
   label: string
   defaultUrl: string
   /** 建议的模型，第一个作为新建时的默认值；同时作为表单里的快速选择 */
@@ -34,38 +44,53 @@ export const AI_PROVIDERS: AiProvider[] = [
   },
   {
     value: 'qwen',
-    label: '通义千问',
+    get label() { return t('aiProvider.qwen') },
     defaultUrl: 'https://dashscope.aliyuncs.com/compatible-mode',
     defaultModels: ['qwen3.6-flash', 'qwen-plus'],
     consoleUrl: 'https://bailian.console.aliyun.com',
   },
   {
     value: 'doubao',
-    label: '豆包（火山方舟）',
+    get label() { return t('aiProvider.doubao') },
     defaultUrl: 'https://ark.cn-beijing.volces.com/api/v3',
     defaultModels: ['doubao-seed-2-0-lite-260215'],
     consoleUrl: 'https://console.volcengine.com/ark',
   },
   {
     value: 'mimo',
-    label: '小米 MiMo',
+    get label() { return t('aiProvider.mimo') },
     defaultUrl: 'https://api.xiaomimimo.com/v1',
     defaultModels: ['mimo-v2.5', 'mimo-v2.5-pro'],
   },
   {
     value: 'openai_compat',
-    label: 'OpenAI 兼容',
+    get label() { return t('aiProvider.openaiCompat') },
     defaultUrl: 'https://api.openai.com',
     defaultModels: ['gpt-4o-mini'],
   },
   {
     value: 'ollama',
-    label: 'Ollama（本机）',
+    get label() { return t('aiProvider.ollama') },
     defaultUrl: 'http://127.0.0.1:11434',
     defaultModels: ['qwen2.5:7b'],
     keyless: true,
   },
 ]
+
+/** 新建服务时的地区默认；只影响还没选择过供应商的场景。 */
+export function preferredAiProviderValue(): string {
+  return getLocale() === 'en' ? 'openai_compat' : 'deepseek'
+}
+
+/** 英文界面优先展示可直接接海外端点的通用入口，原数组顺序保持不变供迁移逻辑使用。 */
+export function aiProvidersForDisplay(): AiProvider[] {
+  const preferred = preferredAiProviderValue()
+  if (AI_PROVIDERS[0]?.value === preferred) return AI_PROVIDERS
+  return [
+    ...AI_PROVIDERS.filter((provider) => provider.value === preferred),
+    ...AI_PROVIDERS.filter((provider) => provider.value !== preferred),
+  ]
+}
 
 export function findProvider(value: string): AiProvider {
   return AI_PROVIDERS.find((p) => p.value === value) ?? AI_PROVIDERS[0]
@@ -133,7 +158,7 @@ export function makeProfileId(): string {
 }
 
 /** 新建一条服务时的初值 */
-export function blankProfile(providerValue = AI_PROVIDERS[0].value): AiProfile {
+export function blankProfile(providerValue = preferredAiProviderValue()): AiProfile {
   const meta = findProvider(providerValue)
   return {
     id: makeProfileId(),
@@ -175,7 +200,7 @@ export function profileSubtitle(profile: AiProfile): string {
 
 /** 列表里一行的主标题。模型名就是标题；还没填的时候也得有字，否则那一行看着像坏了 */
 export function profileTitle(profile: AiProfile): string {
-  return profile.model.trim() || '未填写模型'
+  return profile.model.trim() || t('aiProvider.noModel')
 }
 
 /** 一条服务是否填齐了能用的东西 */
@@ -260,10 +285,10 @@ export function resolveActiveProfile(profiles: AiProfile[], activeId: string): A
 export function checkAiKeyFormat(provider: string, key: string): string {
   if (!key.trim()) return ''
   if (/\s/.test(key)) {
-    return '密钥里有空格或换行，通常是粘贴时带进了多余字符'
+    return t('aiProvider.keyHasSpace')
   }
   if ((provider === 'deepseek' || provider === 'qwen') && !/^sk-/.test(key.trim())) {
-    return `${providerLabel(provider)}的 API Key 通常以 sk- 开头，确认一下是不是复制错了`
+    return t('aiProvider.keyPrefix', { provider: providerLabel(provider) })
   }
   return ''
 }
@@ -273,13 +298,13 @@ export function checkApiUrl(url: string): string {
   const u = url.trim()
   if (!u) return ''
   if (!/^https?:\/\//i.test(u)) {
-    return '地址要带 http:// 或 https:// 前缀'
+    return t('aiProvider.urlNeedsScheme')
   }
   try {
     const parsed = new URL(u)
-    if (!parsed.hostname) return '这不是一个合法的网址'
+    if (!parsed.hostname) return t('aiProvider.urlInvalid')
   } catch {
-    return '这不是一个合法的网址'
+    return t('aiProvider.urlInvalid')
   }
   return ''
 }
@@ -293,7 +318,7 @@ export function checkApiUrl(url: string): string {
  * 不该出现在成功提示里。这里只取「回复」，耗时和模型名走结构化字段。
  */
 export function extractTestReply(detail?: string): string {
-  const match = detail?.match(/^回复:\s*(.*)$/m)
+  const match = detail?.match(/^回复:\s*(.*)$/m) // i18n-allow: 匹配供应商返回的中文响应字段
   return match?.[1]?.trim() ?? ''
 }
 
@@ -326,11 +351,11 @@ export interface LatencyGrade {
 const LATENCY_THRESHOLDS = { instant: 200, fast: 500, normal: 1000, slow: 2000 } as const
 
 export function gradeLatency(ms: number): LatencyGrade {
-  if (ms < LATENCY_THRESHOLDS.instant) return { tier: 'instant', label: '极速', tone: 'ok' }
-  if (ms < LATENCY_THRESHOLDS.fast) return { tier: 'fast', label: '很快', tone: 'ok' }
-  if (ms < LATENCY_THRESHOLDS.normal) return { tier: 'normal', label: '正常', tone: 'ok' }
-  if (ms < LATENCY_THRESHOLDS.slow) return { tier: 'slow', label: '偏慢', tone: 'warn' }
-  return { tier: 'tooSlow', label: '太慢', tone: 'bad' }
+  if (ms < LATENCY_THRESHOLDS.instant) return { tier: 'instant', label: t('grade.instant'), tone: 'ok' }
+  if (ms < LATENCY_THRESHOLDS.fast) return { tier: 'fast', label: t('grade.fast'), tone: 'ok' }
+  if (ms < LATENCY_THRESHOLDS.normal) return { tier: 'normal', label: t('grade.normal'), tone: 'ok' }
+  if (ms < LATENCY_THRESHOLDS.slow) return { tier: 'slow', label: t('grade.slow'), tone: 'warn' }
+  return { tier: 'tooSlow', label: t('grade.tooSlow'), tone: 'bad' }
 }
 
 /**
@@ -358,12 +383,15 @@ export function isCheckFresh(check: AiProfileCheck | undefined, now = Date.now()
  */
 export function formatCheckedAt(at: number, now = Date.now()): string {
   const seconds = Math.max(0, Math.round((now - at) / 1000))
-  if (seconds < 60) return '刚刚'
+  if (seconds < 60) return t('time.justNow')
+  // 用 Intl.RelativeTimeFormat 而不是自己拼字符串：英文的单复数（"1 minute ago"
+  // vs "5 minutes ago"）没法用一条模板覆盖，而这是最容易被忽略、也最显业余的细节。
+  const rtf = new Intl.RelativeTimeFormat(getLocale(), { numeric: 'auto' })
   const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes} 分钟前`
+  if (minutes < 60) return rtf.format(-minutes, 'minute')
   const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours} 小时前`
-  return `${Math.floor(hours / 24)} 天前`
+  if (hours < 24) return rtf.format(-hours, 'hour')
+  return rtf.format(-Math.floor(hours / 24), 'day')
 }
 
 // ── 老数据迁移 ────────────────────────────────────────────────────────────

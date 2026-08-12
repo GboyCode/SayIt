@@ -1,4 +1,5 @@
 import { USER_PROMPT_PREFIX } from '@/services/store'
+import { getLocale, t } from '@/i18n'
 import { type DebugMessage, type DebugSession, type RuntimeEvent } from '@/services/debugLog'
 import {
   type ASRPayload,
@@ -16,7 +17,7 @@ const PTT_KINDS = new Set(['down', 'up', 'toggle', 'hands_free'])
 export const USEFUL_LOG_TYPES = new Set(['start', 'ready', 'stop', 'asr', 'final', 'error', 'done'])
 
 export function formatTime(ts: number) {
-  return new Date(ts).toLocaleTimeString('zh-CN', {
+  return new Date(ts).toLocaleTimeString(getLocale(), {
     hour12: false,
     hour: '2-digit',
     minute: '2-digit',
@@ -186,19 +187,19 @@ export function summarizeMessage(msg: DebugMessage) {
   }
 
   if (msg.type === 'ready') {
-    return `连接就绪 id=${String(data?.connection_id || '-')}`
+    return t('debug.connectionReady', { id: String(data?.connection_id || '-') })
   }
 
   if (msg.type === 'start') {
-    return '开始录音会话'
+    return t('debug.sessionStarted')
   }
 
   if (msg.type === 'stop') {
-    return '停止录音并等待处理'
+    return t('debug.sessionStopped')
   }
 
   if (msg.type === 'error') {
-    return `ERROR: ${String(data?.message || '未知错误')}`
+    return `ERROR: ${String(data?.message || t('debug.unknownError'))}`
   }
 
   return JSON.stringify(msg.data)

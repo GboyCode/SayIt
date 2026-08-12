@@ -9,6 +9,7 @@
 
 import { getBackendBaseUrl } from './runtimeConfig'
 import { getSetting, setSetting } from './store'
+import { getLocale, type Locale } from '@/i18n'
 
 export type NoticeLevel = 'info' | 'warning' | 'critical'
 
@@ -33,6 +34,17 @@ export interface RemoteNotice {
   dismissible?: boolean
 }
 
+interface RemoteNoticeTranslation {
+  title?: string
+  body?: string
+  linkLabel?: string
+}
+
+interface RemoteNoticePayload extends RemoteNotice {
+  /** Optional locale overrides. Top-level strings remain the fallback for old clients. */
+  translations?: Partial<Record<Locale, RemoteNoticeTranslation>>
+}
+
 const DISMISSED_KEY = 'dismissedNoticeIds'
 
 function compareVersions(a: string, b: string): number {
@@ -45,13 +57,45 @@ function compareVersions(a: string, b: string): number {
   return 0
 }
 
-function isValidNotice(v: unknown): v is RemoteNotice {
+function isTranslation(value: unknown): value is RemoteNoticeTranslation {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const item = value as Record<string, unknown>
+  return ['title', 'body', 'linkLabel'].every((key) => (
+    item[key] === undefined || typeof item[key] === 'string'
+  ))
+}
+
+function isValidNotice(v: unknown): v is RemoteNoticePayload {
   if (!v || typeof v !== 'object') return false
   const n = v as Record<string, unknown>
   const levelOk = n.level === 'info' || n.level === 'warning' || n.level === 'critical'
+  const translations = n.translations as Record<string, unknown> | undefined
+  const translationsOk = translations === undefined || (
+    translations !== null
+    && typeof translations === 'object'
+    && !Array.isArray(translations)
+    && Object.entries(translations).every(([locale, value]) => (
+      (locale === 'zh-CN' || locale === 'en') && isTranslation(value)
+    ))
+  )
   return typeof n.id === 'string' && n.id.length > 0
     && typeof n.title === 'string' && n.title.length > 0
+    && (n.body === undefined || typeof n.body === 'string')
+    && (n.linkLabel === undefined || typeof n.linkLabel === 'string')
+    && translationsOk
     && levelOk
+}
+
+/** Resolve a server payload into display-ready text while keeping legacy string fields valid. */
+export function normalizeRemoteNotice(value: unknown, locale: Locale): RemoteNotice | null {
+  if (!isValidNotice(value)) return null
+  const translation = value.translations?.[locale]
+  return {
+    ...value,
+    title: translation?.title || value.title,
+    body: translation?.body ?? value.body,
+    linkLabel: translation?.linkLabel ?? value.linkLabel,
+  }
 }
 
 function matchesVersion(notice: RemoteNotice, current: string): boolean {
@@ -95,11 +139,14 @@ async function loadRaw(): Promise<unknown> {
 }
 
 /** 拉取当前应展示的公告；无公告/不适用当前版本/不在时间窗/已被用户关闭 → 返回 null。 */
-export async function fetchActiveNotice(currentVersion: string): Promise<RemoteNotice | null> {
+export async function fetchActiveNotice(
+  currentVersion: string,
+  locale: Locale = getLocale(),
+): Promise<RemoteNotice | null> {
   try {
     const raw = await loadRaw()
-    if (!isValidNotice(raw)) return null
-    const notice = raw
+    const notice = normalizeRemoteNotice(raw, locale)
+    if (!notice) return null
     if (!matchesVersion(notice, currentVersion)) return null
     if (!withinTimeWindow(notice)) return null
     if (notice.dismissible !== false) {

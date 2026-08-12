@@ -16,6 +16,7 @@ import {
   findAsrProvider,
   resolveActiveAsrProfile,
 } from '../features/settings/asrProviderCatalog'
+import { subscribeLocale, t } from '@/i18n'
 
 export type ModeStatusMode = 'server' | 'cloud_api' | 'local'
 
@@ -54,15 +55,18 @@ export function subscribeModeStatus(listener: Listener): () => void {
 }
 
 /** 云 API 供应商 key → 侧边栏简称。完整模型名在 Tooltip 里（resolveAsrDisplayModel）。 */
-const CLOUD_PROVIDER_SHORT: Record<string, string> = {
-  doubao_v2: '豆包',
-  qwen: '千问',
-  qwen_realtime: '千问实时',
-  qwen_omni_35_plus: '千问 Omni',
-  qwen_omni_35_flash: '千问 Omni',
-  qwen_omni_flash: '千问 Omni',
-  qwen_omni_turbo: '千问 Omni',
-  mimo: 'MiMo',
+function cloudProviderShort(provider: string): string {
+  switch (provider) {
+    case 'doubao_v2': return t('modeStatus.doubao')
+    case 'qwen': return t('modeStatus.qwen')
+    case 'qwen_realtime': return t('modeStatus.qwenRealtime')
+    case 'qwen_omni_35_plus':
+    case 'qwen_omni_35_flash':
+    case 'qwen_omni_flash':
+    case 'qwen_omni_turbo': return t('modeStatus.qwenOmni')
+    case 'mimo': return 'MiMo'
+    default: return provider
+  }
 }
 
 /** 重新从设置里读一遍模式/模型并广播。相关设置变更后调用。 */
@@ -87,11 +91,11 @@ export async function refreshModeStatus(): Promise<void> {
     try {
       const downloaded = await invoke<{ id: string; complete: boolean }[]>('list_downloaded_models')
       ready = downloaded.some((m) => m.id === modelId && m.complete)
-      if (!ready) blockedReason = '选中的模型还没下载'
+      if (!ready) blockedReason = t('modeStatus.modelNotDownloaded')
     } catch {
       // 读不到本地模型列表时不敢断言就绪，按未就绪处理并说明原因
       ready = false
-      blockedReason = '读不到本地模型列表'
+      blockedReason = t('modeStatus.modelListUnavailable')
     }
   } else if (mode === 'cloud_api') {
     // 就绪与否看**启用中那份服务档案**，而不是各平台的原始键：同一家可以存多份，
@@ -99,17 +103,17 @@ export async function refreshModeStatus(): Promise<void> {
     const state = await loadAsrProfiles()
     const active = resolveActiveAsrProfile(state.profiles, state.activeId)
     if (!active) {
-      detail = '未配置'
+      detail = t('modeStatus.notConfigured')
       ready = false
-      blockedReason = '还没配置语音识别服务'
+      blockedReason = t('modeStatus.noAsrService')
     } else {
-      detail = CLOUD_PROVIDER_SHORT[active.provider] ?? active.provider
+      detail = cloudProviderShort(active.provider)
       const missing = describeAsrMissing(active)
       // 流式识别缺业务空间 ID 时也算没配好：它会直接连不上地域专属端点
       const needsWorkspace = findAsrProvider(active.provider)?.needsWorkspaceId === true
         && active.workspaceId.trim() === ''
       ready = missing === '' && !needsWorkspace
-      blockedReason = missing || (needsWorkspace ? '还没填业务空间 ID' : '')
+      blockedReason = missing || (needsWorkspace ? t('modeStatus.noWorkspace') : '')
     }
   }
 
@@ -122,3 +126,6 @@ export async function refreshModeStatus(): Promise<void> {
   currentStatus = { mode, detail, ready, blockedReason }
   emitChange()
 }
+
+// 快照里包含可展示字符串，切换界面语言后必须重新计算，不能沿用旧语言缓存。
+subscribeLocale(() => { void refreshModeStatus() })

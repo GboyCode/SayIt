@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react
 import { AlertTriangle, ChevronDown, ChevronUp, Download, Keyboard, Play, Square } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { useT } from '@/i18n/useT'
 import {
   getSessionAudioBlob,
   type DebugMessage,
@@ -21,6 +22,7 @@ import {
 import { type PTTHoldPair, type PTTTimelineEvent } from './types'
 
 export function AudioPlayer({ session }: { session: DebugSession }) {
+  const t = useT()
   const [playing, setPlaying] = useState(false)
   const [error, setError] = useState('')
   const audioCtxRef = useRef<AudioContext | null>(null)
@@ -67,7 +69,7 @@ export function AudioPlayer({ session }: { session: DebugSession }) {
 
     const pcm = joinPCMChunks(session.audioChunks)
     if (!pcm || pcm.length === 0) {
-      setError('当前会话没有可回放音频')
+      setError(t('debug.noAudioPlayback'))
       return
     }
 
@@ -76,7 +78,7 @@ export function AudioPlayer({ session }: { session: DebugSession }) {
     try {
       const AudioCtx = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
       if (!AudioCtx) {
-        setError('当前环境不支持音频回放')
+        setError(t('debug.playbackUnsupported'))
         return
       }
 
@@ -110,7 +112,7 @@ export function AudioPlayer({ session }: { session: DebugSession }) {
       setPlaying(true)
     } catch (err) {
       stopPlayback()
-      setError(`播放失败: ${String(err)}`)
+      setError(t('debug.playbackFailed', { message: String(err) }))
     }
   }, [playing, sampleRate, session.audioChunks, stopPlayback])
 
@@ -119,7 +121,7 @@ export function AudioPlayer({ session }: { session: DebugSession }) {
 
     const blob = getSessionAudioBlob(session)
     if (!blob) {
-      setError('当前会话没有可下载音频')
+      setError(t('debug.noAudioDownload'))
       return
     }
 
@@ -138,14 +140,14 @@ export function AudioPlayer({ session }: { session: DebugSession }) {
   }, [stopPlayback])
 
   if (totalBytes === 0) {
-    return <span className="text-xs text-muted-foreground/50">无音频</span>
+    return <span className="text-xs text-muted-foreground/50">{t('debug.noAudio')}</span>
   }
 
   return (
     <div className="flex items-center gap-2" onClick={(event) => event.stopPropagation()}>
       <Button onClick={handlePlay} variant="outline" size="sm" className="h-7 gap-1.5 px-2 text-xs">
         {playing ? <Square className="h-3 w-3 text-destructive" /> : <Play className="h-3 w-3 text-success" />}
-        <span>{playing ? '停止' : '回放'} ({durationSec.toFixed(1)}s)</span>
+        <span>{t(playing ? 'debug.stop' : 'debug.replay')} ({durationSec.toFixed(1)}s)</span>
       </Button>
 
       <Button onClick={handleDownload} variant="outline" size="sm" className="h-7 px-2">
@@ -162,6 +164,7 @@ export function AudioPlayer({ session }: { session: DebugSession }) {
 }
 
 export function LogItem({ msg }: { msg: DebugMessage }) {
+  const t = useT()
   const [expanded, setExpanded] = useState(false)
   const isSent = msg.direction === 'sent'
 
@@ -170,7 +173,7 @@ export function LogItem({ msg }: { msg: DebugMessage }) {
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0 flex items-center gap-2">
           <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${isSent ? 'bg-info/15 text-info' : 'bg-success/15 text-success'}`}>
-            {isSent ? '发送' : '接收'}
+            {t(isSent ? 'debug.sent' : 'debug.received')}
           </span>
           <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-foreground">{msg.type}</span>
           <span className="text-muted-foreground/60">{formatTime(msg.time)}</span>
@@ -224,6 +227,7 @@ export function PTTTimelineCard({
   pttEvents: PTTTimelineEvent[]
   holdPairs: PTTHoldPair[]
 }) {
+  const t = useT()
   const downCount = pttEvents.filter((event) => event.kind === 'down').length
   const upCount = pttEvents.filter((event) => event.kind === 'up').length
   const matchedCount = holdPairs.filter((pair) => Number.isFinite(pair.holdMs)).length
@@ -235,13 +239,13 @@ export function PTTTimelineCard({
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-info">
             <Keyboard className="h-4 w-4" />
-            <span className="text-sm font-medium">PTT 事件时间线</span>
+            <span className="text-sm font-medium">{t('debug.pttTimeline')}</span>
           </div>
           <div className="flex items-center gap-3 text-xs text-muted-foreground">
             <span>down {downCount}</span>
             <span>up {upCount}</span>
-            <span>配对 {matchedCount}</span>
-            <span className={danglingCount > 0 ? 'text-warning' : ''}>未释放 {danglingCount}</span>
+            <span>{t('debug.paired', { count: matchedCount })}</span>
+            <span className={danglingCount > 0 ? 'text-warning' : ''}>{t('debug.unreleased', { count: danglingCount })}</span>
           </div>
         </div>
 
@@ -295,6 +299,7 @@ export function PTTTimelineCard({
 }
 
 export function IssueRuntimeEventsCard({ events }: { events: RuntimeEvent[] }) {
+  const t = useT()
   if (events.length === 0) return null
 
   return (
@@ -303,7 +308,7 @@ export function IssueRuntimeEventsCard({ events }: { events: RuntimeEvent[] }) {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 text-warning">
             <AlertTriangle className="h-4 w-4" />
-            <span className="text-sm font-medium">运行时异常 / 警告</span>
+            <span className="text-sm font-medium">{t('debug.runtimeIssues')}</span>
             <span className="text-xs">{events.length}</span>
           </div>
         </div>

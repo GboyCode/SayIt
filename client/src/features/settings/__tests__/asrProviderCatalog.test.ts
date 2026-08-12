@@ -29,6 +29,7 @@ describe('ASR_PROVIDERS 结构性不变量', () => {
       expect(p.label.trim()).not.toBe('')
       expect(p.model.trim()).not.toBe('')
       expect(p.blurb.trim()).not.toBe('')
+      expect(p.availability).toBe('mainland_china')
     }
   })
 

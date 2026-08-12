@@ -10,6 +10,7 @@
 
 // 话题转换词（出现在句末标点之后，表示新话题开始）
 // 按优先级排列，长词优先匹配
+// i18n-allow-start: 中文 ASR 分段算法的词表与标点数据
 const TOPIC_SHIFT_PHRASES = [
   // 序号类
   '第一个', '第二个', '第三个', '第四个', '第五个',
@@ -39,6 +40,7 @@ const FILLER_THEN_SHIFT = [
 
 // 句末标点
 const SENTENCE_END_RE = /[。？！]/
+// i18n-allow-end
 
 /**
  * 对纯 ASR 输出的文本进行智能分段，插入换行符。

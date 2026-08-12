@@ -26,7 +26,7 @@ export class LocalProvider extends BufferedProvider {
   protected async onConnect(callbacks: TranscriptionCallbacks): Promise<boolean> {
     const modelId = await getSetting('localAsr.modelId', 'sensevoice-small-gguf') as string
     if (!modelId) {
-      addRuntimeEvent('warn', 'local', '未选择本地模型，视为未就绪')
+      addRuntimeEvent('warn', 'local', 'No local model selected; provider is not ready')
       callbacks.onReady?.({ asr: false, llm: false })
       return false
     }
@@ -37,13 +37,13 @@ export class LocalProvider extends BufferedProvider {
       downloaded = models.some((m) => m.id === modelId && m.complete)
     } catch (err) {
       // 读不到列表时不敢断言就绪：宁可拦下并提示，也别录完才失败
-      addRuntimeEvent('warn', 'local', '读不到本地模型列表，视为未就绪', { error: String(err) })
+      addRuntimeEvent('warn', 'local', 'Could not read local model list; provider is not ready', { error: String(err) })
       callbacks.onReady?.({ asr: false, llm: false })
       return false
     }
 
     if (!downloaded) {
-      addRuntimeEvent('warn', 'local', '选中的本地模型尚未下载，视为未就绪', { modelId })
+      addRuntimeEvent('warn', 'local', 'Selected local model is not downloaded; provider is not ready', { modelId })
       callbacks.onReady?.({ asr: false, llm: false })
       return false
     }
@@ -54,7 +54,7 @@ export class LocalProvider extends BufferedProvider {
       const accelerator = await getSetting('localAsr.accelerator', 'auto') as string
       await invoke<string>('preload_local_model', { modelId, accelerator })
     } catch (err) {
-      addRuntimeEvent('warn', 'local', '本地模型预加载失败（仍按就绪处理）', { error: String(err) })
+      addRuntimeEvent('warn', 'local', 'Local model preload failed; provider remains marked ready', { error: String(err) })
     }
     callbacks.onReady?.({ asr: true, llm: false })
     return true
@@ -65,7 +65,7 @@ export class LocalProvider extends BufferedProvider {
     const startOpts = this.startOpts
     const startTime = performance.now()
 
-    addRuntimeEvent('info', 'local', '开始本地 ASR', { durationSec, runId })
+    addRuntimeEvent('info', 'local', 'Local ASR started', { durationSec, runId })
     let asrText = ''
     let asrMs = 0
 
@@ -88,7 +88,7 @@ export class LocalProvider extends BufferedProvider {
       asrMs = result.elapsed_ms
     } catch (err) {
       if (!this.isRunCurrent(runId)) return
-      addRuntimeEvent('error', 'local', '本地 ASR 失败', { error: String(err) })
+      addRuntimeEvent('error', 'local', 'Local ASR failed', { error: String(err) })
       this.callbacks.onError?.(String(err))
       this.callbacks.onDone?.()
       return
@@ -132,14 +132,14 @@ export class LocalProvider extends BufferedProvider {
           llmMs = aiResult.elapsed_ms
         } catch (err) {
           if (!this.isRunCurrent(runId)) return
-          addRuntimeEvent('warn', 'local', 'AI 校对失败，使用 ASR 原文', { error: String(err) })
+        addRuntimeEvent('warn', 'local', 'AI cleanup failed; using raw ASR text', { error: String(err) })
         }
       }
     }
 
     if (!this.isRunCurrent(runId)) return
     const totalMs = Math.round(performance.now() - startTime)
-    addRuntimeEvent('info', 'local', '处理完成', { durationSec, asrMs, llmMs, totalMs, runId })
+    addRuntimeEvent('info', 'local', 'Processing complete', { durationSec, asrMs, llmMs, totalMs, runId })
 
     this.callbacks.onFinal?.({ asrText, llmText, asrMs, llmMs, durationSec })
     this.callbacks.onDone?.()

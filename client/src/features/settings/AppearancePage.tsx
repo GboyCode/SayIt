@@ -12,22 +12,24 @@ import { getSetting, setSetting } from '@/services/store'
 import { refreshOverlaySettings, setStreamingDisplayCache } from '@/services/recorder'
 import { OVERLAY_WIDTH_PRESETS, type OverlayWidthPreset } from '@/services/recorder/types'
 import { type OverlayWaveTheme } from './utils'
+import { type TranslationKey } from '@/i18n'
+import { useT } from '@/i18n/useT'
 
 const OVERLAY_OPTIONS: Array<{
   theme: OverlayWaveTheme
-  label: string
+  labelKey: TranslationKey
   barColors: string[]
 }> = [
-  { theme: 'black-white', label: '黑底白色', barColors: ['#e2e8f0', '#cbd5e1', '#94a3b8'] },
-  { theme: 'black-blue', label: '黑底蓝色', barColors: ['#22d3ee', '#3b82f6', '#6366f1'] },
-  { theme: 'black-rainbow', label: '黑底彩色', barColors: ['#4ade80', '#facc15', '#fb923c', '#f87171'] },
-]
+    { theme: 'black-white', labelKey: 'appearance.wave.blackWhite', barColors: ['#e2e8f0', '#cbd5e1', '#94a3b8'] },
+    { theme: 'black-blue', labelKey: 'appearance.wave.blackBlue', barColors: ['#22d3ee', '#3b82f6', '#6366f1'] },
+    { theme: 'black-rainbow', labelKey: 'appearance.wave.blackRainbow', barColors: ['#4ade80', '#facc15', '#fb923c', '#f87171'] },
+  ]
 
 // 由长到短排列：从「最完整」往「最克制」读，比反过来更符合挑尺寸的直觉。
-const WIDTH_OPTIONS: Array<{ value: OverlayWidthPreset; label: string }> = [
-  { value: 'long', label: '长' },
-  { value: 'medium', label: '中' },
-  { value: 'short', label: '短' },
+const WIDTH_OPTIONS: Array<{ value: OverlayWidthPreset; labelKey: TranslationKey }> = [
+  { value: 'long', labelKey: 'appearance.width.long' },
+  { value: 'medium', labelKey: 'appearance.width.medium' },
+  { value: 'short', labelKey: 'appearance.width.short' },
 ]
 
 function getBarColor(index: number, total: number, theme: OverlayWaveTheme): string {
@@ -51,9 +53,9 @@ function getTimerColor(theme: OverlayWaveTheme): string {
 
 
 
-const STREAMING_PREVIEW_TEXT = '今天下午三点和团队开个会，把新版本的方案先过一遍'
-
 function OverlayPreview({ theme, showDuration, barCount, streaming }: { theme: OverlayWaveTheme; showDuration: boolean; barCount: number; streaming: boolean }) {
+  const t = useT()
+  const previewText = t('appearance.streamingPreviewText')
   const barRefs = useRef<Array<HTMLDivElement | null>>([])
   const [typed, setTyped] = useState('')
 
@@ -66,8 +68,8 @@ function OverlayPreview({ theme, showDuration, barCount, streaming }: { theme: O
     let i = 0
     let timer: ReturnType<typeof setTimeout>
     const step = () => {
-      if (i <= STREAMING_PREVIEW_TEXT.length) {
-        setTyped(STREAMING_PREVIEW_TEXT.slice(0, i))
+      if (i <= previewText.length) {
+        setTyped(previewText.slice(0, i))
         i += 1
         timer = setTimeout(step, 130)
       } else {
@@ -77,7 +79,7 @@ function OverlayPreview({ theme, showDuration, barCount, streaming }: { theme: O
     }
     step()
     return () => clearTimeout(timer)
-  }, [streaming])
+  }, [streaming, previewText])
 
   useEffect(() => {
     const heights = new Array(barCount).fill(3)
@@ -115,7 +117,7 @@ function OverlayPreview({ theme, showDuration, barCount, streaming }: { theme: O
       {/* 流式实时字幕气泡（开启时显示，带打字动画） */}
       {streaming && (
         <div className="relative w-[260px] rounded-2xl border border-slate-600 bg-black px-3.5 py-2.5 shadow-[0_6px_16px_rgba(0,0,0,0.35)]">
-          <span className="mb-1 block text-[10px] font-medium tracking-[0.18em] text-slate-400">实时识别</span>
+          <span className="mb-1 block text-[10px] font-medium tracking-[0.18em] text-slate-400">{t('appearance.streamingPreviewLabel')}</span>
           {/* 内容驱动、底部对齐，和真实悬浮窗一致 */}
           <div className="flex max-h-[40px] flex-col justify-end overflow-hidden text-left text-[13px] leading-5 text-slate-100">
             <div>
@@ -162,12 +164,13 @@ function OverlayPreview({ theme, showDuration, barCount, streaming }: { theme: O
           </span>
         )}
       </div>
-      <span className="text-xs text-muted-foreground">悬浮窗预览</span>
+      <span className="text-xs text-muted-foreground">{t('appearance.overlayPreview')}</span>
     </div>
   )
 }
 
 export default function AppearancePage() {
+  const t = useT()
   const [activeTheme, setActiveTheme] = useState(getActiveThemeId)
   const [overlayWaveTheme, setOverlayWaveTheme] = useState<OverlayWaveTheme>('black-rainbow')
   const [overlayShowDuration, setOverlayShowDuration] = useState(true)
@@ -253,23 +256,22 @@ export default function AppearancePage() {
 
   return (
     <div className="mx-auto max-w-4xl p-8">
-      <h1 className="mb-6 text-2xl font-bold">外观</h1>
+      <h1 className="mb-6 text-2xl font-bold">{t('appearance.title')}</h1>
 
       <div className="space-y-6">
         <Card>
           <CardContent className="p-6">
-            <h2 className="mb-4 text-lg font-semibold">应用主题</h2>
+            <h2 className="mb-4 text-lg font-semibold">{t('appearance.appTheme')}</h2>
             <div className="grid gap-3 sm:grid-cols-3">
               {themeList.map((theme) => (
                 <button
                   key={theme.id}
                   type="button"
                   onClick={() => void handleThemeChange(theme.id)}
-                  className={`flex items-center gap-3 rounded-lg border p-3 transition-colors ${
-                    activeTheme === theme.id
-                      ? 'border-primary bg-primary/5'
-                      : 'border-border hover:bg-accent'
-                  }`}
+                  className={`flex items-center gap-3 rounded-lg border p-3 transition-colors ${activeTheme === theme.id
+                    ? 'border-primary bg-primary/5'
+                    : 'border-border hover:bg-accent'
+                    }`}
                 >
                   <div className="flex gap-1">
                     {Object.values(theme.previewColors).map((color, i) => (
@@ -289,31 +291,30 @@ export default function AppearancePage() {
 
         <Card>
           <CardContent className="p-6">
-            <h2 className="mb-4 text-lg font-semibold">悬浮窗样式</h2>
+            <h2 className="mb-4 text-lg font-semibold">{t('appearance.overlayStyle')}</h2>
 
             {/* 整块一起等值到位再显示。除了选择器，**悬浮窗预览**那颗胶囊的长度也跟着
                 overlayWidth 变（它有可见边框），只盖住选择器的话，仍会看到预览从「中」
                 的长度一下缩到「短」——那正是之前反复没修掉的那个「闪」。 */}
             <div className="space-y-4" style={ready ? undefined : { visibility: 'hidden' }}>
               <div>
-                <p className="mb-2 text-sm text-muted-foreground">波形主题</p>
+                <p className="mb-2 text-sm text-muted-foreground">{t('appearance.waveTheme')}</p>
                 <div className="grid gap-2 sm:grid-cols-3" style={ready ? undefined : { visibility: 'hidden' }}>
                   {OVERLAY_OPTIONS.map((option) => (
                     <button
                       key={option.theme}
                       type="button"
                       onClick={() => void handleOverlayThemeChange(option.theme)}
-                      className={`flex items-center justify-between rounded-md border px-3 py-2 text-sm ${animate ? 'transition-colors' : ''} ${
-                        overlayWaveTheme === option.theme
-                          ? 'border-primary bg-primary/5'
-                          : 'border-border hover:bg-accent'
-                      }`}
+                      className={`flex items-center justify-between rounded-md border px-3 py-2 text-sm ${animate ? 'transition-colors' : ''} ${overlayWaveTheme === option.theme
+                        ? 'border-primary bg-primary/5'
+                        : 'border-border hover:bg-accent'
+                        }`}
                     >
                       <span className="flex items-center gap-2">
                         <span className={`flex h-3.5 w-3.5 items-center justify-center rounded-full border ${overlayWaveTheme === option.theme ? 'border-primary' : 'border-muted-foreground/40'}`}>
                           {overlayWaveTheme === option.theme && <span className="h-2 w-2 rounded-full bg-primary" />}
                         </span>
-                        <span>{option.label}</span>
+                        <span>{t(option.labelKey)}</span>
                       </span>
                       <span className="flex gap-0.5">
                         {option.barColors.map((c, i) => (
@@ -325,23 +326,22 @@ export default function AppearancePage() {
                 </div>
 
                 <div className="mt-4">
-                  <p className="mb-2 text-sm text-muted-foreground">悬浮窗长度</p>
+                  <p className="mb-2 text-sm text-muted-foreground">{t('appearance.overlayWidth')}</p>
                   <div className="grid gap-2 sm:grid-cols-3" style={ready ? undefined : { visibility: 'hidden' }}>
                     {WIDTH_OPTIONS.map((option) => (
                       <button
                         key={option.value}
                         type="button"
                         onClick={() => void handleOverlayWidthChange(option.value)}
-                        className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm ${animate ? 'transition-colors' : ''} ${
-                          overlayWidth === option.value
-                            ? 'border-primary bg-primary/5'
-                            : 'border-border hover:bg-accent'
-                        }`}
+                        className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm ${animate ? 'transition-colors' : ''} ${overlayWidth === option.value
+                          ? 'border-primary bg-primary/5'
+                          : 'border-border hover:bg-accent'
+                          }`}
                       >
                         <span className={`flex h-3.5 w-3.5 items-center justify-center rounded-full border ${overlayWidth === option.value ? 'border-primary' : 'border-muted-foreground/40'}`}>
                           {overlayWidth === option.value && <span className="h-2 w-2 rounded-full bg-primary" />}
                         </span>
-                        <span>{option.label}</span>
+                        <span>{t(option.labelKey)}</span>
                       </button>
                     ))}
                   </div>
@@ -349,8 +349,8 @@ export default function AppearancePage() {
 
                 <div className="mt-4 flex items-center justify-between">
                   <div>
-                    <p className="text-sm font-medium">显示按住时长</p>
-                    <p className="text-xs text-muted-foreground">关闭后仅显示波形</p>
+                    <p className="text-sm font-medium">{t('appearance.showDuration')}</p>
+                    <p className="text-xs text-muted-foreground">{t('appearance.showDurationDesc')}</p>
                   </div>
                   <Switch checked={overlayShowDuration} onChange={handleToggleDuration} noAnimation={!animate} hidden={!ready} />
                 </div>
@@ -358,28 +358,28 @@ export default function AppearancePage() {
                 <div className="mt-4 flex items-center justify-between">
                   <div className="pr-3">
                     <div className="flex items-center gap-1.5">
-                      <p className="text-sm font-medium">流式实时字幕</p>
+                      <p className="text-sm font-medium">{t('appearance.streaming')}</p>
                       <Tooltip
                         variant="light"
-                        content={'开启后走「双向流式」实时通路：边说边出字、更快，但整体准确率略低、热词效果明显减弱。\n关闭则用更准的通路（准确率更高、热词更准），只是没有边说边出字的效果。\n如果你很看重专有名词 / 热词的识别准确率，建议关闭。'}
+                        content={t('appearance.streamingHelp')}
                       >
                         <Info className="h-3.5 w-3.5 shrink-0 cursor-help text-muted-foreground/50 transition-colors hover:text-muted-foreground" />
                       </Tooltip>
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      说话时在悬浮窗上实时显示识别文字
+                      {t('appearance.streamingDesc')}
                       <span className="text-muted-foreground/70">
-                        （支持豆包、千问实时 ASR；豆包需开通「流式语音识别 2.0」
+                        {t('appearance.streamingNote')}
                       </span>
                       <button
                         type="button"
                         onClick={() => void shellOpen('https://console.volcengine.com/speech/new/setting/activate?projectName=default')}
                         className="inline-flex items-center gap-0.5 text-primary underline underline-offset-2 decoration-primary/50 transition-colors hover:decoration-primary"
                       >
-                        前往开通
+                        {t('appearance.streamingActivate')}
                         <ExternalLink className="h-3 w-3" />
                       </button>
-                      <span className="text-muted-foreground/70">，千问需填业务空间 ID）</span>
+                      <span className="text-muted-foreground/70">{t('appearance.streamingNoteEnd')}</span>
                     </p>
                   </div>
                   <Switch checked={streamingDisplay} onChange={handleToggleStreamingDisplay} noAnimation={!animate} hidden={!ready} />

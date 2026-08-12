@@ -118,7 +118,7 @@ pub fn test_shortcut(
             true
         }
         Err(e) => {
-            log::info!("[shortcut] 组合键 '{}' 注册失败（可能被其他程序占用）: {}", accelerator, e);
+            log::info!("[shortcut] Failed to register '{}'; another app may already use it: {}", accelerator, e);
             false
         }
     };

@@ -74,7 +74,7 @@ export function buildHotwordInjectionPart(hotwords: string[] | undefined): strin
   if (!hotwords || hotwords.length === 0) return null
   const terms = Array.from(new Set(hotwords.map((w) => w.trim()).filter(Boolean)))
   if (terms.length === 0) return null
-  return `用户术语表：以下是用户常用的专有名词/术语，整理时若遇到读音相近或明显误识的词，请优先纠正为下列正确写法（保持其大小写），并原样保留：\n${terms.join('、')}`
+  return `用户术语表：以下是用户常用的专有名词/术语，整理时若遇到读音相近或明显误识的词，请优先纠正为下列正确写法（保持其大小写），并原样保留：\n${terms.join('、')}` // i18n-allow: 中文口述整理 Prompt
 }
 
 export function resolvePromptRouting(input: PromptRoutingInput): PromptResolution {
@@ -88,12 +88,12 @@ export function resolvePromptRouting(input: PromptRoutingInput): PromptResolutio
   const dominantScene = summarizeDomainScenes(input.userStats, 1)[0]
 
   if (matchedRule?.promptAppend) {
-    systemPromptParts.push(`应用场景补充：\n${matchedRule.promptAppend.trim()}`)
+    systemPromptParts.push(`应用场景补充：\n${matchedRule.promptAppend.trim()}`) // i18n-allow: 中文口述整理 Prompt
   }
 
   const dynamicIdentityPrompt = buildDynamicIdentityPrompt(input.userStats)
   if (dynamicIdentityPrompt) {
-    systemPromptParts.push(`用户画像补充：\n${dynamicIdentityPrompt}`)
+    systemPromptParts.push(`用户画像补充：\n${dynamicIdentityPrompt}`) // i18n-allow: 中文口述整理 Prompt
   }
 
   // 可选：把热词表注入系统提示词，帮助 AI 在整理时纠正/保留专有名词（默认关闭）。
@@ -107,10 +107,10 @@ export function resolvePromptRouting(input: PromptRoutingInput): PromptResolutio
   }
 
   const summaryParts = [
-    `基础预设: ${preset.name}`,
-    matchedRule ? `应用规则: ${matchedRule.name}` : '应用规则: 未命中',
-    dynamicIdentityPrompt && dominantScene ? `用户画像: ${dominantScene.label}` : '',
-    hotwordInjected ? '热词注入: 开' : '',
+    `Base preset id: ${preset.id}`,
+    matchedRule ? `App rule id: ${matchedRule.id}` : 'App rule: no match',
+    dynamicIdentityPrompt && dominantScene ? `User profile: ${dominantScene.label}` : '',
+    hotwordInjected ? 'Hotwords injected: yes' : '',
   ]
 
   return {

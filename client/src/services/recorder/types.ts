@@ -1,4 +1,5 @@
 export type RecorderState = 'idle' | 'recording' | 'processing'
+import { t } from '@/i18n'
 
 export type OverlayWaveTheme = 'black-white' | 'black-blue' | 'black-rainbow'
 
@@ -10,9 +11,9 @@ export interface OverlayWidthConfig {
 }
 
 export const OVERLAY_WIDTH_PRESETS: Record<OverlayWidthPreset, OverlayWidthConfig> = {
-  short:  { barCount: 12, windowWidth: 200 },
+  short: { barCount: 12, windowWidth: 200 },
   medium: { barCount: 18, windowWidth: 280 },
-  long:   { barCount: 24, windowWidth: 360 },
+  long: { barCount: 24, windowWidth: 360 },
 }
 
 export interface OverlayCommonPayload {
@@ -20,6 +21,15 @@ export interface OverlayCommonPayload {
   showDuration: boolean
   baseWidth?: number
   barCount?: number
+  /**
+   * 界面语言，随每次 overlay 更新一起下发。
+   *
+   * 悬浮窗是**独立的 React 根**，读不到主窗的内存状态；而它必须在按下快捷键后
+   * 立刻出现，不能为了读一次设置加一条异步初始化（overlay 创建本身就脆，
+   * 见 pitfalls 7）。所以复用这条现成通道 —— payload 在 Rust 侧是不透明 JSON，
+   * 多带一个字段是零成本的。
+   */
+  locale?: string
 }
 
 export interface PTTEventPayload {
@@ -45,12 +55,14 @@ export const MAX_RECORDING_SEC = 300
 /** 距上限还剩多少秒时，计时区改为显示倒计时（提醒即将到点） */
 export const RECORDING_COUNTDOWN_SEC = 60
 
-/** 上限的中文说明（如「5 分钟」/「45 秒」）。界面文案一律用它，避免改了上限忘了改文案。 */
+/** 上限的可读说明（如「5 分钟」/「5 min」）。界面文案一律用它，避免改了上限忘了改文案。 */
 export function formatRecordingLimit(): string {
-  if (MAX_RECORDING_SEC < 60) return `${MAX_RECORDING_SEC} 秒`
+  if (MAX_RECORDING_SEC < 60) return t('duration.seconds', { count: MAX_RECORDING_SEC })
   const minutes = Math.floor(MAX_RECORDING_SEC / 60)
   const seconds = MAX_RECORDING_SEC % 60
-  return seconds === 0 ? `${minutes} 分钟` : `${minutes} 分 ${seconds} 秒`
+  return seconds === 0
+    ? t('duration.minutes', { count: minutes })
+    : t('duration.minutesSeconds', { minutes, seconds })
 }
 
 /**
@@ -68,7 +80,7 @@ export function formatRecordingTimer(elapsedSec: number): {
   const remainingSec = Math.max(0, MAX_RECORDING_SEC - elapsed)
   const countdown = remainingSec <= RECORDING_COUNTDOWN_SEC
   return {
-    text: countdown ? `剩余 ${remainingSec}s` : `${elapsed}s`,
+    text: countdown ? t('recording.remainingSeconds', { seconds: remainingSec }) : `${elapsed}s`,
     countdown,
     remainingSec,
   }

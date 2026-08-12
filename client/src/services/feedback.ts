@@ -4,6 +4,7 @@ import { getBackendBaseUrl } from './runtimeConfig'
 import { getClientRuntimeInfo } from './bridge'
 import { getSetting, getActivePreset, listHistory, type HistoryRecord } from './store'
 import { getWorkMode } from './transcription'
+import { t } from '@/i18n'
 
 export interface FeedbackPayload {
   machine_id: string
@@ -115,10 +116,10 @@ export async function submitFeedback(feedbackText: string, options?: { includeTr
   // 校验
   const trimmed = feedbackText.trim()
   if (trimmed.length < 2) {
-    return { ok: false, message: '反馈内容至少需要 2 个字' }
+    return { ok: false, message: t('feedback.tooShort') }
   }
   if (trimmed.length > 1000) {
-    return { ok: false, message: '反馈内容不能超过 1000 字' }
+    return { ok: false, message: t('feedback.tooLong') }
   }
 
   // 收集信息
@@ -170,12 +171,12 @@ export async function submitFeedback(feedbackText: string, options?: { includeTr
   })
 
   if (res.status === 429) {
-    return { ok: false, message: '发送太频繁，请稍后再试' }
+    return { ok: false, message: t('feedback.tooFrequent') }
   }
 
   if (!res.ok) {
-    return { ok: false, message: `发送失败 (${res.status})` }
+    return { ok: false, message: t('feedback.sendFailed', { status: res.status }) }
   }
 
-  return { ok: true, message: '发送成功，感谢您的反馈。' }
+  return { ok: true, message: t('feedback.sent') }
 }
