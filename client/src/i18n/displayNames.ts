@@ -26,10 +26,20 @@ const LOCAL_MODEL_KEYS: Record<string, {
   description: TranslationKey
   languages: TranslationKey
 }> = {
+  'parakeet-unified-en-0.6b-gguf': {
+    name: 'localModel.parakeetEn.name',
+    description: 'localModel.parakeetEn.description',
+    languages: 'localModel.parakeetEn.languages',
+  },
   'sensevoice-small-gguf': {
     name: 'localModel.sensevoice.name',
     description: 'localModel.sensevoice.description',
     languages: 'localModel.sensevoice.languages',
+  },
+  'nemotron-asr-streaming-0.6b-gguf': {
+    name: 'localModel.nemotron.name',
+    description: 'localModel.nemotron.description',
+    languages: 'localModel.nemotron.languages',
   },
   'funasr-nano-2512-gguf': {
     name: 'localModel.funasr.name',

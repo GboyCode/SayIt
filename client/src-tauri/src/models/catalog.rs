@@ -118,6 +118,31 @@ impl GgufWeight {
 /// 下载越大，用户从上往下扫一遍就能理解这几项的关系。
 pub fn get_available_models() -> Vec<ModelInfo> {
     vec![
+        // ── Parakeet Unified EN 0.6B GGUF（NVIDIA，parakeet 族）──
+        // 英文专用，但在英文上**同时**是本目录里最快和最准的一档：
+        // 上游 WER（LibriSpeech test-clean）Q4_K_M = 1.62%，比 Qwen3-ASR 1.7B 的
+        // 高精度档（1.65%）还略好，而本机实测 RTF 0.056（CPU）/ 0.023（Vulkan），
+        // 比 SenseVoice 的 0.063 还快。也就是说它严格支配所有其它条目 —— 前提是
+        // 只说英文。中文音频会输出**空字符串**（实测），所以它不能当通用默认。
+        // 标点和大小写是模型固有行为，不挂 ITN/PNC 开关（两个都报 unsupported，
+        // 见 gguf_asr.rs 的 run_options）；数字会规范化（"2026" 而不是拼读）。
+        ModelInfo {
+            id: "parakeet-unified-en-0.6b-gguf".into(),
+            name: "Parakeet Unified EN".into(),
+            description: "英文最快也最准，仅支持英文".into(),
+            model_type: "parakeet-gguf".into(),
+            total_size_bytes: PARAKEET_UNIFIED_EN_Q4.size,
+            speed: 9.0,
+            accuracy: 9.0,
+            recommended: false,
+            memory_mb: 900,
+            featured: false,
+            languages_label: "英语".into(),
+            quant: "Q4_K_M".into(),
+            languages: vec!["en".into()],
+            sources: PARAKEET_UNIFIED_EN_Q4.sources(),
+            archive_url: None,
+        },
         // ── SenseVoice Small GGUF（ggml 引擎）──
         // 标点靠 RunOptions 的 itn=on 打开（默认是 <|woitn|> 分支、无标点），
         // 实测 9s 音频纯 CPU RTF 0.063，与 sherpa 版同一量级。
@@ -136,6 +161,45 @@ pub fn get_available_models() -> Vec<ModelInfo> {
             quant: "Q8_0".into(),
             languages: vec!["zh".into(), "en".into(), "ja".into(), "ko".into(), "yue".into()],
             sources: SENSEVOICE.sources(),
+            archive_url: None,
+        },
+        // ── Nemotron 3.5 ASR Streaming 0.6B GGUF（NVIDIA，parakeet 族）──
+        // 存在的意义是**语种覆盖面**：32 个 locale，含西/法/德/意/葡/荷/俄/阿/印地/
+        // 土/越/乌 等 Qwen3 也没有或更慢的语种。上游标称原生标点与大小写（PnC），
+        // 数字保持口语形式（训练文本就是 spoken form，不是缺陷）。
+        // 准确度明显不如 parakeet：LibriSpeech test-clean Q4_K_M = 3.28% vs 1.62%，
+        // 所以只说英文的话没有理由选它。实测 RTF 0.069（CPU）/ 0.032（Vulkan）。
+        //
+        // ⚠️ 这是本目录里第一个用**带地区 locale**（`en-US` / `zh-CN`）自报语种的
+        //    模型，且只认这种形式。界面上的 `localAsr.language` 只有 auto/zh/en/ja/ko，
+        //    直接透传会 `unsupported language (status 10)` —— 映射在
+        //    gguf_asr.rs 的 `resolve_language`，别绕过它。
+        ModelInfo {
+            id: "nemotron-asr-streaming-0.6b-gguf".into(),
+            name: "Nemotron 3.5 ASR".into(),
+            description: "语种最全，适合多语言混用".into(),
+            model_type: "parakeet-gguf".into(),
+            total_size_bytes: NEMOTRON_STREAMING_Q4.size,
+            speed: 8.0,
+            accuracy: 7.5,
+            recommended: false,
+            memory_mb: 1050,
+            featured: false,
+            languages_label: "32 语种".into(),
+            quant: "Q4_K_M".into(),
+            languages: vec![
+                "en".into(),
+                "es".into(),
+                "fr".into(),
+                "de".into(),
+                "it".into(),
+                "pt".into(),
+                "ru".into(),
+                "zh".into(),
+                "ja".into(),
+                "ko".into(),
+            ],
+            sources: NEMOTRON_STREAMING_Q4.sources(),
             archive_url: None,
         },
         // ── Fun-ASR Nano 2512 GGUF（SenseVoice 编码器 + Qwen3 解码器）──
@@ -244,6 +308,20 @@ pub fn get_available_models() -> Vec<ModelInfo> {
 //    "unsupported architecture (status 5)"，下载/校验和都正常也没用。
 //    要换源，只能转存"transcribe.cpp 兼容"的那一份（就像现在这样），而不是另找重转的。
 //    size_bytes 会被下载器用于完整性校验，务必与实际文件一致；sha256 目前只作记录。
+
+const PARAKEET_UNIFIED_EN_Q4: GgufWeight = GgufWeight {
+    repo: "cswk/sayit-asr-gguf",
+    file: "parakeet-unified-en-0.6b-Q4_K_M.gguf",
+    size: 477_274_496,
+    sha256: "a8bf3de2b393bd14ead5a858c3748d5e3b07a20fdeabdd3b498fba4f463fa929",
+};
+
+const NEMOTRON_STREAMING_Q4: GgufWeight = GgufWeight {
+    repo: "cswk/sayit-asr-gguf",
+    file: "nemotron-3.5-asr-streaming-0.6b-Q4_K_M.gguf",
+    size: 495_831_520,
+    sha256: "41c99fa5fb6f3d35f68e79adc3e755eca2232a8d921178bd647b71194792b8fd",
+};
 
 const SENSEVOICE: GgufWeight = GgufWeight {
     repo: "cswk/sayit-asr-gguf",
@@ -369,6 +447,9 @@ mod tests {
     /// 只断言 speed 单调，**不断言 accuracy 反向单调**：Fun-ASR Nano 比
     /// Qwen3-ASR 0.6B 又快又准（严格支配它），所以"越往下越准"这个更强的
     /// 约定已经不成立了。留 0.6B 是因为它有 30 语种、Fun-ASR 只有 3 种。
+    /// Parakeet Unified EN 把这一点推到了极端：它在英文上同时是最快和最准的
+    /// （RTF 0.056 / WER 1.62%），排在最前却拿着最高的 accuracy。列表能这么排
+    /// 是因为**语种**才是真正的取舍维度 —— 它只会英文。
     #[test]
     fn models_are_ordered_from_fast_to_slow() {
         let models = get_available_models();

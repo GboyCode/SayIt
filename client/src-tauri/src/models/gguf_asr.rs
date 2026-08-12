@@ -39,6 +39,10 @@ pub(crate) struct Loaded {
     /// 要不要在 RunOptions 里请求 —— 对不支持的族请求会让库每次都打一条 WARN。
     supports_itn: bool,
     supports_pnc: bool,
+    /// 模型自报的语种码。加载时抄一份，因为**各族的码粒度不一样**，界面上的
+    /// `localAsr.language`（只有 auto/zh/en/ja/ko）不能直接透传，得按这份清单
+    /// 解析成模型真正认识的那个串。详见 `resolve_language`。
+    languages: Vec<String>,
     session: Session,
 }
 
@@ -315,7 +319,8 @@ fn ensure_loaded(model_id: &str, accelerator: &str) -> Result<(), String> {
     let backend = model.backend();
     let caps = model.capabilities();
     let arch = model.arch();
-    let n_langs = caps.languages.len();
+    let languages = caps.languages.clone();
+    let n_langs = languages.len();
     let supports_itn = model.supports(Feature::Itn);
     let supports_pnc = model.supports(Feature::Pnc);
     let session = model
@@ -334,6 +339,7 @@ fn ensure_loaded(model_id: &str, accelerator: &str) -> Result<(), String> {
         max_audio_ms,
         supports_itn,
         supports_pnc,
+        languages,
         session,
     };
     let load_ms = start.elapsed().as_millis();
@@ -391,11 +397,51 @@ fn warmup(entry: &mut Loaded) -> u128 {
         return 0;
     }
     // 预热只为建 pipeline，语言无所谓，用自动检测即可
-    let opts = run_options("auto", entry.supports_itn, entry.supports_pnc);
+    let opts = run_options(
+        "auto",
+        &entry.languages,
+        entry.supports_itn,
+        entry.supports_pnc,
+    );
     if let Err(e) = entry.session.run(&pcm, &opts) {
         log::warn!("Warm-up inference failed; functionality is unaffected, but the first run will be slower: {}", e);
     }
     t0.elapsed().as_millis()
+}
+
+/// 把界面上的语种设置解析成**当前模型真正接受的那个串**。
+///
+/// 为什么不能直接透传：各族自报的语种码粒度不一样。SenseVoice / Fun-ASR /
+/// Qwen3-ASR 报的是裸码（`zh` / `en` / `ja`），而 parakeet 族的 nemotron-3.5 报的
+/// 是带地区的 locale（`en-US` / `en-GB` / `zh-CN` / `ja-JP` …）并且**只认带地区的
+/// 形式** —— 把 `en` 传给它会直接 `unsupported language (status 10)`，整次转写失败。
+/// 而 `localAsr.language` 的取值只有 `auto|zh|en|ja|ko`，永远给不出 `en-US`。
+///
+/// 三级降解：精确命中 → 同语言的第一个 locale → 放弃。
+///
+/// 最后一级刻意回落到 `None`（自动检测）而不是把原串硬塞过去：模型压根没广告
+/// 这个语种时（比如给纯英文的 parakeet 选中文），让它自己判最多是结果不理想，
+/// 硬塞则是稳定报错。这一条也顺手修掉了老行为里的一个坑 —— Fun-ASR 只支持
+/// zh/en/ja，之前选「韩语」会把 `ko` 塞给它。
+fn resolve_language(requested: &str, supported: &[String]) -> Option<String> {
+    if matches!(requested, "" | "auto") {
+        return None;
+    }
+    // 语种无关的模型（caps.languages 为空）没有清单可比，按原样传。
+    if supported.is_empty() {
+        return Some(requested.to_string());
+    }
+    if let Some(hit) = supported.iter().find(|l| l.eq_ignore_ascii_case(requested)) {
+        return Some(hit.clone());
+    }
+    let prefix = format!("{}-", requested.to_ascii_lowercase());
+    if let Some(hit) = supported
+        .iter()
+        .find(|l| l.to_ascii_lowercase().starts_with(&prefix))
+    {
+        return Some(hit.clone());
+    }
+    None
 }
 
 /// 构造运行参数。
@@ -404,13 +450,15 @@ fn warmup(entry: &mut Loaded) -> u128 {
 /// `<|woitn|>` 分支、输出没有标点），而 Qwen3-ASR 不支持这个开关、标点是模型
 /// 固有行为。对不支持的族请求 On 不会出错，但库每次转写都会打一条
 /// "does not support itn control" 的 WARN —— 按加载时探到的能力来决定，
-/// 日志才干净。PNC 同理（目前两个模型都不支持）。
-fn run_options(language: &str, supports_itn: bool, supports_pnc: bool) -> RunOptions {
+/// 日志才干净。PNC 同理（parakeet 族两个也都不支持，标点是固有行为）。
+fn run_options(
+    language: &str,
+    supported_languages: &[String],
+    supports_itn: bool,
+    supports_pnc: bool,
+) -> RunOptions {
     RunOptions {
-        language: match language {
-            "" | "auto" => None,
-            other => Some(other.to_string()),
-        },
+        language: resolve_language(language, supported_languages),
         itn: if supports_itn { Itn::On } else { Itn::Default },
         pnc: if supports_pnc { Pnc::On } else { Pnc::Default },
         ..Default::default()
@@ -429,7 +477,12 @@ fn transcribe_with_cache(
     // 守卫会在所有成功/错误返回路径上、释放 CACHE 锁之前刷新最后活动时间。
     let _activity_guard = ActivityGuard;
     touch_activity();
-    let opts = run_options(language, entry.supports_itn, entry.supports_pnc);
+    let opts = run_options(
+        language,
+        &entry.languages,
+        entry.supports_itn,
+        entry.supports_pnc,
+    );
 
     let limit = if entry.max_audio_ms > 0 {
         (entry.max_audio_ms as usize / 1000) * sample_rate
@@ -616,14 +669,27 @@ mod tests {
     const SR_U: usize = 16000;
 
     /// 读 16 kHz / mono / 16-bit WAV 为 f32（只够读我们自己的测试音频）。
-    fn read_test_wav() -> Vec<f32> {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/test_zh.wav");
-        let bytes = std::fs::read(&path).expect("resources/test_zh.wav");
+    fn read_wav(name: &str) -> Vec<f32> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join(name);
+        let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("resources/{name}: {e}"));
         assert_eq!(&bytes[0..4], b"RIFF");
         bytes[44..]
             .chunks_exact(2)
             .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
             .collect()
+    }
+
+    fn read_test_wav() -> Vec<f32> {
+        read_wav("test_zh.wav")
+    }
+
+    /// 英文测试音频。纯英文模型（parakeet-unified-en）在中文音频上输出**空字符串**，
+    /// 拿 test_zh.wav 测它只会得到一条看不出原因的"输出为空"。
+    /// 由 dev-scripts/make-test-en-wav.ps1 生成，可重现。
+    fn read_test_en_wav() -> Vec<f32> {
+        read_wav("test_en.wav")
     }
 
     /// 模型没下载就跳过（CI / 干净机器上不该因为缺几百 MB 权重而红）。
@@ -632,17 +698,22 @@ mod tests {
     }
 
     fn run(model_id: &str, repeats: usize) -> String {
+        run_with(model_id, repeats, read_test_wav(), "auto")
+    }
+
+    /// `language` 走的是真实的 `transcribe()` 入口，所以这些测试也在过
+    /// `resolve_language`（例如把 `en` 解析成 nemotron 要的 `en-US`）。
+    fn run_with(model_id: &str, repeats: usize, base: Vec<f32>, language: &str) -> String {
         init_backends();
         assert!(
             !transcribe_cpp::devices().is_empty(),
             "没有注册到任何计算设备：DLL 没放到 exe 旁边？"
         );
-        let base = read_test_wav();
         let mut pcm = Vec::with_capacity(base.len() * repeats);
         for _ in 0..repeats {
             pcm.extend_from_slice(&base);
         }
-        transcribe(model_id, "auto", "auto", &pcm, SR_U).expect("转写失败")
+        transcribe(model_id, language, "auto", &pcm, SR_U).expect("转写失败")
     }
 
     /// SenseVoice：转写要出中文，且**必须有标点**。
@@ -707,6 +778,74 @@ mod tests {
         assert_qwen3_output("qwen3-asr-1.7b-q4-gguf");
     }
 
+    /// Parakeet Unified EN：英文专用。标点、大小写、数字规范化都是模型固有行为
+    /// （ITN/PNC 开关它都报 unsupported），所以这里断言的是"默认就该有"。
+    ///
+    /// 同时钉住 `language="en"` 这条路：parakeet 自报的语种码是裸 `en`，
+    /// `resolve_language` 应当精确命中、原样传过去。
+    #[test]
+    fn parakeet_en_gguf_is_punctuated_and_capitalized() {
+        let id = "parakeet-unified-en-0.6b-gguf";
+        if !model_present(id) {
+            eprintln!("skip: {id} 未下载");
+            return;
+        }
+        let text = run_with(id, 1, read_test_en_wav(), "en");
+        eprintln!("[text] {id}: {text}");
+        assert!(!text.trim().is_empty(), "{id} 输出为空");
+        assert!(!text.contains("<|") && !text.contains('<'), "残留特殊标签: {text:?}");
+        assert!(
+            text.contains('.') || text.contains(','),
+            "{id} 英文输出没有标点: {text:?}"
+        );
+        assert!(
+            text.chars().any(|c| c.is_ascii_uppercase()),
+            "{id} 输出没有大写字母，capitalization 失效？: {text:?}"
+        );
+        unload();
+    }
+
+    /// Nemotron 3.5：本目录里第一个只认**带地区 locale** 的模型。
+    ///
+    /// 这条测试的重点不是转写质量，而是 `language="en"` 不会炸 —— 界面上的
+    /// `localAsr.language` 只有 auto/zh/en/ja/ko，不经 `resolve_language` 映射成
+    /// `en-US` 就会得到 `unsupported language (status 10)`，用户选「英语」后
+    /// 每次口述都失败。断言"有输出"就足以证明映射生效了。
+    #[test]
+    fn nemotron_gguf_accepts_a_bare_language_code() {
+        let id = "nemotron-asr-streaming-0.6b-gguf";
+        if !model_present(id) {
+            eprintln!("skip: {id} 未下载");
+            return;
+        }
+        let text = run_with(id, 1, read_test_en_wav(), "en");
+        eprintln!("[text] {id} (language=en): {text}");
+        assert!(
+            !text.trim().is_empty(),
+            "{id} 在 language=en 下输出为空 —— locale 映射可能失效了"
+        );
+        // auto 检测模式会在原始 token 流里插 <en-US> 这类标签，库默认会清掉。
+        // 漏到最终文本里就会被当成用户说的话插进目标程序。
+        assert!(!text.contains('<') && !text.contains('>'), "残留语种标签: {text:?}");
+        unload();
+    }
+
+    /// 多语种模型选到它不支持的语种时不该报错。nemotron 支持 zh-CN，
+    /// 所以这里顺便验证中文也能走通（它是目录里唯一同时覆盖中英的新模型）。
+    #[test]
+    fn nemotron_gguf_handles_chinese_via_locale_mapping() {
+        let id = "nemotron-asr-streaming-0.6b-gguf";
+        if !model_present(id) {
+            eprintln!("skip: {id} 未下载");
+            return;
+        }
+        let text = run_with(id, 3, read_test_wav(), "zh");
+        eprintln!("[text] {id} (language=zh): {text}");
+        assert!(!text.trim().is_empty(), "{id} 在 language=zh 下输出为空");
+        assert!(!text.contains('<') && !text.contains('>'), "残留语种标签: {text:?}");
+        unload();
+    }
+
     /// Fun-ASR Nano：和 SenseVoice 一样，标点挂在 ITN 开关上（探针里用
     /// `RunOptions::default()` 跑出来是**没有标点**的）。这条走生产路径，
     /// 断言 `run_options()` 的 itn 门控确实把标点开出来了。
@@ -736,23 +875,86 @@ mod tests {
     /// "does not support itn control" 的 WARN，把日志刷脏。
     #[test]
     fn itn_is_only_requested_when_the_family_supports_it() {
-        let supported = run_options("auto", true, false);
+        let supported = run_options("auto", &[], true, false);
         assert_eq!(supported.itn, Itn::On);
         assert_eq!(supported.pnc, Pnc::Default);
 
-        let unsupported = run_options("auto", false, false);
+        let unsupported = run_options("auto", &[], false, false);
         assert_eq!(unsupported.itn, Itn::Default);
         assert_eq!(unsupported.pnc, Pnc::Default);
     }
 
+    /// 裸码族（SenseVoice / Fun-ASR / Qwen3-ASR）的清单，用于下面几条断言。
+    fn bare_codes() -> Vec<String> {
+        ["zh", "yue", "en", "ja", "ko"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    /// nemotron-3.5 的真实清单（截取，保留顺序 —— `en` 要解析成 `en-US` 而不是
+    /// `en-GB`，靠的就是顺序）。
+    fn nemotron_locales() -> Vec<String> {
+        ["en-US", "en-GB", "de-DE", "ja-JP", "ko-KR", "zh-CN"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
     #[test]
     fn auto_language_means_autodetect() {
-        assert!(run_options("auto", false, false).language.is_none());
-        assert!(run_options("", false, false).language.is_none());
+        let langs = bare_codes();
+        assert!(run_options("auto", &langs, false, false).language.is_none());
+        assert!(run_options("", &langs, false, false).language.is_none());
         assert_eq!(
-            run_options("zh", false, false).language.as_deref(),
+            run_options("zh", &langs, false, false).language.as_deref(),
             Some("zh")
         );
+    }
+
+    /// 裸码族的行为必须和加 `resolve_language` 之前完全一样，否则这个改动就把
+    /// 已发布的三个模型搞坏了。
+    #[test]
+    fn bare_language_codes_pass_through_unchanged() {
+        let langs = bare_codes();
+        for code in ["zh", "en", "ja", "ko", "yue"] {
+            assert_eq!(
+                resolve_language(code, &langs).as_deref(),
+                Some(code),
+                "{code} 在裸码族上不该被改写"
+            );
+        }
+    }
+
+    /// nemotron-3.5 只认带地区的 locale，`en` 必须被解析成 `en-US`。
+    /// 不做这层映射的话，用户在设置里选「英语」会得到
+    /// `unsupported language (status 10)`，整次转写失败。
+    #[test]
+    fn bare_code_maps_to_the_models_regional_locale() {
+        let langs = nemotron_locales();
+        assert_eq!(resolve_language("en", &langs).as_deref(), Some("en-US"));
+        assert_eq!(resolve_language("zh", &langs).as_deref(), Some("zh-CN"));
+        assert_eq!(resolve_language("ja", &langs).as_deref(), Some("ja-JP"));
+        assert_eq!(resolve_language("ko", &langs).as_deref(), Some("ko-KR"));
+        // 大小写不该影响匹配
+        assert_eq!(resolve_language("EN", &langs).as_deref(), Some("en-US"));
+    }
+
+    /// 模型没广告的语种回落到自动检测，而不是把原串硬塞过去让它报错。
+    /// 例：给只有 `["en"]` 的 parakeet-unified-en 选中文。
+    #[test]
+    fn unsupported_language_falls_back_to_autodetect() {
+        let english_only = vec!["en".to_string()];
+        assert_eq!(resolve_language("en", &english_only).as_deref(), Some("en"));
+        assert!(resolve_language("zh", &english_only).is_none());
+        assert!(resolve_language("ko", &english_only).is_none());
+    }
+
+    /// 语种无关的模型（清单为空）没有可比对象，保持原样透传。
+    #[test]
+    fn empty_language_list_passes_the_request_through() {
+        assert_eq!(resolve_language("zh", &[]).as_deref(), Some("zh"));
+        assert!(resolve_language("auto", &[]).is_none());
     }
 
     /// 内嵌的预热音频必须能解析出足够的样本。这条防的是 include_bytes! 的路径
