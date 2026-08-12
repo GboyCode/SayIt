@@ -1,5 +1,4 @@
 import type { ActiveAppContext } from './appContext'
-import type { UpdateStatus } from './update'
 
 export type DiagnosticOccurrence =
   | 'just_now'
@@ -147,9 +146,9 @@ export interface AppAPI {
   testShortcut: (accelerator: string) => Promise<{ valid: boolean }>
   getAutoLaunch: () => Promise<boolean>
   setAutoLaunch: (enable: boolean) => Promise<void>
-  getUpdateStatus: () => Promise<UpdateStatus>
-  checkForUpdates: () => Promise<UpdateStatus>
-  installDownloadedUpdate: () => Promise<boolean>
+  installDownloadedUpdate: (filePath: string, relaunch: boolean) => Promise<void>
+  downloadUpdate: (url: string, sha512?: string | null) => Promise<string>
+  verifyUpdatePackage: (filePath: string, sha512?: string | null) => Promise<boolean>
   setPTTLabConfig: (data: unknown) => void
   collectSettings: () => Promise<Record<string, unknown>>
   getDiagnosticsPreview: (data: {
@@ -175,5 +174,4 @@ export interface AppAPI {
   onPTTTimeoutWarning: (cb: (data?: unknown) => void) => void
   onToggleHandsFree: (cb: (data?: unknown) => void) => void
   onPTTLabEvent: (cb: (data?: unknown) => void) => () => void
-  onUpdateStatus: (cb: (status: UpdateStatus) => void) => () => void
 }

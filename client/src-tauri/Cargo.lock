@@ -4049,6 +4049,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "silero-vad-crs",
  "tar",
  "tauri",

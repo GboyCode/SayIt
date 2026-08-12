@@ -573,10 +573,9 @@ fn main() {
             commands::system::get_system_ui_language,
             commands::system::get_auto_launch,
             commands::system::set_auto_launch,
-            commands::system::get_update_status,
-            commands::system::check_for_updates,
             commands::system::install_downloaded_update,
             commands::system::download_update,
+            commands::system::verify_update_package,
             commands::system::append_debug_log,
             commands::system::save_audio_to_downloads,
             commands::system::reveal_file_in_folder,
@@ -660,8 +659,16 @@ fn main() {
                 }
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        // 用 build + run 而不是直接 run：需要在 RunEvent::Exit 上挂"退出时兜底安装更新"。
+        // 用户没点更新图标就直接关掉 SayIt 时，在这里把已下载的新版静默装掉，
+        // 下次打开即是新版 —— 否则更新完全依赖用户主动点击，不点的人永远留在旧版。
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                commands::system::install_pending_update_on_exit(app_handle);
+            }
+        });
 }
 
 #[cfg(test)]

@@ -52,6 +52,10 @@ function shouldMirrorPayload(payload: unknown): boolean {
     return source === 'recorder' && RECORDER_KEY_EVENT.test(message)
       || source === 'websocket' && WEBSOCKET_KEY_EVENT.test(message)
       || source === 'backend'
+      // update 全放行：整条更新链路是用户**看不见**的（后台检查、后台下载、退出时安装），
+      // 出问题时日志是唯一线索。量也极小：启动一次 + 每 6 小时一次。
+      // 少了这条，"没有新版本"和"更新服务压根没跑起来"在日志里长得一模一样。
+      || source === 'update'
   }
 
   if (value.kind === 'ws_message') {
@@ -65,6 +69,8 @@ function shouldMirrorPayload(payload: unknown): boolean {
 function shouldKeepRuntimeEvent(event: RuntimeEvent): boolean {
   if (event.level === 'error' || event.level === 'warn') return true
   if (event.source === 'backend') return true
+  // 见 shouldMirrorPayload 里的同名分支：更新链路用户看不见，诊断只能靠日志
+  if (event.source === 'update') return true
   if (event.source === 'websocket') {
     return WEBSOCKET_KEY_EVENT.test(event.message)
   }

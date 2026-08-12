@@ -249,23 +249,65 @@ pub fn set_auto_launch(app: AppHandle, _enable: bool) -> Result<(), String> {
     }
 }
 
-#[tauri::command]
-pub fn get_update_status() -> Result<Value, String> {
-    Ok(serde_json::json!({
-        "enabled": true,
-        "phase": "idle",
-        "currentVersion": env!("CARGO_PKG_VERSION"),
-    }))
+// ─── 自动更新 ───
+//
+// 分工：版本检查在前端（updateChecker.ts 拉 manifest 比版本号），Rust 只负责
+// 下载、校验完整性、以及把安装程序拉起来。四个入口：
+//   · download_update            下载并校验 SHA-512
+//   · verify_update_package      启动时确认上次下载的包还在、还完整（省掉重复下载整包）
+//   · install_downloaded_update  用户主动点「立即更新」时装，装完重新拉起
+//   · install_pending_update_on_exit  用户没点就直接退出时，在退出路径上静默装掉
+//
+// 最后那个是"强制更新"真正落地的地方：只靠用户点图标，不点的人永远留在旧版。
+
+/// 安装程序是否已经被拉起过。
+///
+/// 用户主动安装与退出兜底安装共用同一个 spawn，必须互斥：install_downloaded_update
+/// 自己就会 app.exit(0)，那次退出同样会走 RunEvent::Exit，不拦住就会起两个安装程序
+/// 互相抢文件锁。suppress_exit_install() 也靠它屏蔽掉"重启回同一版本"那种退出。
+static INSTALLER_SPAWNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 让本次退出不要触发兜底安装。用于导入配置后的重启：用户要的是重启回同一个版本，
+/// 不是更新；若在这里把新版装下去，重启拉起来的会是正在被覆盖的 exe。
+pub fn suppress_exit_install() {
+    INSTALLER_SPAWNED.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
+/// 计算文件 SHA-512 并输出 **Base64** —— 与 manifest 的 sha512 字段同一种编码。
+/// （gen-latest-yml.ps1 把 Get-FileHash 的 hex 转成了 Base64，别按 hex 去比。）
+fn file_sha512_base64(path: &std::path::Path) -> Result<String, String> {
+    use sha2::{Digest, Sha512};
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| format!("Failed to open the installer file: {}", e))?;
+    let mut hasher = Sha512::new();
+    // 安装包有几十 MB，分块读，别整个塞进内存
+    let mut buffer = vec![0u8; 1024 * 1024];
+    loop {
+        let read = std::io::Read::read(&mut file, &mut buffer)
+            .map_err(|e| format!("Failed to read the installer file: {}", e))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(base64::engine::general_purpose::STANDARD.encode(hasher.finalize()))
+}
+
+/// 确认磁盘上那个安装包仍然可用（存在 + 哈希对得上）。
+///
+/// 启动时用它决定「上次下载的包还能不能直接装」。没有这一步，"下载完等用户点"
+/// 会让每次开机都把整包重下一遍 —— 旧流程下载完立刻安装，所以从来没暴露过。
 #[tauri::command]
-pub fn check_for_updates() -> Result<Value, String> {
-    // 版本检查由前端 updateChecker.ts 完成，这里只返回当前版本
-    Ok(serde_json::json!({
-        "enabled": true,
-        "phase": "idle",
-        "currentVersion": env!("CARGO_PKG_VERSION"),
-    }))
+pub fn verify_update_package(file_path: String, sha512: Option<String>) -> Result<bool, String> {
+    let path = std::path::Path::new(&file_path);
+    if !path.is_file() {
+        return Ok(false);
+    }
+    match sha512.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+        Some(expected) => Ok(file_sha512_base64(path)? == expected),
+        // 没记哈希的包（本次改造之前下载的）只能确认文件在
+        None => Ok(true),
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -297,9 +339,10 @@ fn emit_update_progress(app: &AppHandle, downloaded: u64, total: u64, status: &s
     );
 }
 
-/// 下载更新安装包到临时目录，下载过程中通过 update-download-progress 事件上报真实字节进度
+/// 下载更新安装包到临时目录，下载过程中通过 update-download-progress 事件上报真实字节进度。
+/// 传了 sha512（manifest 里的 Base64）就在落盘后校验，不通过直接删掉并报错。
 #[tauri::command]
-pub async fn download_update(app: AppHandle, url: String) -> Result<String, String> {
+pub async fn download_update(app: AppHandle, url: String, sha512: Option<String>) -> Result<String, String> {
     use futures_util::StreamExt;
     use std::io::Write;
 
@@ -362,61 +405,99 @@ pub async fn download_update(app: AppHandle, url: String) -> Result<String, Stri
     file.flush().map_err(|e| format!("Failed to flush file: {}", e))?;
     drop(file);
 
+    // 校验放在"completed"之前：前端收到 completed 就会把这个包记成待安装，
+    // 先报完成再发现哈希不对，等于让一个坏包进入待安装状态。
+    if let Some(expected) = sha512.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+        let actual = file_sha512_base64(&file_path).map_err(|e| {
+            emit_update_progress(&app, downloaded, total, "failed", Some(&e));
+            e
+        })?;
+        if actual != expected {
+            // 坏包必须删掉：它会在临时目录里等到用户点更新，留着的话下次启动
+            // verify_update_package 只看文件名，会把它当成"已下载"直接拿去装。
+            let _ = std::fs::remove_file(&file_path);
+            let msg = "Update package integrity check failed (SHA-512 mismatch)".to_string();
+            write_log_line("[update] downloaded package failed SHA-512 verification, discarded");
+            emit_update_progress(&app, downloaded, total, "failed", Some(&msg));
+            return Err(msg);
+        }
+    }
+
     emit_update_progress(&app, downloaded, total.max(downloaded), "completed", None);
 
     Ok(file_path.to_string_lossy().to_string())
 }
 
-/// 启动安装程序并退出当前应用
+/// 拉起 NSIS 安装程序（/S 静默）。
+///
+/// 静默模式下 NSIS 不提供"安装完成后运行"，所以自己接管：起一个不依赖当前进程存活的
+/// "看门人" cmd 进程，等安装进程真正退出（文件覆盖完成）后再决定要不要拉起新 exe。
+/// 必须等旧进程完全退出才能覆盖 exe（Windows 文件锁），所以看门人要活在本进程之外。
+///
+/// 关键：不要把带引号、含 && 的复合命令直接塞给 `cmd /C` —— Rust 会把这个含空格的
+/// 参数整体再套引号并把内部 " 转义成 \"，而 cmd.exe 不认识 \" 转义，路径会被啃坏
+/// （历史 bug：装完自动重启报「找不到 \ 文件」）。脚本文件里的引号是文件字面量，
+/// 不经过参数转义层；给 cmd /C 传单个脚本路径是 cmd 唯一能干净处理的情形。
+///
+/// relaunch=false 专给退出路径用：用户是要关掉 SayIt，装完再把它拉起来会表现成
+/// "这软件关不掉"。
+#[cfg(target_os = "windows")]
+fn spawn_installer(installer_path: &str, relaunch: bool) -> Result<(), String> {
+    use std::process::Command;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    let relaunch_line = if relaunch {
+        let current_exe = std::env::current_exe()
+            .map_err(|e| format!("Failed to get the current executable path: {}", e))?;
+        // 同一路径：currentUser 安装模式下更新会装回原目录。--open-about 跳关于页，
+        // 让用户能确认更新真的生效了。
+        format!("start \"\" \"{}\" --open-about\r\n", current_exe.to_string_lossy())
+    } else {
+        String::new()
+    };
+
+    //   - ping 兜 ~1s，等旧进程完全退出，避免安装程序覆盖 exe 时撞文件锁
+    //   - start /wait 等静默安装结束
+    //   - del "%~f0" 让脚本运行完自删
+    let script = format!(
+        "@echo off\r\n\
+         ping -n 2 127.0.0.1 >nul\r\n\
+         start /wait \"\" \"{installer}\" /S\r\n\
+         {relaunch}del \"%~f0\"\r\n",
+        installer = installer_path,
+        relaunch = relaunch_line,
+    );
+    let script_path = std::env::temp_dir().join("sayit-update-relaunch.bat");
+    std::fs::write(&script_path, script)
+        .map_err(|e| format!("Failed to write the update restart script: {}", e))?;
+
+    Command::new("cmd")
+        .args(["/C", &script_path.to_string_lossy()])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(|e| format!("Failed to start the installer watchdog: {}", e))?;
+    Ok(())
+}
+
+/// 用户主动点「立即更新」：装完重新拉起应用。
 #[tauri::command]
-pub fn install_downloaded_update(file_path: String, app: AppHandle) -> Result<(), String> {
+pub fn install_downloaded_update(file_path: String, relaunch: bool, app: AppHandle) -> Result<(), String> {
     let path = std::path::Path::new(&file_path);
     if !path.exists() {
         return Err("The installer file does not exist".to_string());
     }
 
-    // 启动 NSIS 安装程序（/S 静默安装）。静默模式下 NSIS 不会像交互式安装那样
-    // 提供"安装完成后运行"的选项，所以需要自己接管：起一个不依赖当前进程存活的
-    // "看门人" cmd 进程 —— 等安装进程真正退出（文件覆盖完成）后，再拉起新版本
-    // exe（同一路径，currentUser 安装模式下更新会装到原目录）。
-    // 必须等旧进程完全退出后才能让安装程序覆盖 exe 文件（Windows 文件锁），
-    // 所以看门人进程要在本进程之外独立存活，用 cmd /c 包一层 + start /wait。
     #[cfg(target_os = "windows")]
     {
-        use std::process::Command;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-        let current_exe = std::env::current_exe()
-            .map_err(|e| format!("Failed to get the current executable path: {}", e))?;
-        let exe_str = current_exe.to_string_lossy().to_string();
-
-        // 用一个临时 .bat 脚本接管"等安装完成再拉起新版本"。
-        // 关键：不要把带引号、含 && 的复合命令直接塞给 `cmd /C`——Rust 会把这个
-        // 含空格的参数整体再套引号并把内部 " 转义成 \"，而 cmd.exe 不认识 \" 转义，
-        // 导致路径被啃坏（历史 bug：装完自动重启报「找不到 \ 文件」）。
-        // 脚本文件里的引号是文件字面量，不经过参数转义层，最稳；给 cmd /C 传单个
-        // 脚本路径是 cmd 唯一能干净处理的情形。
-        //   - ping 兜 ~1s，等旧进程完全退出，避免安装程序覆盖 exe 时撞文件锁
-        //   - start /wait 等静默安装结束，再拉起新 exe（--open-about 跳转关于页）
-        //   - del "%~f0" 让脚本运行完自删
-        let script = format!(
-            "@echo off\r\n\
-             ping -n 2 127.0.0.1 >nul\r\n\
-             start /wait \"\" \"{installer}\" /S\r\n\
-             start \"\" \"{exe}\" --open-about\r\n\
-             del \"%~f0\"\r\n",
-            installer = file_path,
-            exe = exe_str,
-        );
-        let script_path = std::env::temp_dir().join("sayit-update-relaunch.bat");
-        std::fs::write(&script_path, script)
-            .map_err(|e| format!("Failed to write the update restart script: {}", e))?;
-
-        Command::new("cmd")
-            .args(["/C", &script_path.to_string_lossy()])
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-            .map_err(|e| format!("Failed to start the installer watchdog: {}", e))?;
+        use std::sync::atomic::Ordering;
+        // 抢在 app.exit(0) 之前置位：那次退出同样会走 RunEvent::Exit，
+        // 退出兜底安装必须让开，否则两个安装程序抢同一个 exe。
+        INSTALLER_SPAWNED.store(true, Ordering::SeqCst);
+        if let Err(e) = spawn_installer(&file_path, relaunch) {
+            INSTALLER_SPAWNED.store(false, Ordering::SeqCst);
+            return Err(e);
+        }
+        write_log_line(&format!("[update] installer launched by user (relaunch={})", relaunch));
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -427,6 +508,44 @@ pub fn install_downloaded_update(file_path: String, app: AppHandle) -> Result<()
     // 退出当前应用，让安装程序能够覆盖 exe 文件
     app.exit(0);
     Ok(())
+}
+
+/// 退出时的兜底安装，由 main.rs 的 RunEvent::Exit 调用。
+///
+/// 用户没点「立即更新」就直接关掉了 SayIt —— 那就在退出路径上静默装掉，
+/// 下次打开即是新版。少了这一步，"发现新版就更新"完全依赖用户去点那个图标。
+///
+/// 只做存在性检查，不重算哈希：退出路径上不能卡几百毫秒，完整性在下载时已经验过。
+pub fn install_pending_update_on_exit(app: &AppHandle) {
+    use std::sync::atomic::Ordering;
+    use tauri::Manager;
+
+    // swap 而不是 load + store：退出事件理论上只来一次，但这里是唯一没有其它
+    // 互斥保护的路径，用原子交换把"检查过了"和"占位"合成一步。
+    if INSTALLER_SPAWNED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    let storage: State<Storage> = app.state();
+    let pending = storage.get("pendingUpdate", None);
+    let file_path = match pending.get("filePath").and_then(|v| v.as_str()) {
+        Some(value) if !value.is_empty() => value.to_string(),
+        _ => return,
+    };
+    if !std::path::Path::new(&file_path).is_file() {
+        return;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        match spawn_installer(&file_path, false) {
+            Ok(()) => write_log_line("[update] pending update is being installed on exit"),
+            Err(e) => write_log_line(&format!("[update] exit-path install failed: {}", e)),
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    let _ = file_path;
 }
 
 #[tauri::command]

@@ -47,7 +47,6 @@ export default function GeneralSettingsPage() {
   const t = useT()
   const [languagePreference, setLanguagePreference] = useState<LanguagePreference>('auto')
   const [autoLaunch, setAutoLaunch] = useState(false)
-  const [autoCheckUpdate, setAutoCheckUpdate] = useState(true)
   const [mics, setMics] = useState<MediaDeviceInfo[]>([])
   const [selectedMic, setSelectedMic] = useState('')
   const [testing, setTesting] = useState(false)
@@ -80,9 +79,8 @@ export default function GeneralSettingsPage() {
     // 每项自带 catch 兜底：Promise.all 是 fail-fast，只要一项 reject 就会在其余项
     // 还没回来时提前放行 ready。也不用 rAF，避免 setReady 与赋值分到不同批次。
     void (async () => {
-      const [launch, autoUpd, mute, clip, history, retention, readySound, audioDays, logDays] = await Promise.all([
+      const [launch, mute, clip, history, retention, readySound, audioDays, logDays] = await Promise.all([
         bridge.getAutoLaunch().catch(() => false),
-        getSetting('autoCheckUpdate', true).catch(() => true),
         getSetting('muteSystemAudioWhileRecording', false).catch(() => false),
         getSetting('protectClipboard', true).catch(() => true),
         getSetting('historyEnabled', true).catch(() => true),
@@ -93,7 +91,6 @@ export default function GeneralSettingsPage() {
       ])
       if (cancelled) return
       setAutoLaunch(Boolean(launch))
-      setAutoCheckUpdate(Boolean(autoUpd))
       setMuteSystemAudio(Boolean(mute))
       setProtectClipboard(Boolean(clip))
       setHistoryEnabled(Boolean(history))
@@ -129,7 +126,6 @@ export default function GeneralSettingsPage() {
     }
   }
   const toggleAutoLaunch = async () => { const next = !autoLaunch; setAutoLaunch(next); await bridge.setAutoLaunch(next) }
-  const toggleAutoCheckUpdate = async () => { const next = !autoCheckUpdate; setAutoCheckUpdate(next); await setSetting('autoCheckUpdate', next) }
   const handleMicChange = async (deviceId: string) => { setSelectedMic(deviceId); await setSetting('selectedMic', deviceId); await refreshRecorderSettings() }
   const toggleMuteSystemAudio = async () => { const next = !muteSystemAudio; setMuteSystemAudio(next); await setSetting('muteSystemAudioWhileRecording', next); await refreshRecorderSettings() }
   const toggleProtectClipboard = async () => { const next = !protectClipboard; setProtectClipboard(next); await setSetting('protectClipboard', next); await refreshRecorderSettings() }
@@ -296,7 +292,7 @@ export default function GeneralSettingsPage() {
           </CardContent>
         </Card>
 
-        <AppSection autoLaunch={autoLaunch} onToggleAutoLaunch={toggleAutoLaunch} autoCheckUpdate={autoCheckUpdate} onToggleAutoCheckUpdate={toggleAutoCheckUpdate} ready={ready} animate={animate} />
+        <AppSection autoLaunch={autoLaunch} onToggleAutoLaunch={toggleAutoLaunch} ready={ready} animate={animate} />
 
         <Card>
           <CardContent className="p-6">

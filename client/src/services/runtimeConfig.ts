@@ -66,6 +66,19 @@ export function getBackendBaseUrl(): string {
   return backendBaseUrl
 }
 
+/**
+ * 检查更新时用的地址 —— **故意不跟随** getBackendBaseUrl()。
+ *
+ * 业务后端地址是用户可以改的（服务器模式指向自建服务器）。更新 manifest 如果也跟着改，
+ * 这些用户就会去问自己的服务器要更新，拿到 404 后被当成"没配更新"静默返回，
+ * 于是永远收不到新版本。更新通道必须固定在官方地址上，和业务后端解耦。
+ *
+ * 仍然尊重 VITE_BACKEND_BASE_URL：开发时要能把更新通道指到测试服务器上验流程。
+ */
+export function getUpdateBaseUrl(): string {
+  return resolveBuiltinDefaultBaseUrl()
+}
+
 export async function setBackendBaseUrl(value: string): Promise<string> {
   const normalized = normalizeUrl(value)
   if (!normalized) {

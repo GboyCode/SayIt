@@ -1,10 +1,16 @@
 /**
- * 自动更新弹窗
- * 下载完成后弹出，通知用户即将安装更新
+ * 安装中的遮罩。
+ *
+ * 只在 installing 那一态出现 —— 此刻应用即将退出、被安装程序覆盖，用户必须知道
+ * "别动它"，遮住界面是合理的。
+ *
+ * 下载期间**故意什么都不显示**：旧实现在下载时也挂这个全屏遮罩，且没有关闭按钮，
+ * 于是开机自启后正在按住说话的用户会被突然糊住、接着应用自己退出。现在后台下载
+ * 全程无声，下完了才让侧栏的「关于」图标变绿闪烁。
  */
 
 import { useEffect, useState } from 'react'
-import { Download, RefreshCw } from 'lucide-react'
+import { RefreshCw } from 'lucide-react'
 import { onAutoUpdateChange, getAutoUpdateState, type AutoUpdateState } from './autoUpdate'
 import { useT } from '@/i18n/useT'
 
@@ -16,46 +22,23 @@ export default function UpdateDialog() {
     return onAutoUpdateChange(setState)
   }, [])
 
-  // 只在正在下载/安装时弹出遮罩；idle/checking/checked（无论有无更新）都不打扰用户
-  if (state.phase !== 'downloading' && state.phase !== 'installing') return null
+  if (state.phase !== 'installing') return null
+
+  const version = state.pending?.version || ''
 
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-background/80 backdrop-blur-sm">
       <div className="w-full max-w-sm rounded-2xl border border-border bg-card p-6 shadow-xl">
-        {state.phase === 'downloading' && (
-          <div className="flex flex-col items-center text-center">
-            <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-primary/10">
-              <Download className="h-7 w-7 text-primary animate-bounce" />
-            </div>
-            <h3 className="text-lg font-semibold">{t('update.dialogFound')}</h3>
-            <p className="mt-2 text-sm text-muted-foreground">
-              {t('update.dialogDownloading', { version: state.version || '' })}
-            </p>
-            <div className="mt-4 h-1.5 w-full overflow-hidden rounded-full bg-muted">
-              <div
-                className="h-full rounded-full bg-primary transition-all duration-200"
-                style={{ width: `${Math.max(state.downloadPercent ?? 0, 2)}%` }}
-              />
-            </div>
-            <p className="mt-2 text-xs text-muted-foreground/60">
-              {Math.round(state.downloadPercent ?? 0)}%
-            </p>
+        <div className="flex flex-col items-center text-center">
+          {/* 用主题的 success 令牌而不是写死 emerald-500：和左下角那枚更新徽标同一个绿，
+              而且深浅主题下各自有合适的明度（写死的 emerald 在暗色主题上偏闷）。 */}
+          <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-success/10">
+            <RefreshCw className="h-7 w-7 animate-spin text-success" />
           </div>
-        )}
-        {state.phase === 'installing' && (
-          <div className="flex flex-col items-center text-center">
-            <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500/10">
-              <RefreshCw className="h-7 w-7 text-emerald-500 animate-spin" />
-            </div>
-            <h3 className="text-lg font-semibold">{t('update.dialogPreparing')}</h3>
-            <p className="mt-2 text-sm text-muted-foreground">
-              {t('update.dialogReady', { version: state.version || '' })}
-            </p>
-            <p className="mt-3 text-xs text-muted-foreground/60">
-              {t('update.doNotClose')}
-            </p>
-          </div>
-        )}
+          <h3 className="text-lg font-semibold">{t('update.installingTitle', { version })}</h3>
+          <p className="mt-2 text-sm text-muted-foreground">{t('update.installingDesc')}</p>
+          <p className="mt-3 text-xs text-muted-foreground/60">{t('update.doNotClose')}</p>
+        </div>
       </div>
     </div>
   )

@@ -6,7 +6,6 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, emit } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 
-import type { UpdateStatus } from '../types/update'
 import type { DiagnosticOccurrence, DiagnosticsPreview } from '../types/appApi'
 
 // Re-export for convenience
@@ -287,20 +286,23 @@ export function setAutoLaunch(enable: boolean) {
   return invoke('set_auto_launch', { enable })
 }
 
-export function getUpdateStatus() {
-  return invoke<UpdateStatus>('get_update_status')
+/**
+ * 拉起安装程序并退出应用。
+ * relaunch=true 装完自动重开（用户主动点更新时）；退出路径上的兜底安装走 Rust 内部，
+ * 传 false —— 用户是要关掉 SayIt，装完再拉起来会表现成"这软件关不掉"。
+ */
+export function installDownloadedUpdate(filePath: string, relaunch: boolean) {
+  return invoke('install_downloaded_update', { filePath, relaunch })
 }
 
-export function checkForUpdates() {
-  return invoke<UpdateStatus>('check_for_updates')
+/** 下载安装包到临时目录，返回完整路径。传了 sha512（Base64）就由 Rust 侧校验完整性。 */
+export function downloadUpdate(url: string, sha512?: string | null) {
+  return invoke<string>('download_update', { url, sha512: sha512 ?? null })
 }
 
-export function installDownloadedUpdate(filePath: string) {
-  return invoke('install_downloaded_update', { filePath })
-}
-
-export function downloadUpdate(url: string) {
-  return invoke<string>('download_update', { url })
+/** 磁盘上那个安装包还能不能用（存在 + 哈希对得上）。用于启动时复用上次下载的包。 */
+export function verifyUpdatePackage(filePath: string, sha512?: string | null) {
+  return invoke<boolean>('verify_update_package', { filePath, sha512: sha512 ?? null })
 }
 
 export function setPTTLabConfig(data: unknown) {
@@ -410,10 +412,5 @@ export function onMouseShortcutCaptured(cb: (data: { setting: string; vk: number
 
 export function onPTTLabEvent(cb: (data?: unknown) => void) {
   const unlisten = listen<unknown>('ptt-lab-event', (event) => cb(event.payload))
-  return () => { unlisten.then((fn) => fn()) }
-}
-
-export function onUpdateStatus(cb: (status: UpdateStatus) => void) {
-  const unlisten = listen<UpdateStatus>('update-status', (event) => cb(event.payload))
   return () => { unlisten.then((fn) => fn()) }
 }

@@ -17,7 +17,7 @@ import { initTheme } from './stores/theme'
 import { initAiEnabled } from './stores/aiEnabled'
 import { initActivePreset } from './stores/activePreset'
 import { getSetting, setSetting } from './services/store'
-import { runAutoUpdate } from './features/update/autoUpdate'
+import { startUpdateService } from './features/update/autoUpdate'
 import UpdateDialog from './features/update/UpdateDialog'
 import * as bridge from './services/bridge'
 
@@ -36,7 +36,7 @@ export default function App() {
     void initAiEnabled()
     void initActivePreset()
     initRecorder()
-    void runAutoUpdate()
+    void startUpdateService()
 
     // 检查是否需要显示欢迎向导（仅首次安装）
     ;(async () => {

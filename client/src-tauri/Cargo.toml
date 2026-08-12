@@ -30,6 +30,9 @@ dirs = "5"
 hostname = "0.4"
 whoami = "1"
 base64 = "0.22"
+# 校验更新安装包的 SHA-512（manifest 里给的是 Base64 编码）。安装包下载后会在临时
+# 目录里等到用户点更新，驻留时间可能很长，装之前必须确认它还是我们下载的那一个。
+sha2 = "0.10.8"
 reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
 regex = "1"
 futures-util = "0.3"

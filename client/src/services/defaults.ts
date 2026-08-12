@@ -114,7 +114,12 @@ export const DEFAULTS: Record<string, unknown> = {
   readySoundEnabled: true, // 录音就绪提示音。可选: true | false
 
   // ── 应用设置 ──
-  autoCheckUpdate: true, // 自动检查更新。可选: true | false
+  // autoCheckUpdate 在界面上已经没有开关了（更新是必走的：后台下载 + 用户点击或退出时安装）。
+  // 这里保留默认值与读取，是给更新链路自己出故障时留一条不用发新版的止血通道
+  // （0.0.8 那次更新器把用户锁在死循环里，当时只能靠这个开关关掉）。
+  autoCheckUpdate: true, // 是否检查更新。可选: true | false
+  // 已下载待安装的更新包 { version, filePath, sha512 }。Rust 侧退出时会读它做兜底安装。
+  pendingUpdate: null,
   historyEnabled: true, // 保存历史记录（文本+录音）。关闭后不再保存新记录，适合共享电脑。可选: true | false
   audioRetentionEnabled: true, // 保留录音文件。可选: true | false
   audioRetentionDays: -1, // 录音保留天数。可选: 7 | 30 | 90 | -1（永久）
