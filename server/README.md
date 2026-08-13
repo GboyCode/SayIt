@@ -2,9 +2,9 @@
 
 # 🎙️ SayIt
 
-**开口即成稿 — 用说话代替打字，AI 实时把口语变成书面表达。**
+**Just say it, and write well**
 
-Self-hosted speech-to-text server with real-time ASR + LLM polishing.
+Self-hosted speech-to-text server with real-time ASR and AI cleanup.
 
 [Quick Start](#quick-start) · [Architecture](#architecture) · [Configuration](#configuration) · [Deployment](#deployment) · [License](#license)
 
@@ -14,7 +14,7 @@ Self-hosted speech-to-text server with real-time ASR + LLM polishing.
 
 ## What is SayIt?
 
-SayIt is a self-hosted speech-to-text service that combines real-time ASR (Qwen3-ASR) with LLM text polishing. It provides:
+SayIt is a self-hosted speech-to-text service that combines real-time ASR (Qwen3-ASR) with AI cleanup. It provides:
 
 - **Browser Demo** — Record and transcribe directly in the browser, no install needed
 - **Windows Desktop App** — Push-to-talk with automatic paste into any application
@@ -26,7 +26,7 @@ Everything runs on a single server with one GPU.
 ## Features
 
 - 🎯 **Real-time ASR** — Qwen3-ASR-1.7B with vLLM acceleration, <2s latency
-- ✨ **LLM Polishing** — Converts spoken language to written text (Azure OpenAI / Groq / Ollama)
+- ✨ **AI Cleanup** — Converts spoken language to written text (Azure OpenAI / Groq / Ollama)
 - 🔥 **Hotword Boosting** — Custom vocabulary for domain-specific terms
 - 📊 **Admin Dashboard** — Session analytics, performance percentiles, system monitoring
 - 🐳 **Docker Ready** — `docker compose up` with GPU support, model baked into image
@@ -111,7 +111,7 @@ SayIt/
 │   │   ├── main.py       # Routes, WebSocket handler
 │   │   ├── config.py     # Nested config dataclasses
 │   │   ├── asr.py        # Qwen3-ASR engine + VAD
-│   │   ├── llm.py        # LLM polishing (multi-provider)
+│   │   ├── llm.py        # AI cleanup (multi-provider)
 │   │   ├── admin.py      # Admin API endpoints
 │   │   ├── telemetry.py  # Usage tracking + analytics
 │   │   ├── db.py         # SQLite / PostgreSQL abstraction

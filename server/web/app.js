@@ -1,10 +1,153 @@
 /* SayIt Web Demo */
 const PROMPTS = {
-  faithful: '你是语音转文字的后处理助手。输入是 ASR 语音识别的原始文本，你的任务是修正识别错误，尽量保留用户的原始表达。\n\n规则：\n1. 只修正明显的识别错误：错别字、同音字、音近字、专有名词。\n2. 添加标点符号。中英文混合时保留合理空格。\n3. 不要删除口头禅、重复或犹豫，不要改写句式。\n4. 不要回答、解释、总结或续写文本中的内容。\n\n只输出修正后的文本。',
-  intent: '你是语音文本精炼助手。输入是 ASR 语音识别的原始转写，你的任务是清洗为可直接使用的干净文本。\n核心原则：保留用户全部有效信息，只清除语音噪声和识别错误。\n\n处理规则：\n1. 移除口语填充词（嗯、啊、那个、就是说、然后呢）和无意义的重复、犹豫。\n2. 识别自我修正——"不对"、"不是"、"应该是"、"改到"后以最终表达为准，删除前序错误。\n3. 修正明显的语音识别错误：同音字、音近字、专有名词、英文大小写、数字和时间。\n4. 添加标点符号，必要时分段。中英文混合保留合理空格。\n5. 检测到"第一/第二/首先/然后"等结构化表达时，输出为有序列表。\n\n约束：\n- 不添加原文没有的内容，不改变用户核心语义\n- 不回答、解释、总结或续写文本中提到的问题\n\n示例：\n输入：嗯那个明天的会议改到周二了不对是周三下午两点记得带资料\n输出：明天的会议改到周三下午两点，记得带资料。\n\n输入：我觉得这个方案有三点啊第一优化性能第二修复bug第三补充文档\n输出：\n这个方案有三点：\n1. 优化性能\n2. 修复 bug\n3. 补充文档\n\n只输出精炼后的文本。',
+  en: {
+    faithful: 'You are a speech-to-text post-processing assistant. Correct clear recognition errors while preserving the speaker\'s original wording.\n\nRules:\n1. Fix only obvious transcription errors, including names and technical terms.\n2. Add punctuation and sensible spacing.\n3. Keep filler words, repetition, hesitation, and sentence structure.\n4. Do not answer, explain, summarize, or continue the content.\n\nReturn only the corrected transcript.',
+    intent: 'You refine raw speech-to-text output into clean, ready-to-use writing. Preserve every meaningful detail while removing speech noise and recognition errors.\n\nRules:\n1. Remove filler words, empty repetition, and hesitation.\n2. Follow self-corrections and keep only the speaker\'s final wording.\n3. Fix obvious recognition errors, names, capitalization, numbers, and times.\n4. Add punctuation and paragraphs where useful.\n5. Turn clearly structured points into a numbered list.\n\nDo not add new information, change the core meaning, answer questions, explain, summarize, or continue the content.\n\nReturn only the refined text.',
+  },
+  'zh-CN': {
+    faithful: '你是语音转文字的后处理助手。输入是 ASR 语音识别的原始文本，你的任务是修正识别错误，尽量保留用户的原始表达。\n\n规则：\n1. 只修正明显的识别错误：错别字、同音字、音近字、专有名词。\n2. 添加标点符号。中英文混合时保留合理空格。\n3. 不要删除口头禅、重复或犹豫，不要改写句式。\n4. 不要回答、解释、总结或续写文本中的内容。\n\n只输出修正后的文本。',
+    intent: '你是语音文本精炼助手。输入是 ASR 语音识别的原始转写，你的任务是清洗为可直接使用的干净文本。\n核心原则：保留用户全部有效信息，只清除语音噪声和识别错误。\n\n处理规则：\n1. 移除口语填充词（嗯、啊、那个、就是说、然后呢）和无意义的重复、犹豫。\n2. 识别自我修正——"不对"、"不是"、"应该是"、"改到"后以最终表达为准，删除前序错误。\n3. 修正明显的语音识别错误：同音字、音近字、专有名词、英文大小写、数字和时间。\n4. 添加标点符号，必要时分段。中英文混合保留合理空格。\n5. 检测到"第一/第二/首先/然后"等结构化表达时，输出为有序列表。\n\n约束：\n- 不添加原文没有的内容，不改变用户核心语义\n- 不回答、解释、总结或续写文本中提到的问题\n\n只输出精炼后的文本。',
+  },
+}
+
+const MESSAGES = {
+  en: {
+    'meta.title': '{app} — Just say it, and write well',
+    'meta.description': 'Open-source voice typing for Windows with local, cloud API, and self-hosted modes. Turn speech into polished text in any app.',
+    'nav.download': 'Download',
+    'language.switch': '切换到中文',
+    'hero.headline': 'Just say it, and write well',
+    'hero.subheadline': 'Turn speech into polished, ready-to-use text—three times faster than typing.',
+    'modes.title': 'Three modes. Your choice.',
+    'modes.local.title': 'Local mode',
+    'modes.local.desc': 'Speech recognition runs on your device',
+    'modes.cloud.title': 'Cloud API mode',
+    'modes.cloud.desc': 'Use your own ASR and AI provider keys',
+    'modes.server.title': 'Server mode',
+    'modes.server.desc': 'Connect to a public or self-hosted SayIt backend',
+    'features.anywhere': 'Hold to talk, release to type in any app',
+    'features.cleanup': 'AI cleanup turns rough speech into clean writing',
+    'features.fast': 'Get polished text without breaking your flow',
+    'features.rust': 'Lightweight and built with Rust',
+    'demo.title': 'Try it online',
+    'demo.startAria': 'Start recording',
+    'demo.stopAria': 'Stop recording',
+    'demo.start': 'Click to start',
+    'demo.stop': 'Stop recording',
+    'playback.playAria': 'Play',
+    'playback.label': 'Recording',
+    'playback.download': 'Download recording',
+    'result.waiting': 'Waiting for a recording…',
+    'result.receiving': 'Receiving audio…',
+    'result.empty': 'No speech was recognized.',
+    'result.copy': 'Copy text',
+    'result.copied': 'Copied',
+    'result.rawAsr': 'Raw transcript',
+    'result.recordAgain': 'Record again',
+    'result.audioDuration': 'Audio {seconds}s',
+    'result.processingTime': 'Processed in {seconds}s',
+    'oss.title': 'Open source · Self-hosted · Privacy first',
+    'oss.desc': 'AGPL-3.0 licensed, Docker-ready, and fully under your control.',
+    'status.unavailable': 'Unavailable',
+    'status.connecting': 'Connecting',
+    'status.connectionFailed': 'Connection failed',
+    'status.disconnected': 'Disconnected',
+    'status.ready': 'Ready',
+    'status.requestFailed': 'Request failed',
+    'status.notReady': 'Service not ready',
+    'status.recording': 'Recording',
+    'status.processing': 'Processing',
+    'status.recordingFailed': 'Recording failed',
+    'status.initFailed': 'Could not initialize',
+    'error.noRecording': 'No recording to replay',
+    'error.wsMissing': 'WebSocket address is not configured',
+    'error.replayTimeout': 'Replay timed out',
+    'error.replayConnection': 'Replay connection failed',
+    'error.replayClosed': 'Replay connection closed',
+    'error.replayFailed': 'Replay failed',
+    'error.config': 'Config request returned {status}',
+    'error.websocket': 'WebSocket connection failed',
+    'error.audioContext': 'This browser does not support AudioContext',
+    'rerun.asrRunning': 'Transcribing again',
+    'rerun.asrFailed': 'Transcription failed',
+    'rerun.aiRunning': 'Cleaning up again',
+    'rerun.aiFailed': 'AI cleanup failed',
+    'rerun.noResult': 'No result was generated.',
+  },
+  'zh-CN': {
+    'meta.title': '{app} — 随口说，出色写',
+    'meta.description': '开源 Windows 语音输入工具，支持本地、云 API 和自部署模式，在任何应用中把口语变成可直接使用的文字。',
+    'nav.download': '下载',
+    'language.switch': 'Switch to English',
+    'hero.headline': '随口说，出色写',
+    'hero.subheadline': '说话比打字快 3 倍，AI 实时把口语变成可以直接用的书面表达。',
+    'modes.title': '三种模式，按需选择',
+    'modes.local.title': '本地模式',
+    'modes.local.desc': '语音识别在本机运行，数据不出设备',
+    'modes.cloud.title': '云 API 模式',
+    'modes.cloud.desc': '无需 GPU，对接云端 ASR 和 AI',
+    'modes.server.title': '服务器模式',
+    'modes.server.desc': 'Docker 一键部署，GPU 加速推理',
+    'features.anywhere': '按住说话，松开即输入到任何应用',
+    'features.cleanup': 'AI 自动去除口头禅，输出书面表达',
+    'features.fast': '说完即出稿，不打断工作流',
+    'features.rust': 'Rust 构建，轻量安全',
+    'demo.title': '在线体验',
+    'demo.startAria': '开始录音',
+    'demo.stopAria': '结束录音',
+    'demo.start': '点击录音体验',
+    'demo.stop': '结束录音',
+    'playback.playAria': '播放',
+    'playback.label': '本次录音',
+    'playback.download': '下载录音',
+    'result.waiting': '等待录音…',
+    'result.receiving': '正在接收语音…',
+    'result.empty': '本次没有识别到有效文本。',
+    'result.copy': '复制文本',
+    'result.copied': '已复制',
+    'result.rawAsr': 'ASR 原文',
+    'result.recordAgain': '重新录音',
+    'result.audioDuration': '语音 {seconds}s',
+    'result.processingTime': '识别 {seconds}s',
+    'oss.title': '开源 · 自托管 · 隐私优先',
+    'oss.desc': 'AGPL-3.0 开源协议，Docker 一键部署，数据完全自控。',
+    'status.unavailable': '未开放',
+    'status.connecting': '连接中',
+    'status.connectionFailed': '连接失败',
+    'status.disconnected': '已断开',
+    'status.ready': '准备就绪',
+    'status.requestFailed': '请求失败',
+    'status.notReady': '服务未就绪',
+    'status.recording': '录音中',
+    'status.processing': '处理中',
+    'status.recordingFailed': '录音失败',
+    'status.initFailed': '初始化失败',
+    'error.noRecording': '没有可回放的录音',
+    'error.wsMissing': 'WebSocket 地址未配置',
+    'error.replayTimeout': '回放请求超时',
+    'error.replayConnection': '回放连接出错',
+    'error.replayClosed': '回放连接已关闭',
+    'error.replayFailed': '回放失败',
+    'error.config': '配置接口返回 {status}',
+    'error.websocket': 'WebSocket 连接失败',
+    'error.audioContext': '浏览器不支持 AudioContext',
+    'rerun.asrRunning': '重新识别中',
+    'rerun.asrFailed': '识别失败',
+    'rerun.aiRunning': '重新润色中',
+    'rerun.aiFailed': '润色失败',
+    'rerun.noResult': '未生成结果。',
+  },
+}
+
+function detectLocale() {
+  const saved = localStorage.getItem('sayit.web.locale')
+  if (saved === 'en' || saved === 'zh-CN') return saved
+  const languages = navigator.languages?.length ? navigator.languages : [navigator.language]
+  return languages.some((tag) => String(tag).toLowerCase().startsWith('zh')) ? 'zh-CN' : 'en'
 }
 
 const state = {
+  locale: detectLocale(), statusKey: 'status.ready', statusDot: '', lastResult: null,
   config: null, ws: null, wsReady: false, recording: false,
   mediaStream: null, audioCtx: null, workletNode: null, sourceNode: null,
   analyser: null,
@@ -24,6 +167,7 @@ const state = {
 const $ = (id) => document.getElementById(id)
 const els = {
   brandName: $('brandName'), headline: $('headline'), subheadline: $('subheadline'),
+  languageToggle: $('languageToggle'),
   navDlBtn: $('navDlBtn'), dlBtn: $('dlBtn'), dlLabel: $('dlLabel'),
   stateDot: $('stateDot'), stateText: $('stateText'), timer: $('timer'),
   recordButton: $('recordButton'), recordLabel: $('recordLabel'),
@@ -56,8 +200,45 @@ const els = {
 }
 
 /* ── Helpers ── */
-const setStateText = (text, dotClass) => {
-  els.stateText.textContent = text
+const tr = (key, vars = {}) => {
+  const template = MESSAGES[state.locale]?.[key] ?? MESSAGES.en[key] ?? key
+  return template.replace(/\{(\w+)\}/g, (_, name) => String(vars[name] ?? `{${name}}`))
+}
+
+function applyBranding() {
+  const appName = state.config?.app_name || 'SayIt'
+  document.title = tr('meta.title', { app: appName })
+  document.querySelector('meta[name="description"]')?.setAttribute('content', tr('meta.description'))
+  document.querySelector('meta[property="og:title"]')?.setAttribute('content', document.title)
+  document.querySelector('meta[property="og:description"]')?.setAttribute('content', tr('meta.description'))
+  els.brandName.textContent = appName
+  const useCustomChinese = state.locale === 'zh-CN'
+  els.headline.textContent = useCustomChinese && state.config?.headline
+    ? state.config.headline
+    : tr('hero.headline')
+  els.subheadline.textContent = useCustomChinese && state.config?.subheadline
+    ? state.config.subheadline
+    : tr('hero.subheadline')
+}
+
+function applyLocale() {
+  document.documentElement.lang = state.locale
+  document.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = tr(el.dataset.i18n) })
+  document.querySelectorAll('[data-i18n-aria]').forEach((el) => { el.setAttribute('aria-label', tr(el.dataset.i18nAria)) })
+  document.querySelectorAll('[data-i18n-title]').forEach((el) => { el.setAttribute('title', tr(el.dataset.i18nTitle)) })
+  document.querySelectorAll('[data-i18n-tooltip]').forEach((el) => { el.dataset.tooltip = tr(el.dataset.i18nTooltip) })
+  els.languageToggle.textContent = state.locale === 'en' ? '中文' : 'EN'
+  els.languageToggle.setAttribute('aria-label', tr('language.switch'))
+  applyBranding()
+  setRecordUI(state.recording)
+  setStateText(state.statusKey, state.statusDot)
+  if (state.lastResult) updateResult(state.lastResult)
+}
+
+const setStateText = (key, dotClass) => {
+  state.statusKey = key
+  state.statusDot = dotClass
+  els.stateText.textContent = tr(key)
   els.stateDot.className = 'state-dot' + (dotClass ? ' ' + dotClass : '')
 }
 const setResultText = (el, text, placeholder) => {
@@ -68,9 +249,10 @@ const setResultText = (el, text, placeholder) => {
 }
 /* Unified result card updater */
 function updateResult(opts) {
+  state.lastResult = opts
   const primary = opts.llmText || opts.asrText || ''
   const asr = opts.asrText || ''
-  setResultText(els.resultText, primary, opts.placeholder || '等待录音...')
+  setResultText(els.resultText, primary, opts.placeholder || tr(opts.placeholderKey || 'result.waiting'))
   if (els.asrText && asr && opts.llmText) { els.resultDetails.classList.remove('hidden'); els.asrText.textContent = asr }
   else if (els.resultDetails) els.resultDetails.classList.add('hidden')
   if (!els.resultMeta) return
@@ -78,12 +260,20 @@ function updateResult(opts) {
   const tags = []
   if (opts.asrModel) { const short = opts.asrModel.includes('/') ? opts.asrModel.split('/').pop() : opts.asrModel; tags.push(`ASR: ${short}`) }
   if (opts.llmModel) tags.push(`AI: ${opts.llmProvider ? opts.llmProvider + ' / ' : ''}${opts.llmModel}`)
-  let html = ''
-  if (opts.status) { html = `<span class="meta-text">${opts.status}</span>`; els.resultMeta.innerHTML = html; return }
-  if (opts.durationSec) html += `<span class="meta-text">语音 ${opts.durationSec.toFixed(1)}s</span>`
-  if (total) html += `<span class="meta-sep">|</span><span class="meta-text">识别 ${(total / 1000).toFixed(1)}s (ASR ${am}ms${lm ? ' + LLM ' + lm + 'ms' : ''})</span>`
-  if (tags.length) html += tags.map(t => `<span class="meta-tag">${t}</span>`).join('')
-  els.resultMeta.innerHTML = html
+  const addMeta = (className, text) => {
+    const span = document.createElement('span')
+    span.className = className
+    span.textContent = text
+    els.resultMeta.appendChild(span)
+  }
+  els.resultMeta.replaceChildren()
+  if (opts.statusKey) { addMeta('meta-text', tr(opts.statusKey)); return }
+  if (opts.durationSec) addMeta('meta-text', tr('result.audioDuration', { seconds: opts.durationSec.toFixed(1) }))
+  if (total) {
+    addMeta('meta-sep', '|')
+    addMeta('meta-text', `${tr('result.processingTime', { seconds: (total / 1000).toFixed(1) })} (ASR ${am}ms${lm ? ' + LLM ' + lm + 'ms' : ''})`)
+  }
+  tags.forEach((tag) => addMeta('meta-tag', tag))
 }
 const fmtClock = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
 const fmtTime = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`
@@ -91,7 +281,8 @@ const setRecordUI = (rec) => {
   els.micIcon.style.display = rec ? 'none' : ''
   els.stopIcon.style.display = rec ? '' : 'none'
   els.recordButton.classList.toggle('stop', rec)
-  els.recordLabel.textContent = rec ? '结束录音' : '点击录音体验'
+  els.recordLabel.textContent = tr(rec ? 'demo.stop' : 'demo.start')
+  els.recordButton.setAttribute('aria-label', tr(rec ? 'demo.stopAria' : 'demo.startAria'))
 }
 const updateDownloadLinks = (url) => {
   ;[els.navDlBtn, els.dlBtn].forEach(el => { if (el) el.href = url || '#download' })
@@ -279,9 +470,9 @@ function getWsUrl() {
 
 function replayAudio(options) {
   const chunks = state.pcmChunks
-  if (!chunks.length) return Promise.reject(new Error('没有可回放的录音'))
+  if (!chunks.length) return Promise.reject(new Error(tr('error.noRecording')))
   const wsUrl = getWsUrl()
-  if (!wsUrl) return Promise.reject(new Error('WebSocket 地址未配置'))
+  if (!wsUrl) return Promise.reject(new Error(tr('error.wsMissing')))
 
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(wsUrl)
@@ -290,12 +481,12 @@ function replayAudio(options) {
     const timeout = setTimeout(() => {
       if (finished) return; finished = true
       try { socket.close() } catch (_) {}
-      reject(new Error('回放请求超时'))
+      reject(new Error(tr('error.replayTimeout')))
     }, 30000)
     const cleanup = () => { clearTimeout(timeout); try { socket.close() } catch (_) {} }
 
-    socket.onerror = () => { if (!finished) { finished = true; cleanup(); reject(new Error('回放连接出错')) } }
-    socket.onclose = () => { if (!finished && finalResult) { finished = true; cleanup(); resolve(finalResult) } else if (!finished) { finished = true; cleanup(); reject(new Error('回放连接已关闭')) } }
+    socket.onerror = () => { if (!finished) { finished = true; cleanup(); reject(new Error(tr('error.replayConnection'))) } }
+    socket.onclose = () => { if (!finished && finalResult) { finished = true; cleanup(); resolve(finalResult) } else if (!finished) { finished = true; cleanup(); reject(new Error(tr('error.replayClosed'))) } }
     socket.onmessage = (event) => {
       if (typeof event.data !== 'string') return
       let p; try { p = JSON.parse(event.data) } catch (_) { return }
@@ -315,7 +506,7 @@ function replayAudio(options) {
         return
       }
       if (t === 'done') { if (finalResult) { finished = true; cleanup(); resolve(finalResult) } return }
-      if (t === 'error') { finished = true; cleanup(); reject(new Error(String(p.message || '回放失败'))) }
+      if (t === 'error') { finished = true; cleanup(); reject(new Error(String(p.message || tr('error.replayFailed')))) }
     }
   })
 }
@@ -323,26 +514,22 @@ function replayAudio(options) {
 /* ── Config ── */
 async function loadConfig() {
   const res = await fetch('/api/public/config', { cache: 'no-store' })
-  if (!res.ok) throw new Error(`配置接口返回 ${res.status}`)
+  if (!res.ok) throw new Error(tr('error.config', { status: res.status }))
   state.config = await res.json()
-  document.title = state.config.app_name || 'SayIt'
-  els.brandName.textContent = state.config.app_name || 'SayIt'
-  els.headline.textContent = state.config.headline || '随口说，出色写。'
-  els.subheadline.textContent = state.config.subheadline || '用说话代替打字，AI 实时把口语变成可以直接用的书面表达。'
+  applyBranding()
   updateDownloadLinks(state.config.download_url)
   if (els.dlLabel && state.config.download_version) els.dlLabel.textContent = `Windows v${state.config.download_version}`
   const wd = state.config.web_demo || {}
   state.llmEnabled = Boolean(wd.llm_enabled)
-  if (!wd.enabled) { els.recordButton.disabled = true; setStateText('未开放', ''); return }
-  setStateText('连接中', '')
-  if (!state.llmEnabled && els.aiMeta) els.aiMeta.textContent = '当前未启用 AI 校准'
+  if (!wd.enabled) { els.recordButton.disabled = true; setStateText('status.unavailable', ''); return }
+  setStateText('status.connecting', '')
 }
 
 /* ── WebSocket ── */
 function scheduleReconnect() {
   setTimeout(() => {
     if (!state.ws || state.ws.readyState === WebSocket.CLOSED)
-      connectWebSocket().catch(() => setStateText('连接失败', ''))
+      connectWebSocket().catch(() => setStateText('status.connectionFailed', ''))
   }, 2000)
 }
 async function connectWebSocket() {
@@ -353,10 +540,10 @@ async function connectWebSocket() {
     socket.binaryType = 'arraybuffer'
     state.ws = socket
     socket.onopen = () => resolve()
-    socket.onerror = () => { state.wsReady = false; reject(new Error('WebSocket 连接失败')) }
+    socket.onerror = () => { state.wsReady = false; reject(new Error(tr('error.websocket'))) }
     socket.onclose = () => {
       state.wsReady = false
-      if (!state.recording) setStateText('已断开', '')
+      if (!state.recording) setStateText('status.disconnected', '')
       scheduleReconnect()
     }
     socket.onmessage = (event) => {
@@ -365,12 +552,12 @@ async function connectWebSocket() {
       const t = String(p.type || '')
       if (t === 'ready') {
         state.wsReady = true; state.llmEnabled = Boolean(p.llm)
-        setStateText('准备就绪', 'ready')
+        setStateText('status.ready', 'ready')
         return
       }
       if (t === 'asr') {
         const text = String(p.text || '')
-        updateResult({ asrText: text, asrMs: p.asr_ms, durationSec: p.duration_sec, placeholder: '正在接收语音...' })
+        updateResult({ asrText: text, asrMs: p.asr_ms, durationSec: p.duration_sec, placeholderKey: 'result.receiving' })
         return
       }
       if (t === 'final') {
@@ -380,13 +567,13 @@ async function connectWebSocket() {
         state.lastAsrText = asr; state.lastAiText = llm
         updateResult({
           asrText: asr, llmText: state.llmEnabled ? llm : '', asrMs: am, llmMs: state.llmEnabled ? lm : 0,
-          durationSec: p.duration_sec, placeholder: '本次没有识别到有效文本。',
+          durationSec: p.duration_sec, placeholderKey: 'result.empty',
           asrModel: p.asr_model, llmProvider: ld.provider, llmModel: ld.model,
         })
         return
       }
-      if (t === 'error') { setStateText('请求失败', ''); return }
-      if (t === 'done' && !state.recording) setStateText('准备就绪', 'ready')
+      if (t === 'error') { setStateText('status.requestFailed', ''); return }
+      if (t === 'done' && !state.recording) setStateText('status.ready', 'ready')
     }
   })
 }
@@ -411,7 +598,7 @@ async function ensureAudio() {
   await teardownAudio()
   state.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: false, noiseSuppression: true } })
   const Ctor = window.AudioContext || window.webkitAudioContext
-  if (!Ctor) throw new Error('浏览器不支持 AudioContext')
+  if (!Ctor) throw new Error(tr('error.audioContext'))
   state.audioCtx = createAudioCtx(Ctor)
   await state.audioCtx.audioWorklet.addModule('/pcm-worklet.js')
   state.sourceNode = state.audioCtx.createMediaStreamSource(state.mediaStream)
@@ -440,21 +627,21 @@ async function ensureAudio() {
 async function startRecording() {
   if (!state.config?.web_demo?.enabled || state.recording) return
   if (!state.wsReady || !state.ws || state.ws.readyState !== WebSocket.OPEN) {
-    setStateText('服务未就绪', ''); return
+    setStateText('status.notReady', ''); return
   }
   await ensureAudio()
   state.pcmChunks = []
   state.recording = true
   state.lastAsrText = ''; state.lastAiText = ''
   setRecordUI(true)
-  setStateText('录音中', 'recording')
+  setStateText('status.recording', 'recording')
   // Show result section, hide playback & clear
   els.resultSection.classList.remove('hidden')
   if (els.aiResultSection) els.aiResultSection.classList.remove('hidden')
   els.playbackSection.classList.add('hidden')
   els.clearWrap.classList.add('hidden')
   // Reset results
-  updateResult({ placeholder: '正在接收语音...' })
+  updateResult({ placeholderKey: 'result.receiving' })
   resetTimer(); startTimer(); startBlob()
   state.ws.send(JSON.stringify({ cmd: 'start', disable_ai: !state.llmEnabled }))
 }
@@ -462,7 +649,7 @@ async function stopRecording() {
   if (!state.recording) return
   state.recording = false
   setRecordUI(false)
-  setStateText('处理中', '')
+  setStateText('status.processing', '')
   clearInterval(state.timerId); state.timerId = null
   if (state.ws && state.ws.readyState === WebSocket.OPEN) state.ws.send(JSON.stringify({ cmd: 'stop' }))
   setupPlayback()
@@ -480,10 +667,11 @@ function clearResults() {
   // Reset state
   state.pcmChunks = []
   state.lastAsrText = ''; state.lastAiText = ''
+  state.lastResult = null
   if (state.audioEl) { state.audioEl.pause(); URL.revokeObjectURL(state.audioEl.src); state.audioEl = null }
   // Reset timer display
   els.timer.textContent = '00:00'
-  setStateText('准备就绪', 'ready')
+  setStateText('status.ready', 'ready')
 }
 
 /* ── Copy ── */
@@ -491,40 +679,41 @@ async function copyCard(textEl, btn) {
   const text = String(textEl.textContent || '').trim()
   if (!text || textEl.classList.contains('placeholder')) return
   await navigator.clipboard.writeText(text)
-  btn.dataset.tooltip = '已复制'
+  btn.dataset.tooltip = tr('result.copied')
   btn.classList.add('copied')
-  setTimeout(() => { btn.classList.remove('copied'); btn.dataset.tooltip = '复制文本' }, 1500)
+  setTimeout(() => { btn.classList.remove('copied'); btn.dataset.tooltip = tr('result.copy') }, 1500)
 }
 
 /* ── Rerun ASR ── */
 async function rerunAsr() {
   if (!state.pcmChunks.length) return
-  updateResult({ placeholder: '正在重新识别...', status: '重新识别中' })
+  updateResult({ placeholderKey: 'result.receiving', statusKey: 'rerun.asrRunning' })
   try {
     const hwText = (els.hotwordInput.value || '').trim()
     const hotwords = hwText ? hwText.split(/[,，]/).map(s => s.trim()).filter(Boolean) : undefined
     const result = await replayAudio({ hotwords, disableAi: true })
     state.lastAsrText = result.asrText
-    updateResult({ asrText: result.asrText, asrMs: result.asrMs, durationSec: result.durationSec, placeholder: '本次没有识别到有效文本。' })
+    updateResult({ asrText: result.asrText, asrMs: result.asrMs, durationSec: result.durationSec, placeholderKey: 'result.empty' })
   } catch (e) {
-    updateResult({ placeholder: e.message, status: '识别失败' })
+    updateResult({ placeholder: e.message, statusKey: 'rerun.asrFailed' })
   }
 }
 
 /* ── Rerun LLM ── */
 async function rerunLlm() {
   if (!state.pcmChunks.length) return
-  updateResult({ placeholder: '正在重新润色...', status: '重新润色中' })
+  updateResult({ placeholderKey: 'result.receiving', statusKey: 'rerun.aiRunning' })
   try {
     const hwText = (els.hotwordInput.value || '').trim()
     const hotwords = hwText ? hwText.split(/[,，]/).map(s => s.trim()).filter(Boolean) : undefined
-    const systemPrompt = PROMPTS[state.promptMode] || PROMPTS.faithful
+    const localePrompts = PROMPTS[state.locale] || PROMPTS.en
+    const systemPrompt = localePrompts[state.promptMode] || localePrompts.faithful
     const result = await replayAudio({ hotwords, systemPrompt })
     state.lastAiText = result.llmText
     state.lastAsrText = result.asrText
-    updateResult({ asrText: result.asrText, llmText: result.llmText, asrMs: result.asrMs, llmMs: result.llmMs, durationSec: result.durationSec, placeholder: '未生成结果。' })
+    updateResult({ asrText: result.asrText, llmText: result.llmText, asrMs: result.asrMs, llmMs: result.llmMs, durationSec: result.durationSec, placeholderKey: 'rerun.noResult' })
   } catch (e) {
-    updateResult({ placeholder: e.message, status: '润色失败' })
+    updateResult({ placeholder: e.message, statusKey: 'rerun.aiFailed' })
   }
 }
 
@@ -537,6 +726,8 @@ function setPromptMode(mode) {
 
 /* ── Boot ── */
 async function boot() {
+  applyLocale()
+
   // Init gooey blob
   initBars()
   initOrbs(BLOB_CFG.orbCount)
@@ -545,12 +736,18 @@ async function boot() {
   // Copy buttons
   if (els.copyResult) els.copyResult.addEventListener('click', () => void copyCard(els.resultText, els.copyResult).catch(() => {}))
 
+  els.languageToggle.addEventListener('click', () => {
+    state.locale = state.locale === 'en' ? 'zh-CN' : 'en'
+    localStorage.setItem('sayit.web.locale', state.locale)
+    applyLocale()
+  })
+
   // Record button
   els.recordButton.addEventListener('click', () => {
     void (state.recording ? stopRecording() : startRecording()).catch(e => {
       state.recording = false; setRecordUI(false)
       clearInterval(state.timerId); state.timerId = null
-      setStateText('录音失败', '')
+      setStateText('status.recordingFailed', '')
       console.error('Recording error:', e)
     })
   })
@@ -602,7 +799,7 @@ async function boot() {
     await loadConfig()
     if (state.config?.web_demo?.enabled) await connectWebSocket()
   } catch (e) {
-    setStateText('初始化失败', '')
+    setStateText('status.initFailed', '')
     console.error('Boot error:', e)
   }
 }

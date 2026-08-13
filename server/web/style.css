@@ -34,6 +34,11 @@ button { font: inherit; border: none; background: none; cursor: pointer; }
 .brand strong { font-size: 18px; font-weight: 500; color: var(--black); }
 .brand-name { font-family: 'Nunito', sans-serif; font-weight: 800; font-size: 22px; color: var(--black); }
 .nav-actions { display: flex; align-items: center; gap: 10px; }
+.lang-toggle {
+  min-width: 44px; height: 36px; padding: 0 12px; border-radius: 9999px;
+  color: var(--stone); border: 1px solid var(--border); font-size: 13px;
+}
+.lang-toggle:hover { color: var(--black); border-color: var(--silver); }
 .nav-link {
   width: 36px; height: 36px; border-radius: 9999px; display: grid; place-items: center;
   color: var(--stone); border: 1px solid var(--border);
@@ -170,7 +175,7 @@ h1 { font-size: clamp(36px, 6vw, 48px); line-height: 1.0; letter-spacing: -0.03e
 .copy-btn.copied .ico-copy { display: none; }
 .copy-btn.copied .ico-check { display: block; }
 .copy-btn.copied { color: #22c55e; }
-.copy-btn.copied::before { content: '已复制'; }
+.copy-btn.copied::before { content: attr(data-tooltip); }
 .rerun-btn::before { content: attr(data-tooltip); position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%); padding: 4px 8px; border-radius: 9999px; background: var(--black); color: var(--white); font-size: 11px; white-space: nowrap; opacity: 0; pointer-events: none; }
 .rerun-btn:hover::before { opacity: 1; }
 .rerun-btn.spinning svg { animation: spin 0.8s linear infinite; }
@@ -231,4 +236,16 @@ h1 { font-size: clamp(36px, 6vw, 48px); line-height: 1.0; letter-spacing: -0.03e
   .oss-inner { flex-direction: column; text-align: center; }
   .oss-actions { justify-content: center; }
   .footer-row { flex-direction: column; gap: 8px; }
+}
+
+@media (max-width: 420px) {
+  .shell { width: min(100% - 28px, 960px); }
+  .brand-icon { width: 40px; height: 40px; }
+  .nav-actions { gap: 6px; }
+  .nav-link { display: none; }
+  .btn-pill { padding-inline: 16px; }
+  .playback-row { flex-wrap: wrap; }
+  .playback-track { min-width: calc(100% - 52px); }
+  .rate-btns { margin-left: 50px; }
+  .oss-actions { flex-wrap: wrap; }
 }

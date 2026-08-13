@@ -92,7 +92,7 @@ class LLMProfile:
 @dataclass(slots=True)
 class PublicSiteConfig:
     app_name: str = "SayIt"
-    headline: str = "随口说，出色写。"
+    headline: str = "随口说，出色写"
     subheadline: str = "用说话代替打字，AI 实时把口语变成可以直接用的书面表达。"
     download_label: str = "下载 Windows 客户端"
     download_platform: str = "win32"
