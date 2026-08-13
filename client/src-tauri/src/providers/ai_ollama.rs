@@ -39,7 +39,7 @@ pub async fn polish(
         "prompt": combined
     });
 
-    let client = reqwest::Client::new();
+    let client = super::http_client::shared();
     let start = Instant::now();
 
     diag::log(
@@ -137,7 +137,7 @@ pub async fn test_connection(config: &AiProviderConfig) -> TestResult {
         "prompt": prompt
     });
 
-    let client = reqwest::Client::new();
+    let client = super::http_client::shared();
     let start = Instant::now();
 
     let result = client

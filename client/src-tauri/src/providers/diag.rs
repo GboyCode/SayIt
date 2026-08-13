@@ -90,9 +90,15 @@ fn contains_http_status(message: &str, expected: &[u16]) -> bool {
 
 fn classify_failure(stage: &str, message: &str) -> &'static str {
     let lower = message.to_ascii_lowercase();
-    if contains_http_status(message, &[401, 403])
+    // 401 才是明确的鉴权失败。**403 不是** —— 它更常见的成因是"这个请求根本不该到这儿"：
+    // CDN 按 IP 地区拒绝、账号没开通该模型、被 WAF 拦下，响应里一个字都不提密钥。
+    // 这两个状态码曾经一起归成 provider_bad_key，于是国内直连 Groq（Cloudflare 边缘
+    // 按 IP 拒，返回 403 {"error":{"message":"Forbidden"}}，连鉴权头都没被读过）
+    // 被报成「密钥被拒绝，确认复制完整、没有多余空格」—— 用户只会一遍遍重建密钥。
+    if contains_http_status(message, &[401])
         || lower.contains("unauthorized")
         || lower.contains("invalid api key")
+        || lower.contains("invalid_api_key")
         || message.contains("认证失败")
         || message.contains("鉴权")
     {
@@ -105,6 +111,10 @@ fn classify_failure(stage: &str, message: &str) -> &'static str {
         || message.contains("余额")
     {
         return "provider_rate_limit";
+    }
+    // 排在限流之后：403 + quota 字样更可能是配额问题而不是权限问题
+    if contains_http_status(message, &[403]) {
+        return "provider_forbidden";
     }
     if contains_http_status(message, &[404])
         || lower.contains("model not found")
@@ -243,6 +253,32 @@ mod tests {
         assert_eq!(classify_failure("http_status", "HTTP 429 Too Many Requests"), "provider_rate_limit");
         assert_eq!(classify_failure("http_send", "request timed out"), "provider_timeout");
         assert_eq!(classify_failure("connect", "socket closed"), "provider_unreachable");
+    }
+
+    /// 关键回归：403 不许再报成「密钥被拒绝」。
+    ///
+    /// 实测 Groq 在中国大陆 IP 上的响应就是这一行，且假密钥、真密钥、完全不带鉴权头
+    /// 三种情况返回的内容**完全相同** —— 说明请求在边缘节点就被拒了，密钥从未被验证。
+    /// 归成密钥问题会把用户引去反复重建密钥。
+    #[test]
+    fn forbidden_is_not_reported_as_a_bad_key() {
+        assert_eq!(
+            classify_failure(
+                "http_status",
+                r#"API error 403 Forbidden [http=403]: {"error":{"message":"Forbidden"}}"#
+            ),
+            "provider_forbidden"
+        );
+        // 403 但服务端明确提了密钥无效，仍然算密钥问题
+        assert_eq!(
+            classify_failure("http_status", "HTTP 403: Invalid API Key"),
+            "provider_bad_key"
+        );
+        // 403 但说的是配额，归到限流而不是权限
+        assert_eq!(
+            classify_failure("http_status", "HTTP 403: quota exceeded"),
+            "provider_rate_limit"
+        );
     }
 
     /// 关键回归：按字节切中文会 panic。历史上 doubao / ollama / qwen / mimo 四处

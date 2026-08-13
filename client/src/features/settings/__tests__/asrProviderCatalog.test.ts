@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   ASR_PLATFORMS,
   ASR_PROVIDERS,
+  asrAvailabilityLabel,
   describeAsrMissing,
   effectiveAsrCredentials,
   emptyAsrProfile,
@@ -29,7 +30,17 @@ describe('ASR_PROVIDERS 结构性不变量', () => {
       expect(p.label.trim()).not.toBe('')
       expect(p.model.trim()).not.toBe('')
       expect(p.blurb.trim()).not.toBe('')
-      expect(p.availability).toBe('mainland_china')
+      expect(['mainland_china', 'global']).toContain(p.availability)
+    }
+  })
+
+  // 原来这里断言的是「每一家都是 mainland_china」。那在只有一个取值时看着像不变量，
+  // 其实只是把当时的事实写死了 —— 加入海外供应商后它拦的不是 bug，是新功能。
+  // 真正该守的是：每个 availability 都有对应的展示文案。少一个分支不会报错，
+  // 只会让卡片上那行地区说明变成空白。
+  it('每种地区都有对应的展示文案', () => {
+    for (const p of ASR_PROVIDERS) {
+      expect(asrAvailabilityLabel(p).trim()).not.toBe('')
     }
   })
 

@@ -235,15 +235,31 @@ impl PttKeyConfig {
 
     fn fallback() -> Self {
         Self {
-            setting: "ShiftRight".to_string(),
-            vk_codes: vec![0xA1],
+            setting: DEFAULT_PTT_SETTING.to_string(),
+            vk_codes: vec![DEFAULT_PTT_VK],
             modifier_mask: 1,
         }
     }
 }
 
+/// 「按住说话」的默认键，同时也是配置非法时的回退。
+///
+/// **不能是 Shift**：长按右 Shift 约 8 秒会触发 Windows 筛选键，那之后我们收不到
+/// 这次「松开」，录音不会随手指抬起而结束。这里曾经是 ShiftRight，于是每台新装的
+/// 机器开箱就绑在那个键上（前端也一样，见 services/defaults.ts）。
+/// 右 Ctrl 位置相近、没有辅助功能陷阱，也不和免提的默认键（右 Alt）撞。
+///
+/// ⚠️ 改这里要同步：src/services/defaults.ts、storage/mod.rs 的种子默认值、
+/// main.rs 读设置时的兜底。
+const DEFAULT_PTT_SETTING: &str = "ControlRight";
+const DEFAULT_PTT_VK: u32 = 0xA3;
+
 /// 解析向后兼容的 PTT 物理键格式。旧单键仍是单成员；组合成员用 `+` 分隔。
-/// 非法或未知非空值安全回退到 ShiftRight，避免整串被误当成 AltRight。
+///
+/// 非法或未知非空值安全回退到默认键，避免整串被误当成别的键。
+/// 注意这里**不禁止 Shift**：老用户存的可能就是 ShiftRight，那些绑定必须照原样生效。
+/// 「不许再新设 Shift」是前端校验的事（lib/shortcutKeys.ts），不是解析器的事 ——
+/// 在这里连解析都拒掉，等于用户没改设置说话键就自己变了。
 fn ptt_key_config(setting: &str) -> PttKeyConfig {
     if setting.is_empty() {
         return PttKeyConfig::disabled();
@@ -378,8 +394,8 @@ struct HookSharedState {
     /// hook 生命周期标记，供独立成员状态看门狗在重配/停止时退出。
     ptt_hook_alive: AtomicBool,
     hands_free_active: AtomicBool,
-    /// 免提键是否处于"已按下"状态。只有先收到过真实（未被 synthetic 过滤）的 keydown，
-    /// 随后的 keyup 才允许触发 toggle。用于挡掉远程桌面等场景下的"孤儿 keyup"幻影按键。
+    /// 免提键是否处于"已按下"状态。首个真实 keydown 触发 toggle，repeat down 被忽略；
+    /// 配对 keyup（包括被标成 synthetic 的 up）负责清零，让下一次按下可以再次触发。
     hf_key_down: AtomicBool,
     /// VK codes for hands-free toggle key (empty = not using hook for hands-free)
     hf_vk_codes: Vec<u32>,
@@ -425,6 +441,16 @@ fn begin_ptt_press(active_generation: &AtomicU64, generation: &AtomicU64) -> Opt
         .compare_exchange(0, gen, Ordering::SeqCst, Ordering::SeqCst)
         .ok()
         .map(|_| gen)
+}
+
+/// 免提键只在一次物理按下的首个 keydown 触发；Windows 随后的 repeat down 被忽略。
+fn begin_hf_press(key_down: &AtomicBool) -> bool {
+    !key_down.swap(true, Ordering::SeqCst)
+}
+
+/// 清除免提按下状态。返回 true 表示确实存在一枚需要配对消费的 keyup。
+fn end_hf_press(key_down: &AtomicBool) -> bool {
+    key_down.swap(false, Ordering::SeqCst)
 }
 
 /// 幂等认领一次释放，但暂不允许下一次 down。认领者必须在 up 成功入队后调用
@@ -1517,15 +1543,10 @@ unsafe extern "system" fn low_level_mouse_proc(
             }
 
             if is_hf_key {
-                // 免提：按下即吞，抬起触发 toggle（需先配对过真实按下，防孤儿抬起误触）。
+                // 免提在首个按下时立即触发；hf_key_down 过滤鼠标驱动可能产生的重复 down。
                 if is_down {
                     consumed = true;
-                    state.hf_key_down.store(true, Ordering::SeqCst);
-                }
-                if is_up {
-                    let had_down = state.hf_key_down.swap(false, Ordering::SeqCst);
-                    if had_down {
-                        consumed = true;
+                    if begin_hf_press(&state.hf_key_down) {
                         HOOK_ACTION_TX.with(|tx| {
                             if let Some(sender) = tx.borrow().as_ref() {
                                 if sender.send(HookAction::HfToggle { vk }).is_err() {
@@ -1534,6 +1555,9 @@ unsafe extern "system" fn low_level_mouse_proc(
                             }
                         });
                     }
+                }
+                if is_up && end_hf_press(&state.hf_key_down) {
+                    consumed = true;
                 }
             }
         }
@@ -1639,6 +1663,12 @@ unsafe extern "system" fn low_level_keyboard_proc(
             if is_kup {
                 HOOK_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
+                        // 真实 HF down 的配对 up 偶尔会被远程桌面/驱动标成 synthetic。
+                        // 即使不把它当作一次触发，也必须清掉按下状态，否则下一次真实按下
+                        // 会被误认成 repeat 而没有反应。
+                        if state.hf_vk_codes.contains(&vk) {
+                            consume_paired_up = end_hf_press(&state.hf_key_down);
+                        }
                         if let Some(member_index) = ptt_member_index(&state.ptt_vk_codes, vk) {
                             let member_bit = 1_u64 << member_index;
                             consume_paired_up = state
@@ -1839,27 +1869,14 @@ unsafe extern "system" fn low_level_keyboard_proc(
                     }
                 }
 
-                // 免提键：keyup 时触发 toggle（避免和 keydown repeat 冲突）。
-                // ⚠️ 必须校验配对的 keydown：远程桌面等场景下，鼠标点击跨会话边界会让
-                // Windows 合成幻影 Alt——其 keydown 常带 INJECTED 标志被 synthetic 过滤器挡掉，
-                // 但残留的 keyup 会漏进来。若在 keyup 上无条件 toggle，就会被这种"孤儿 keyup"
-                // 误触发（且一次点击可能爆发多次）。因此只有先记录过真实 keydown（hf_key_down=true）
-                // 的 keyup 才 toggle。
+                // 免提键：首次 keydown 立即触发，后续 repeat down 忽略；keyup 只负责重新布防。
+                // 合成 keydown 仍在上方被过滤，所以远程桌面的幻影 Alt 不会触发录音。
                 if is_hf_key {
                     let is_up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
                     let is_down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
                     if is_down {
                         consumed = true; // 吞掉 keydown 防止系统处理
-                        state.hf_key_down.store(true, Ordering::SeqCst);
-                    }
-                    if is_up {
-                        // Alt 类免提键的 keyup 也吞掉，避免激活前台菜单栏（与 PTT 同理）。
-                        if is_alt_key {
-                            consumed = true;
-                        }
-                        // 只有配对过真实 keydown 才 toggle；孤儿 keyup（幻影）直接忽略。
-                        let had_down = state.hf_key_down.swap(false, Ordering::SeqCst);
-                        if had_down {
+                        if begin_hf_press(&state.hf_key_down) {
                             HOOK_ACTION_TX.with(|tx| {
                                 if let Some(sender) = tx.borrow().as_ref() {
                                     if sender.send(HookAction::HfToggle { vk }).is_err() {
@@ -1867,6 +1884,12 @@ unsafe extern "system" fn low_level_keyboard_proc(
                                     }
                                 }
                             });
+                        }
+                    }
+                    if is_up {
+                        // 吞掉与首个 down 配对的 up，避免向目标程序留下孤立的按键事件。
+                        if end_hf_press(&state.hf_key_down) || is_alt_key {
+                            consumed = true;
                         }
                     }
                 }
@@ -1884,13 +1907,24 @@ unsafe extern "system" fn low_level_keyboard_proc(
 #[cfg(test)]
 mod tests {
     use super::{
-        begin_ptt_press, claim_ptt_release, complete_ptt_release, is_mouse_button_setting,
-        is_mouse_vk, press_ptt_member, ptt_key_config, release_ptt_member,
-        should_consume_combo_main_down, SINGLE_KEY_TABLE,
+        begin_hf_press, begin_ptt_press, claim_ptt_release, complete_ptt_release, end_hf_press,
+        is_mouse_button_setting, is_mouse_vk, press_ptt_member, ptt_key_config, release_ptt_member,
+        should_consume_combo_main_down, DEFAULT_PTT_SETTING, DEFAULT_PTT_VK, SINGLE_KEY_TABLE,
     };
     #[cfg(windows)]
     use super::queue_ptt_release;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    #[test]
+    fn hands_free_triggers_on_first_down_and_rearms_on_up() {
+        let key_down = AtomicBool::new(false);
+
+        assert!(begin_hf_press(&key_down));
+        assert!(!begin_hf_press(&key_down), "repeat down must not toggle again");
+        assert!(end_hf_press(&key_down));
+        assert!(!end_hf_press(&key_down), "orphan up is ignored");
+        assert!(begin_hf_press(&key_down), "next physical press is re-armed");
+    }
 
     #[test]
     fn ptt_release_is_idempotent_for_normal_or_synthetic_keyup() {
@@ -1981,15 +2015,35 @@ mod tests {
     }
 
     #[test]
-    fn invalid_ptt_setting_safely_falls_back_to_shift_right() {
+    fn invalid_ptt_setting_safely_falls_back_to_the_default_key() {
         let config = ptt_key_config("ControlLeft+UnknownKey");
-        assert_eq!(config.setting, "ShiftRight");
-        assert_eq!(config.vk_codes, vec![0xA1]);
+        assert_eq!(config.setting, DEFAULT_PTT_SETTING);
+        assert_eq!(config.vk_codes, vec![DEFAULT_PTT_VK]);
         assert_eq!(config.modifier_mask, 0b1);
 
         let duplicate_family = ptt_key_config("ControlLeft+ControlRight+KeyK");
-        assert_eq!(duplicate_family.setting, "ShiftRight");
-        assert_eq!(duplicate_family.vk_codes, vec![0xA1]);
+        assert_eq!(duplicate_family.setting, DEFAULT_PTT_SETTING);
+        assert_eq!(duplicate_family.vk_codes, vec![DEFAULT_PTT_VK]);
+    }
+
+    /// 默认键绝不能是 Shift：那正是会触发 Windows 筛选键、让录音停不下来的键。
+    /// 有人把默认值改回去时，这条会拦住。
+    #[test]
+    fn default_ptt_key_is_never_shift() {
+        assert!(!DEFAULT_PTT_SETTING.contains("Shift"));
+        assert_ne!(DEFAULT_PTT_VK, 0xA0);
+        assert_ne!(DEFAULT_PTT_VK, 0xA1);
+        // 默认键必须自身可解析，否则 fallback 会陷入"回退到一个非法值"
+        assert_eq!(ptt_key_config(DEFAULT_PTT_SETTING).setting, DEFAULT_PTT_SETTING);
+    }
+
+    /// 老用户存的 ShiftRight 必须继续被解析、继续生效。
+    /// 前端不再让人新设 Shift，但已经存在的绑定不能因为升级就失灵。
+    #[test]
+    fn legacy_shift_binding_still_parses() {
+        let legacy = ptt_key_config("ShiftRight");
+        assert_eq!(legacy.setting, "ShiftRight");
+        assert_eq!(legacy.vk_codes, vec![0xA1]);
     }
 
     #[test]

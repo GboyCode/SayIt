@@ -151,7 +151,7 @@ pub async fn transcribe(
         }
     });
 
-    let client = reqwest::Client::new();
+    let client = super::http_client::shared();
     let start = Instant::now();
 
     let resp = client
@@ -260,7 +260,7 @@ pub async fn test_connection(config: &AsrProviderConfig) -> TestResult {
         }
     });
 
-    let client = reqwest::Client::new();
+    let client = super::http_client::shared();
     let start = Instant::now();
 
     let result = client

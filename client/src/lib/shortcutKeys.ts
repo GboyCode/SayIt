@@ -76,6 +76,29 @@ export const PTT_MODIFIER_CODES = [
 const PTT_MODIFIER_SET = new Set<string>(PTT_MODIFIER_CODES)
 const PTT_MOUSE_CODES = new Set(['XButton1', 'XButton2', 'MButton'])
 
+/**
+ * 不允许出现在「按住说话」里的按键。
+ *
+ * Shift 与 Windows 的辅助功能快捷方式直接冲突，而冲突的触发条件恰好就是 PTT 的
+ * 使用方式：
+ *   · 长按右 Shift 约 8 秒 → 筛选键。它一旦弹出，我们收不到那次「松开」，
+ *     录音不会随手指抬起而结束（这是之前只给警告、用户仍然踩到的那个问题）。
+ *   · 连按 Shift 五次 → 粘滞键。短句口述本来就是一串快速的按下松开。
+ * PTT 必须被按住数秒、还经常被连续短按，两条正好全中。
+ *
+ * 所以 Shift 不做成"可以选但给个警告"——警告只能让用户在出问题之后回来读一遍，
+ * 挡不住任何人。左右都禁：单键和组合成员都算，`Ctrl+右Shift` 一样会触发筛选键。
+ *
+ * **只约束 PTT。** 免提、预设切换那类"按一下"的快捷键（走 accelerator 那条校验）
+ * 照旧可以用 Shift —— 它们不长按也不连按，两个触发条件都碰不到。
+ */
+const PTT_FORBIDDEN_CODES = new Set(['ShiftLeft', 'ShiftRight'])
+
+/** 这个按键能不能用于「按住说话」。 */
+export function isPTTForbiddenCode(code: string): boolean {
+  return PTT_FORBIDDEN_CODES.has(code)
+}
+
 // i18n-allow-start: Windows VK 源标签；展示层由 getSingleKeyDisplay 翻译覆盖
 const PTT_EXTRA_KEY_DEFS: SingleKeyDef[] = [
   { setting: 'MetaLeft', vk: 0x5b, label: '左 Win' },
@@ -230,10 +253,19 @@ export function pttShortcutHasModifier(setting: string): boolean {
   return parsePTTShortcut(setting).some(isPTTModifierCode)
 }
 
-/** 按住说话可用、但可能与 Windows 辅助功能冲突的配置提示。 */
+/**
+ * 已保存的按住说话配置需要提醒用户的地方。
+ *
+ * 目前只有一种：老用户在 Shift 还能选的时候绑上了它。
+ *
+ * 为什么不在升级时自动改掉：那是在用户不知情的情况下换掉他的说话键，比留着更糟。
+ * 也不在这里直接停掉它——那等于升级后按住说话突然没反应，而用户未必会想到来设置页。
+ * 所以旧绑定继续生效，只是在设置里常驻一行提示让他换。新绑定由
+ * getPTTShortcutValidationError 硬拦。
+ */
 export function getPTTShortcutWarning(setting: string): string | null {
-  return parsePTTShortcut(canonicalizePTTShortcut(setting)).includes('ShiftRight')
-    ? t('shortcut.warning.shiftRightFilterKeys')
+  return parsePTTShortcut(canonicalizePTTShortcut(setting)).some(isPTTForbiddenCode)
+    ? t('shortcut.warning.shiftNoLongerSupported')
     : null
 }
 
@@ -283,8 +315,24 @@ export function getAcceleratorShortcutValidationError(accelerator: string): stri
   return null
 }
 
+export interface PTTValidationOptions {
+  /**
+   * 是否放行「历史上曾经能选、现在已禁用」的按键（目前只有 Shift）。
+   *
+   * 读取**已保存的配置**时必须传 true。否则老用户的 Shift 绑定会被判成非法，
+   * 而几个调用点碰到非法值的做法是回落到默认键 —— 用户一个设置都没改，
+   * 说话键却自己变了，这比让他继续用 Shift 更糟。
+   *
+   * 校验**用户新输入**时保持 false（默认），这样 Shift 绑不上去。
+   */
+  allowLegacyReservedKeys?: boolean
+}
+
 /** 返回本地化的错误提示；null 表示可保存。 */
-export function getPTTShortcutValidationError(setting: string): string | null {
+export function getPTTShortcutValidationError(
+  setting: string,
+  options: PTTValidationOptions = {},
+): string | null {
   const rawCodes = setting.split('+').map((part) => part.trim())
   const codes = rawCodes.filter(Boolean)
   if (codes.length === 0) return t('shortcut.error.empty')
@@ -294,6 +342,11 @@ export function getPTTShortcutValidationError(setting: string): string | null {
 
   const unsupported = codes.find((code) => !(code in PTT_CODE_TO_VK))
   if (unsupported) return t('shortcut.error.unsupportedKey', { key: unsupported })
+
+  // 排在单键/组合的分支之前：Shift 无论单独用还是当组合成员都不行
+  if (!options.allowLegacyReservedKeys && codes.some(isPTTForbiddenCode)) {
+    return t('shortcut.error.shiftReserved')
+  }
 
   if (codes.length === 1) {
     const code = codes[0]
@@ -343,8 +396,11 @@ export function getPTTShortcutValidationError(setting: string): string | null {
   return null
 }
 
-export function isValidPTTShortcut(setting: string): boolean {
-  return getPTTShortcutValidationError(setting) === null
+export function isValidPTTShortcut(
+  setting: string,
+  options: PTTValidationOptions = {},
+): boolean {
+  return getPTTShortcutValidationError(setting, options) === null
 }
 
 function pttMainCodeToAccelerator(code: string): string {

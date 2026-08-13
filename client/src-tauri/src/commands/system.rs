@@ -423,9 +423,50 @@ pub async fn download_update(app: AppHandle, url: String, sha512: Option<String>
         }
     }
 
+    // 新包已经校验通过，把同目录里其它版本的安装包删掉。
+    // 旧流程下载完立刻安装，包只存在几秒；现在它按设计等到用户点更新或退出时才用，
+    // 于是每升一次版就在 %TEMP% 里多躺一个十几 MB 的安装包，没人清。
+    prune_stale_packages(&temp_dir, &filename);
+
     emit_update_progress(&app, downloaded, total.max(downloaded), "completed", None);
 
     Ok(file_path.to_string_lossy().to_string())
+}
+
+/// 删掉更新目录里除 keep 之外的所有文件。
+///
+/// 只在新包**校验通过之后**调用：下载失败时磁盘上那个旧包可能还是待安装的有效包，
+/// 提前清理等于把用户已经下好的更新弄丢，还得重下一遍。
+/// 删不掉（被占用等）只记日志不报错 —— 清理失败不该让一次成功的下载变成失败。
+fn prune_stale_packages(dir: &std::path::Path, keep: &str) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let matches_keep = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n == keep);
+        if matches_keep {
+            continue;
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => removed += 1,
+            Err(e) => write_log_line(&format!(
+                "[update] could not remove the stale package {}: {}",
+                path.display(),
+                e
+            )),
+        }
+    }
+    if removed > 0 {
+        write_log_line(&format!("[update] removed {} stale update package(s)", removed));
+    }
 }
 
 /// 拉起 NSIS 安装程序（/S 静默）。

@@ -1,7 +1,7 @@
 use serde::Serialize;
 use serde_json::Value;
 use tauri::{AppHandle, State};
-use crate::context::ContextDetector;
+use crate::context::{AppContext, ContextDetector};
 use crate::inject;
 use crate::window::WindowState;
 
@@ -76,8 +76,34 @@ pub fn get_probe_result(detector: State<ContextDetector>) -> Result<Value, Strin
     let ctx = detector.capture("probe");
     let completed_at = chrono::Utc::now().timestamp_millis();
 
+    Ok(probe_result_for_context(&ctx, started_at, completed_at))
+}
+
+/// 录音启动只捕获一次前台窗口，同时返回提示词路由所需的完整上下文与插字探测结果。
+/// 过去前端连续调用 get_active_app_context + get_probe_result，底层 UI Automation 会
+/// 对同一个窗口完整扫描两遍，既增加热键延迟，也给两次捕获之间的焦点变化留下竞态。
+#[tauri::command]
+pub fn get_recording_context(detector: State<ContextDetector>) -> Result<Value, String> {
+    let started_at = chrono::Utc::now().timestamp_millis();
+    let ctx = detector.capture("recording_start");
+    let completed_at = chrono::Utc::now().timestamp_millis();
+    let app_context = serde_json::to_value(&ctx).map_err(|e| e.to_string())?;
+    let probe = probe_result_for_context(&ctx, started_at, completed_at);
+
+    Ok(serde_json::json!({
+        "appContext": app_context,
+        "probe": probe,
+    }))
+}
+
+fn probe_result_for_context(
+    ctx: &AppContext,
+    started_at: i64,
+    completed_at: i64,
+) -> Value {
+
     // Determine editability using the same heuristic as inject
-    let editable = crate::inject::is_likely_editable_pub(&ctx);
+    let editable = crate::inject::is_likely_editable_pub(ctx);
 
     // Check if the target is our own process
     let is_current_app_process = {
@@ -96,19 +122,19 @@ pub fn get_probe_result(detector: State<ContextDetector>) -> Result<Value, Strin
 
     let probe_id = started_at; // use timestamp as probe ID
 
-    let result = serde_json::json!({
+    serde_json::json!({
         "editable": editable,
-        "hwnd": ctx.hwnd,
-        "focusHwnd": ctx.focus_hwnd,
+        "hwnd": &ctx.hwnd,
+        "focusHwnd": &ctx.focus_hwnd,
         "pid": ctx.pid,
         "tid": ctx.tid,
-        "process": ctx.process_name,
+        "process": &ctx.process_name,
         "detail": format!("class={} focusClass={} hasCaret={}", ctx.window_class, ctx.focus_class, ctx.has_caret),
         "hasCaret": ctx.has_caret,
-        "windowClass": ctx.window_class,
-        "focusClass": ctx.focus_class,
-        "controlType": ctx.control_type,
-        "automationId": ctx.automation_id,
+        "windowClass": &ctx.window_class,
+        "focusClass": &ctx.focus_class,
+        "controlType": &ctx.control_type,
+        "automationId": &ctx.automation_id,
         "isValuePatternAvailable": ctx.is_value_pattern_available,
         "isKeyboardFocusable": ctx.is_keyboard_focusable,
         "isEnabled": ctx.is_enabled,
@@ -118,9 +144,7 @@ pub fn get_probe_result(detector: State<ContextDetector>) -> Result<Value, Strin
         "startedAt": started_at,
         "completedAt": completed_at,
         "isCurrentAppProcess": is_current_app_process,
-    });
-
-    Ok(result)
+    })
 }
 
 #[tauri::command]

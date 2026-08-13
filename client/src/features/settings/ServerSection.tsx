@@ -230,23 +230,23 @@ export default function ServerSection() {
 
       <Card>
         <CardContent className="p-6">
-          <h2 id="server-language-heading" className="mb-3 text-lg font-semibold">{t('server.languageTitle')}</h2>
-          <Segmented
-            labelledBy="server-language-heading"
-            value={asrLanguage}
-            options={[
-              { value: 'auto', label: t('common.auto') },
-              { value: 'zh', label: t('local.lang.zh') },
-              { value: 'en', label: t('local.lang.en') },
-            ]}
-            onChange={(value) => { setAsrLanguage(value); void setSetting('server.language', value) }}
-          />
-          {/* 说清作用范围：这个值只跟着服务器模式走（随每次识别发给服务端，
-              由 asr.py 的 _resolve_language 映射成 Chinese/English，auto = 让模型自检）。
-              本地模式有它自己的一份，云 API 模式没有这个选项。 */}
-          <p className="mt-2 text-xs text-muted-foreground">
-            {t('server.languageNote')}
-          </p>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <h2 id="server-language-heading" className="text-lg font-semibold">{t('server.languageTitle')}</h2>
+              <p className="mt-2 text-xs text-muted-foreground">{t('server.languageNote')}</p>
+            </div>
+            <Segmented
+              labelledBy="server-language-heading"
+              value={asrLanguage}
+              options={[
+                { value: 'auto', label: t('common.auto') },
+                { value: 'zh', label: t('local.lang.zh') },
+                { value: 'en', label: t('local.lang.en') },
+              ]}
+              onChange={(value) => { setAsrLanguage(value); void setSetting('server.language', value) }}
+              className="shrink-0 justify-end"
+            />
+          </div>
         </CardContent>
       </Card>
     </>

@@ -3,6 +3,7 @@
 pub mod types;
 pub mod prompt;
 pub mod diag;
+pub mod http_client;
 pub mod ai_openai_compat;
 pub mod ai_ollama;
 pub mod asr_doubao;
@@ -11,6 +12,7 @@ pub mod asr_doubao_realtime;
 pub mod asr_qwen;
 pub mod asr_qwen_omni;
 pub mod asr_mimo;
+pub mod asr_groq;
 pub mod asr_qwen_realtime;
 pub mod doubao_auth;
 pub mod doubao_protocol;

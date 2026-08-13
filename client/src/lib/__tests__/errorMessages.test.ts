@@ -67,6 +67,27 @@ describe('describeProviderError', () => {
     expect(describeProviderError(new Error('HTTP 429 rate limit')).message).toContain('限流')
   })
 
+  // 实测：Groq 在中国大陆 IP 上返回 403 {"error":{"message":"Forbidden"}}，
+  // 而假密钥、真密钥、完全不带鉴权头三种情况的响应**完全相同** —— 请求在边缘节点
+  // 就被拒了，密钥从未被验证。归成「密钥被拒绝」会把用户引去反复重建密钥。
+  it('403 不报成密钥问题，而是指出可能是地区或权限', () => {
+    // 实际链路：Rust 已经分好类，前端只按错误码取文案
+    const tagged = describeProviderError('sayit_error:provider_forbidden:API error 403 Forbidden [http=403]')
+    expect(tagged.code).toBe('provider_forbidden')
+    expect(tagged.message).not.toContain('密钥被拒绝')
+    expect(tagged.action).toBe('switch_source')
+
+    // 退路：拿不到错误码时按文本分类，也不能落回「密钥被拒绝」。
+    // 这里刻意用 `[http=403]` —— 那是 diag::http_summary 的格式，
+    // 曾经因为正则认不出来而被归成"认不出的错误"。
+    const raw = describeProviderError(new Error('API error 403 Forbidden [http=403]: {"error":{"message":"Forbidden"}}'))
+    expect(raw.code).toBe('provider_forbidden')
+  })
+
+  it('403 但服务端明确说密钥无效时，仍然算密钥问题', () => {
+    expect(describeProviderError(new Error('HTTP 403: Invalid API key')).code).toBe('provider_bad_key')
+  })
+
   it('模型未开通给出换供应商的方向', () => {
     expect(describeProviderError(new Error('model not found')).message).toContain('模型')
   })

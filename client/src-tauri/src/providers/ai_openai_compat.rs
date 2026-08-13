@@ -8,8 +8,10 @@ use std::time::Instant;
 
 const SCOPE: &str = "ai/openai-compat";
 
-static HTTP_CLIENT: once_cell::sync::Lazy<reqwest::Client> =
-    once_cell::sync::Lazy::new(reqwest::Client::new);
+/// 共享客户端（带 User-Agent，缺了会被 nginx/WAF 网关拦成 403，见 `http_client`）
+fn http() -> &'static reqwest::Client {
+    super::http_client::shared()
+}
 
 /// 按供应商关闭校对场景不需要的思考模式。
 fn configure_thinking(body: &mut serde_json::Value, config: &AiProviderConfig) {
@@ -93,7 +95,7 @@ pub async fn polish(
         ),
     );
 
-    let mut req = HTTP_CLIENT
+    let mut req = http()
         .post(&url)
         .header("Authorization", format!("Bearer {}", config.api_key))
         .header("Content-Type", "application/json");
@@ -198,10 +200,17 @@ pub async fn test_connection(config: &AiProviderConfig) -> TestResult {
     let system_prompt = "Reply with OK only. Do not output anything else.";
     let user_prompt = "Connection test";
 
+    // max_tokens 不能贴着 "OK" 两个字省：
+    //   1) 有网关直接规定下限 —— 实测某内网 LiteLLM 网关上的 gpt-5 系模型给 10 会返回
+    //      HTTP 500 `integer_below_min_value ... Expected a value >= 16`，看起来像服务坏了，
+    //      其实是我们把上限压得太低；
+    //   2) 推理型模型会先花掉一部分 output token 想事情，额度太小时 content 是空的，
+    //      测试就会显示「连接成功，回复：(空)」，等于白测。
+    // 64 足够覆盖这两种情况，代价可以忽略。
     let mut body = serde_json::json!({
         "model": config.model,
         "temperature": 0,
-        "max_tokens": 10,
+        "max_tokens": 64,
         "messages": [
             { "role": "system", "content": system_prompt },
             { "role": "user", "content": user_prompt }
@@ -211,7 +220,7 @@ pub async fn test_connection(config: &AiProviderConfig) -> TestResult {
 
     let start = Instant::now();
 
-    let mut req = HTTP_CLIENT
+    let mut req = http()
         .post(&url)
         .header("Authorization", format!("Bearer {}", config.api_key))
         .header("Content-Type", "application/json");

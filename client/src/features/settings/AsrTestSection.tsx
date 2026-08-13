@@ -179,7 +179,7 @@ export default function AsrTestSection({ workMode }: { workMode: WorkMode }) {
     <Card>
       <CardContent className="p-6">
         {/* flex-wrap：最小窗口下标题 + 两个按钮挤一行会溢出 */}
-        <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
             <h2 className="text-lg font-semibold">{t('asrTest.title')}</h2>
             {/* 这张卡只测 ASR。服务器模式下请求里写着 disable_ai: true，本地和云 API 也
@@ -190,14 +190,13 @@ export default function AsrTestSection({ workMode }: { workMode: WorkMode }) {
             </p>
           </div>
           <div className="flex shrink-0 gap-2">
-            <Button size="sm" variant="outline" className="h-9 gap-1.5" onClick={() => void handlePlay()}>
+            <Button size="sm" variant="outline" className="gap-1.5" onClick={() => void handlePlay()}>
               {playing ? <Pause className="h-3.5 w-3.5" aria-hidden /> : <Play className="h-3.5 w-3.5" aria-hidden />}
               {playing ? t('asrTest.pause') : t('asrTest.play')}
             </Button>
             <Button
               size="sm"
               variant="outline"
-              className="h-9"
               onClick={() => void handleTest()}
               disabled={testing || draftDirty}
             >

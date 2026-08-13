@@ -1,7 +1,7 @@
 // 供应商注册表 — Tauri commands 入口
 
 use super::types::*;
-use super::{ai_openai_compat, ai_ollama, asr_doubao, asr_doubao_stream, asr_qwen, asr_qwen_omni, asr_mimo};
+use super::{ai_openai_compat, ai_ollama, asr_doubao, asr_doubao_stream, asr_qwen, asr_qwen_omni, asr_mimo, asr_groq};
 use crate::error_protocol;
 
 /// 云端 AI 校对（Tauri command）
@@ -9,7 +9,9 @@ use crate::error_protocol;
 pub async fn cloud_polish(request: CloudPolishRequest) -> Result<AiResult, String> {
     let config = &request.ai_config;
     match config.provider.as_str() {
-        "openai_compat" | "deepseek" | "doubao" | "qwen" | "mimo" => {
+        // Groq 是标准的 OpenAI 兼容 chat/completions，直接复用通用实现，
+        // 不需要单独的文件（base_url 已带 /v1，normalize_base_url 会原样保留）。
+        "openai_compat" | "deepseek" | "doubao" | "qwen" | "mimo" | "groq" => {
             ai_openai_compat::polish(
                 &request.text,
                 config,
@@ -33,7 +35,7 @@ pub async fn cloud_polish(request: CloudPolishRequest) -> Result<AiResult, Strin
 #[tauri::command]
 pub async fn test_ai_connection(config: AiProviderConfig) -> Result<TestResult, String> {
     match config.provider.as_str() {
-        "openai_compat" | "deepseek" | "doubao" | "qwen" | "mimo" => {
+        "openai_compat" | "deepseek" | "doubao" | "qwen" | "mimo" | "groq" => {
             Ok(ai_openai_compat::test_connection(&config).await)
         }
         "ollama" => {
@@ -93,6 +95,15 @@ pub async fn cloud_transcribe(request: CloudTranscribeRequest) -> Result<AsrResu
             )
             .await
         }
+        "groq_whisper" => {
+            asr_groq::transcribe(
+                &request.audio_b64,
+                request.sample_rate,
+                config,
+                &request.hotwords,
+            )
+            .await
+        }
         other => Err(error_protocol::encode("connect_failed", format!("ASR provider \"{}\" is not implemented", other))),
     }
 }
@@ -106,6 +117,7 @@ pub async fn test_asr_connection(config: AsrProviderConfig) -> Result<TestResult
         "qwen" | "aliyun" | "qwen_realtime" => Ok(asr_qwen::test_connection(&config).await),
         "qwen_omni" => Ok(asr_qwen_omni::test_connection(&config).await),
         "mimo" => Ok(asr_mimo::test_connection(&config).await),
+        "groq_whisper" => Ok(asr_groq::test_connection(&config).await),
         other => Err(error_protocol::encode("connect_failed", format!("ASR provider \"{}\" is not implemented", other))),
     }
 }

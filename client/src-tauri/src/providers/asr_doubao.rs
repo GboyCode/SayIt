@@ -112,7 +112,7 @@ pub async fn transcribe(
         "request": request_params
     });
 
-    let client = reqwest::Client::new();
+    let client = super::http_client::shared();
     let start = Instant::now();
 
     let mut req = client
@@ -273,7 +273,7 @@ pub async fn test_connection(config: &AsrProviderConfig) -> TestResult {
         "request": { "model_name": "bigmodel" }
     });
 
-    let client = reqwest::Client::new();
+    let client = super::http_client::shared();
     let start = Instant::now();
 
     let mut req = client

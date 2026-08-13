@@ -21,6 +21,7 @@ export type FriendlyErrorCode =
   | 'provider_timeout'
   | 'provider_unreachable'
   | 'provider_bad_key'
+  | 'provider_forbidden'
   | 'provider_rate_limit'
   | 'provider_no_model'
   | 'download_network'
@@ -57,6 +58,7 @@ const FRIENDLY_ERROR_CODES = new Set<FriendlyErrorCode>([
   'provider_timeout',
   'provider_unreachable',
   'provider_bad_key',
+  'provider_forbidden',
   'provider_rate_limit',
   'provider_no_model',
   'download_network',
@@ -85,9 +87,17 @@ function decodeError(error: unknown): DecodedError {
     : { code: null, text }
 }
 
-/** 从各种异常文本里抠出 HTTP 状态码（`HTTP 401` / `status: 403` / `(404)`） */
+/**
+ * 从各种异常文本里抠出 HTTP 状态码（`HTTP 401` / `status: 403` / `http=403` / `(404)`）。
+ *
+ * `http=403` 这一种是**我们自己**的格式：Rust 侧 `diag::http_summary` 写的就是
+ * `[http=403 x-request-id=…]`。原来的正则把 `[:=]?` 只挂在 status 那个分支上，
+ * 于是 `http=403` 认不出来 —— 我们自己产出的诊断串，自己的解析器读不懂。
+ * 平时不显形是因为 Rust 会把稳定错误码一起带过来（走 stableCode 分支），
+ * 只有拿不到错误码、退回按文本分类时才会暴露成"认不出的错误"。
+ */
 function extractHttpStatus(text: string): number | null {
-  const match = text.match(/\b(?:HTTP|status(?:\s*code)?\s*[:=]?)\s*(\d{3})\b/i)
+  const match = text.match(/\b(?:HTTP|status(?:\s*code)?)\s*[:=]?\s*(\d{3})\b/i)
     || text.match(/\((\d{3})\)/)
   if (!match) return null
   const code = Number(match[1])
@@ -175,7 +185,10 @@ export function describeProviderError(error: unknown): FriendlyError {
       action: 'retry',
     }
   }
-  if (stableCode === 'provider_bad_key' || status === 401 || status === 403 || /invalid.*(key|token)|unauthorized|认证失败|鉴权/i.test(text)) { // i18n-allow: 匹配底层中文错误串
+  // 401 才是明确的鉴权失败。403 单独一类（见下方分支）：403 的常见成因是
+  // 「这个请求根本不该到这儿」——CDN 按地区拒绝、账号没开通该模型，响应里
+  // 一个字都不提密钥。把它报成密钥问题只会让用户反复重建密钥。
+  if (stableCode === 'provider_bad_key' || status === 401 || /invalid.*(key|token)|unauthorized|认证失败|鉴权/i.test(text)) { // i18n-allow: 匹配底层中文错误串
     return {
       code: 'provider_bad_key',
       message: t('err.provider.badKey'),
@@ -189,6 +202,17 @@ export function describeProviderError(error: unknown): FriendlyError {
       message: t('err.provider.rateLimit'),
       detail: text,
       action: 'retry',
+    }
+  }
+  // 排在限流之后：403 + quota 字样更可能是配额问题。
+  // action 用 switch_source 而不是 retry —— 地区不可用重试一万次也是同一个结果，
+  // 能解决问题的动作是换一家供应商。
+  if (stableCode === 'provider_forbidden' || status === 403) {
+    return {
+      code: 'provider_forbidden',
+      message: t('err.provider.forbidden'),
+      detail: text,
+      action: 'switch_source',
     }
   }
   if (stableCode === 'provider_no_model' || status === 404 || /model.*not.*(found|exist)/i.test(text)) {

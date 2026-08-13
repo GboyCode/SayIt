@@ -9,8 +9,10 @@ import { Tooltip } from '@/components/ui/tooltip'
 import { listMicrophones } from '@/services/audio'
 import { refreshRecorderSettings } from '@/services/recorder'
 import { getPresetShortcuts, getSetting, setSetting } from '@/services/store'
+import { getDefault } from '@/services/defaults'
 import { drawBars, resetWaveform } from '@/services/waveform'
 import { Switch } from '@/components/ui/switch'
+import { Segmented } from '@/components/ui/segmented'
 import AppSection from './AppSection'
 import BackupSection from './BackupSection'
 import MicrophoneSection from './MicrophoneSection'
@@ -54,7 +56,8 @@ export default function GeneralSettingsPage() {
   const [micError, setMicError] = useState('')
   const [muteSystemAudio, setMuteSystemAudio] = useState(false)
   const [protectClipboard, setProtectClipboard] = useState(true)
-  const [pttKey, setPttKey] = useState('ShiftRight')
+  // 兜底值统一从 defaults 取，不在这里写第二份字面量
+  const [pttKey, setPttKey] = useState(() => getDefault<string>('shortcutPTT', ''))
   const [handsFreeKey, setHandsFreeKey] = useState('AltRight')
   const [historyEnabled, setHistoryEnabled] = useState(true)
   const [audioRetentionEnabled, setAudioRetentionEnabled] = useState(true)
@@ -107,7 +110,7 @@ export default function GeneralSettingsPage() {
     })()
     getLanguagePreference().then(setLanguagePreference).catch(() => { })
     getSetting('selectedMic', '').then(setSelectedMic)
-    getSetting('shortcutPTT', 'ShiftRight').then((value) => setPttKey(value as string))
+    getSetting<string>('shortcutPTT').then((value) => setPttKey(value))
     getSetting('shortcutHandsFree', 'AltRight').then((value) => setHandsFreeKey(value as string))
     listMicrophones().then(setMics).catch(() => { })
     return () => { cancelled = true }
@@ -217,14 +220,21 @@ export default function GeneralSettingsPage() {
             这张卡自己走 t()，所以切换后它连自己的标题一起变，用户能立刻确认生效了。 */}
         <Card>
           <CardContent className="p-6">
-            <h2 className="text-lg font-semibold">{t('settings.general.language.title')}</h2>
-            <p className="mt-1 text-sm text-muted-foreground">{t('settings.general.language.hint')}</p>
-            <div className="mt-4 flex gap-2" style={ready ? undefined : { visibility: 'hidden' }}>
-              {LANGUAGE_OPTIONS.map((opt) => (
-                <button key={opt.value} type="button" onClick={() => void handleLanguageChange(opt.value)}
-                  className={`rounded-md border px-3 py-1.5 text-sm ${animate ? 'transition-colors' : ''} ${languagePreference === opt.value ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-card text-foreground hover:bg-accent'}`}
-                >{t(opt.labelKey)}</button>
-              ))}
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <h2 className="text-lg font-semibold">{t('settings.general.language.title')}</h2>
+                <p className="mt-1 text-sm text-muted-foreground">{t('settings.general.language.hint')}</p>
+              </div>
+              <div className="shrink-0" style={ready ? undefined : { visibility: 'hidden' }}>
+                <Segmented
+                  label={t('settings.general.language.title')}
+                  value={languagePreference}
+                  options={LANGUAGE_OPTIONS.map((opt) => ({ value: opt.value, label: t(opt.labelKey) }))}
+                  onChange={(value) => void handleLanguageChange(value)}
+                  animated={animate}
+                  className="justify-end"
+                />
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -316,14 +326,17 @@ export default function GeneralSettingsPage() {
               <Switch checked={audioRetentionEnabled} onChange={() => void toggleAudioRetention()} noAnimation={!animate} hidden={!ready} />
             </div>
             {audioRetentionEnabled && (
-              <div className="mt-4">
+              <div className="mt-4 flex flex-col gap-2 border-t border-border pt-4 sm:flex-row sm:items-center sm:justify-between">
                 <label className="text-sm text-muted-foreground">{t('settings.audio.retentionLabel')}</label>
-                <div className="mt-2 flex gap-2" style={ready ? undefined : { visibility: 'hidden' }}>
-                  {([{ value: 7, labelKey: 'settings.retention.7d' }, { value: 30, labelKey: 'settings.retention.1m' }, { value: 90, labelKey: 'settings.retention.3m' }, { value: -1, labelKey: 'settings.retention.forever' }] as const satisfies readonly { value: number; labelKey: TranslationKey }[]).map((opt) => (
-                    <button key={opt.value} type="button" onClick={() => void handleAudioRetentionDaysChange(opt.value)}
-                      className={`rounded-md border px-3 py-1.5 text-sm ${animate ? 'transition-colors' : ''} ${audioRetentionDays === opt.value ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-card text-foreground hover:bg-accent'}`}
-                    >{t(opt.labelKey)}</button>
-                  ))}
+                <div className="shrink-0" style={ready ? undefined : { visibility: 'hidden' }}>
+                  <Segmented
+                    label={t('settings.audio.retentionLabel')}
+                    value={audioRetentionDays}
+                    options={([{ value: 7, labelKey: 'settings.retention.7d' }, { value: 30, labelKey: 'settings.retention.1m' }, { value: 90, labelKey: 'settings.retention.3m' }, { value: -1, labelKey: 'settings.retention.forever' }] as const satisfies readonly { value: number; labelKey: TranslationKey }[]).map((opt) => ({ value: opt.value, label: t(opt.labelKey) }))}
+                    onChange={(value) => void handleAudioRetentionDaysChange(value)}
+                    animated={animate}
+                    className="justify-end"
+                  />
                 </div>
               </div>
             )}
@@ -332,17 +345,20 @@ export default function GeneralSettingsPage() {
 
         <Card>
           <CardContent className="p-6">
-            <div>
-              <h2 className="text-lg font-semibold">{t('settings.log.title')}</h2>
-              <p className="mt-1 text-sm text-muted-foreground">{t('settings.log.desc')}</p>
-            </div>
-            <div className="mt-4">
-              <div className="flex gap-2" style={ready ? undefined : { visibility: 'hidden' }}>
-                {([{ value: 7, labelKey: 'settings.retention.7d' }, { value: 15, labelKey: 'settings.retention.15d' }, { value: 30, labelKey: 'settings.retention.1m' }, { value: 90, labelKey: 'settings.retention.3m' }] as const satisfies readonly { value: number; labelKey: TranslationKey }[]).map((opt) => (
-                  <button key={opt.value} type="button" onClick={() => void handleLogRetentionDaysChange(opt.value)}
-                    className={`rounded-md border px-3 py-1.5 text-sm ${animate ? 'transition-colors' : ''} ${logRetentionDays === opt.value ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-card text-foreground hover:bg-accent'}`}
-                  >{t(opt.labelKey)}</button>
-                ))}
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <h2 className="text-lg font-semibold">{t('settings.log.title')}</h2>
+                <p className="mt-1 text-sm text-muted-foreground">{t('settings.log.desc')}</p>
+              </div>
+              <div className="shrink-0" style={ready ? undefined : { visibility: 'hidden' }}>
+                <Segmented
+                  label={t('settings.log.title')}
+                  value={logRetentionDays}
+                  options={([{ value: 7, labelKey: 'settings.retention.7d' }, { value: 15, labelKey: 'settings.retention.15d' }, { value: 30, labelKey: 'settings.retention.1m' }, { value: 90, labelKey: 'settings.retention.3m' }] as const satisfies readonly { value: number; labelKey: TranslationKey }[]).map((opt) => ({ value: opt.value, label: t(opt.labelKey) }))}
+                  onChange={(value) => void handleLogRetentionDaysChange(value)}
+                  animated={animate}
+                  className="justify-end"
+                />
               </div>
             </div>
           </CardContent>

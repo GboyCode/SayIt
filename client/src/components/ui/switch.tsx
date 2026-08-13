@@ -20,7 +20,7 @@ interface SwitchProps {
 
 /**
  * 统一 Switch 开关组件
- * default: h-6 w-11 / sm: h-4 w-7
+ * default: h-5 w-9 / sm: h-4 w-7
  */
 export function Switch({ checked, onChange, label, labelledBy, disabled, className, size = 'default', noAnimation, hidden }: SwitchProps) {
   const sm = size === 'sm'
@@ -39,7 +39,7 @@ export function Switch({ checked, onChange, label, labelledBy, disabled, classNa
         className={cn(
           'relative shrink-0 rounded-full',
           !noAnimation && 'transition-colors',
-          sm ? 'h-4 w-7' : 'h-6 w-11',
+          sm ? 'h-4 w-7' : 'h-5 w-9',
           checked ? 'bg-primary' : 'bg-muted',
         )}
       >
@@ -47,8 +47,8 @@ export function Switch({ checked, onChange, label, labelledBy, disabled, classNa
           className={cn(
             'absolute left-0.5 top-0.5 rounded-full bg-card shadow',
             !noAnimation && 'transition-transform',
-            sm ? 'h-3 w-3' : 'h-5 w-5',
-            checked && (sm ? 'translate-x-3' : 'translate-x-5'),
+            sm ? 'h-3 w-3' : 'h-4 w-4',
+            checked && (sm ? 'translate-x-3' : 'translate-x-4'),
           )}
         />
       </span>

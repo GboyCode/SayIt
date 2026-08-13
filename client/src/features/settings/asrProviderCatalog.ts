@@ -20,7 +20,7 @@ import {
 /** 凭据归属的平台。同平台的服务用同一种密钥形态。 */
 import { t } from '@/i18n'
 
-export type AsrPlatform = 'doubao' | 'qwen' | 'mimo'
+export type AsrPlatform = 'doubao' | 'qwen' | 'mimo' | 'groq'
 
 export interface AsrPlatformInfo {
   label: string
@@ -34,6 +34,7 @@ export const ASR_PLATFORMS: Record<AsrPlatform, AsrPlatformInfo> = {
   doubao: { get label() { return t('asrPlatform.doubao') }, consoleUrl: 'https://console.volcengine.com/speech/app' },
   qwen: { get label() { return t('asrPlatform.qwen') }, consoleUrl: 'https://bailian.console.aliyun.com' },
   mimo: { get label() { return t('asrPlatform.mimo') }, consoleUrl: 'https://xiaoai.mi.com' },
+  groq: { label: 'Groq', consoleUrl: 'https://console.groq.com/keys' },
 }
 
 export interface AsrProviderEntry {
@@ -46,8 +47,12 @@ export interface AsrProviderEntry {
   platform: AsrPlatform
   /** 一句定位，说清「什么时候选它」 */
   blurb: string
-  /** 当前内置端点与控制台所面向的账号地区。 */
-  availability: 'mainland_china'
+  /**
+   * 当前内置端点与控制台所面向的账号地区。
+   * `global` 是海外端点（Groq），国内直连可能不稳定，卡片上要如实标出来 ——
+   * 否则用户会把「连不上」当成自己密钥填错。
+   */
+  availability: 'mainland_china' | 'global'
   /** 边说边出字（实时字幕） */
   streaming?: boolean
   /** 识别与 AI 整理一步完成，不需要单独配 AI 服务 */
@@ -115,6 +120,14 @@ export const ASR_PROVIDERS: AsrProviderEntry[] = [
     availability: 'mainland_china',
     get blurb() { return t('asrProvider.mimoBlurb') },
   },
+  {
+    id: 'groq_whisper',
+    get label() { return t('asrProvider.groq') },
+    model: 'whisper-large-v3-turbo',
+    platform: 'groq',
+    availability: 'global',
+    get blurb() { return t('asrProvider.groqBlurb') },
+  },
 ]
 
 export function findAsrProvider(id: string): AsrProviderEntry | undefined {
@@ -122,9 +135,11 @@ export function findAsrProvider(id: string): AsrProviderEntry | undefined {
 }
 
 export function asrAvailabilityLabel(entry: AsrProviderEntry): string {
-  return entry.availability === 'mainland_china'
-    ? t('asrProvider.regionMainlandChina')
-    : ''
+  switch (entry.availability) {
+    case 'mainland_china': return t('asrProvider.regionMainlandChina')
+    case 'global': return t('asrProvider.regionGlobal')
+    default: return ''
+  }
 }
 
 /** 同一平台下有哪些可选服务 */

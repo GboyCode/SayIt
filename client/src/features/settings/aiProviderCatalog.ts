@@ -63,6 +63,15 @@ export const AI_PROVIDERS: AiProvider[] = [
     defaultModels: ['mimo-v2.5', 'mimo-v2.5-pro'],
   },
   {
+    value: 'groq',
+    // 品牌名，中英文都写 Groq，不需要 locale 键（同 DeepSeek 的处理）
+    label: 'Groq',
+    // 末段已经是 /v1，normalize_base_url 会原样保留、不再追加版本段
+    defaultUrl: 'https://api.groq.com/openai/v1',
+    defaultModels: ['openai/gpt-oss-20b', 'openai/gpt-oss-120b', 'llama-3.3-70b-versatile'],
+    consoleUrl: 'https://console.groq.com/keys',
+  },
+  {
     value: 'openai_compat',
     get label() { return t('aiProvider.openaiCompat') },
     defaultUrl: 'https://api.openai.com',

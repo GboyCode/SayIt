@@ -12,6 +12,7 @@
 import { emit } from '@tauri-apps/api/event'
 import { getPTTPhysicalKeyStates } from './bridge'
 import { getSetting } from './store'
+import { getDefault } from './defaults'
 import {
   canonicalizePTTShortcut,
   isPTTModifierCode,
@@ -180,9 +181,19 @@ function handleKeyDown(event: KeyboardEvent) {
     return
   }
 
-  // 免提键（HF）：在 keydown 时阻止默认行为，keyup 时触发 toggle
+  // 免提键（HF）：首个 keydown 立即触发；后续 repeat down 不重复切换。
   if (hfCode && event.code === hfCode && !pttCodes.includes(hfCode)) {
-    hfKeyDown = true
+    if (!hfKeyDown) {
+      hfKeyDown = true
+      console.log('[webview-kb] toggle-hands-free (webview fallback)', {
+        code: event.code,
+        hfSetting,
+      })
+      void emit('toggle-hands-free', {
+        source: 'webview_fallback',
+        vk: SETTING_TO_VK[hfSetting] || 0,
+      })
+    }
     if (isModifierSetting(hfSetting)) event.preventDefault()
     return
   }
@@ -218,18 +229,10 @@ function handleKeyUp(event: KeyboardEvent) {
     return
   }
 
-  // 免提键：keyup 时 emit toggle-hands-free
+  // 免提键：keyup 只重新布防，下一次物理按下才能再次切换。
   if (hfCode && event.code === hfCode && hfKeyDown && !pttCodes.includes(hfCode)) {
     hfKeyDown = false
     if (isModifierSetting(hfSetting)) event.preventDefault()
-    console.log('[webview-kb] toggle-hands-free (webview fallback)', {
-      code: event.code,
-      hfSetting,
-    })
-    void emit('toggle-hands-free', {
-      source: 'webview_fallback',
-      vk: SETTING_TO_VK[hfSetting] || 0,
-    })
     return
   }
 
@@ -257,22 +260,28 @@ function handleWindowBlur() {
 /** 刷新 PTT 设置（设置页面改键后调用） */
 export async function refreshPTTSetting() {
   try {
-    const setting = await getSetting('shortcutPTT', 'ShiftRight')
-    const loadedSetting = String(setting ?? 'ShiftRight')
+    // 不传字面量兜底值：默认键只在 services/defaults.ts 里定义一处，getSetting 会去读它。
+    const setting = await getSetting<string>('shortcutPTT')
+    const loadedSetting = String(setting ?? '')
     if (!loadedSetting) {
       pttSetting = ''
       pttCodes = []
     } else {
       const canonical = canonicalizePTTShortcut(loadedSetting)
-      pttSetting = isValidPTTShortcut(canonical) ? canonical : 'ShiftRight'
+      // allowLegacyReservedKeys：老用户存的可能是 Shift。那类绑定不再允许新设，
+      // 但已经存在的必须照原样监听 —— 判成非法就会走下面的回落，等于用户没改设置
+      // 却换了说话键，而且会开始响应一个他没绑过的键。
+      pttSetting = isValidPTTShortcut(canonical, { allowLegacyReservedKeys: true })
+        ? canonical
+        : getDefault<string>('shortcutPTT', '')
       pttCodes = parsePTTShortcut(pttSetting)
       if (pttSetting !== canonical) {
-        console.warn('[webview-kb] invalid PTT setting, using ShiftRight:', loadedSetting)
+        console.warn('[webview-kb] invalid PTT setting, falling back to the default:', loadedSetting)
       }
     }
   } catch (error) {
-    pttSetting = 'ShiftRight'
-    pttCodes = ['ShiftRight']
+    pttSetting = getDefault<string>('shortcutPTT', '')
+    pttCodes = parsePTTShortcut(pttSetting)
     console.warn('[webview-kb] failed to load PTT setting, using fallback:', error)
   }
   releasePTT('setting_refreshed')

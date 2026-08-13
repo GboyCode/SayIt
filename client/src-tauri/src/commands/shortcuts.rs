@@ -16,7 +16,9 @@ pub fn shortcuts_changed(
 ) {
     // Read settings
     let ptt_setting = storage.get("shortcutPTT", None);
-    let ptt_str = ptt_setting.as_str().unwrap_or("ShiftRight");
+    // 兜底键与 keyboard::DEFAULT_PTT_SETTING、storage 种子、前端 defaults.ts 一致。
+    // 绝不能是 Shift：长按右 Shift 会触发 Windows 筛选键，录音就停不下来了。
+    let ptt_str = ptt_setting.as_str().unwrap_or("ControlRight");
     let hf_val = storage.get("shortcutHandsFree", None);
     let hf_key = hf_val.as_str().unwrap_or("AltRight");
 
@@ -41,11 +43,13 @@ pub fn register_all_global_shortcuts(app: &AppHandle, storage: &Storage) {
     let hf_val = storage.get("shortcutHandsFree", None);
     let hf_key = hf_val.as_str().unwrap_or("AltRight").to_string();
     if !hf_key.is_empty() && hf_key.contains('+') {
-        if let Err(e) = gs.on_shortcut(hf_key.as_str(), move |app, _shortcut, _event| {
-            let _ = app.emit(
-                "toggle-hands-free",
-                serde_json::json!({ "source": "globalShortcut" }),
-            );
+        if let Err(e) = gs.on_shortcut(hf_key.as_str(), move |app, _shortcut, event| {
+            if event.state == ShortcutState::Pressed {
+                let _ = app.emit(
+                    "toggle-hands-free",
+                    serde_json::json!({ "source": "globalShortcut" }),
+                );
+            }
         }) {
             log::warn!("Failed to register hands-free shortcut '{}': {}", hf_key, e);
         } else {

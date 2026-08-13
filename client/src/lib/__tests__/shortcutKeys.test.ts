@@ -27,7 +27,10 @@ describe('PTT 物理组合键', () => {
   })
 
   it('兼容旧单键，并接受普通组合与纯修饰组合', () => {
-    expect(isValidPTTShortcut('ShiftRight')).toBe(true)
+    // 这里原来用 ShiftRight 当旧单键的样例，现在 Shift 已被 PTT 禁用（见下方专门的用例），
+    // 换成同样是"旧单键"的右 Alt / CapsLock
+    expect(isValidPTTShortcut('AltRight')).toBe(true)
+    expect(isValidPTTShortcut('CapsLock')).toBe(true)
     expect(isValidPTTShortcut('MButton')).toBe(true)
     expect(isValidPTTShortcut('ControlLeft+KeyK')).toBe(true)
     expect(isValidPTTShortcut('ControlLeft+MetaLeft')).toBe(true)
@@ -48,11 +51,30 @@ describe('PTT 物理组合键', () => {
     expect(isValidPTTShortcut('ControlLeft+MetaLeft')).toBe(true)
   })
 
-  it('提示右 Shift 的筛选键风险，但仍允许保存', () => {
-    expect(getPTTShortcutWarning('ShiftRight')).toContain('筛选键')
-    expect(getPTTShortcutWarning('ControlLeft+ShiftRight')).toContain('筛选键')
+  // 原来是「提示风险但仍允许保存」。警告挡不住任何人：用户照样绑了右 Shift，
+  // 照样踩到筛选键让录音停不下来。现在改成硬拦。
+  it('按住说话一律拒绝 Shift，单键和组合成员都算', () => {
+    expect(isValidPTTShortcut('ShiftRight')).toBe(false)
+    expect(isValidPTTShortcut('ShiftLeft')).toBe(false)
+    expect(isValidPTTShortcut('ControlLeft+ShiftRight')).toBe(false)
+    expect(isValidPTTShortcut('ShiftLeft+KeyK')).toBe(false)
+    expect(getPTTShortcutValidationError('ShiftRight')).toContain('Shift')
+    // 别的修饰键不受影响
+    expect(isValidPTTShortcut('AltRight')).toBe(true)
+    expect(isValidPTTShortcut('ControlLeft+KeyK')).toBe(true)
+  })
+
+  // 老用户可能在 Shift 还能选的时候绑上了它：旧绑定继续生效，但要在设置里提示改绑。
+  // 升级时静默换掉用户的说话键，或者让它突然失效，都比留一行提示更糟。
+  it('已保存的 Shift 旧配置给出改绑提示', () => {
+    expect(getPTTShortcutWarning('ShiftRight')).toContain('Shift')
+    expect(getPTTShortcutWarning('ControlLeft+ShiftLeft')).toContain('Shift')
     expect(getPTTShortcutWarning('AltRight')).toBeNull()
-    expect(isValidPTTShortcut('ShiftRight')).toBe(true)
+  })
+
+  // Shift 只在「按住说话」里有问题（要长按、会连按）。免提这类按一下的快捷键照旧可用。
+  it('按一下的快捷键不受 Shift 限制', () => {
+    expect(getAcceleratorShortcutValidationError('CommandOrControl+Shift+K')).toBeNull()
   })
 
   it('通用组合键同样拒绝 Windows 保留快捷键', () => {

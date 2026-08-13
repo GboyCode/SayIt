@@ -602,7 +602,7 @@ export default function LocalModeSection() {
             </p>
           )}
 
-          <div className="mb-3 flex flex-wrap items-center gap-3">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
             <span id="download-source-label" className="text-sm text-muted-foreground">{t('local.downloadSource')}</span>
             <Segmented
               labelledBy="download-source-label"
@@ -610,6 +610,7 @@ export default function LocalModeSection() {
               value={effectiveSource}
               options={sourceOptions.map((src) => ({ value: src, label: sourceLabel(src) }))}
               onChange={(src) => { setDownloadSource(src); void setSetting('localAsr.downloadSource', src) }}
+              className="shrink-0 justify-end"
             />
           </div>
 
@@ -908,50 +909,52 @@ export function LocalModeAdvancedSection() {
     <>
       <Card>
         <CardContent className="p-6">
-          <h2 id="local-language-heading" className="mb-3 text-lg font-semibold">{t('local.languageTitle')}</h2>
-          <Segmented
-            labelledBy="local-language-heading"
-            value={asrLanguage}
-            options={[
-              { value: 'auto', label: t('common.auto') },
-              { value: 'zh', label: t('local.lang.zh') },
-              { value: 'en', label: t('local.lang.en') },
-            ]}
-            onChange={(value) => { setAsrLanguage(value); void setSetting('localAsr.language', value) }}
-          />
-          <p className="mt-2 text-xs text-muted-foreground">
-            {/* 说清作用范围与真实收益：这个值只影响本地识别（作为 RunOptions.language
-                传给引擎，auto = 让模型自己检测），云 API 模式没有这个选项，服务器模式
-                有它自己的一份。固定语种的实际价值是压掉短句上的语种误判 —— 实测
-                Qwen3 1.7B 会把 3 秒普通话判成粤语，见 gguf_asr.rs 的 language_detect_report。 */}
-            {t('local.languageNote')}
-          </p>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <h2 id="local-language-heading" className="text-lg font-semibold">{t('local.languageTitle')}</h2>
+              <p className="mt-2 text-xs text-muted-foreground">{t('local.languageNote')}</p>
+            </div>
+            <Segmented
+              labelledBy="local-language-heading"
+              value={asrLanguage}
+              options={[
+                { value: 'auto', label: t('common.auto') },
+                { value: 'zh', label: t('local.lang.zh') },
+                { value: 'en', label: t('local.lang.en') },
+              ]}
+              onChange={(value) => { setAsrLanguage(value); void setSetting('localAsr.language', value) }}
+              className="shrink-0 justify-end"
+            />
+          </div>
         </CardContent>
       </Card>
 
       <Card>
         <CardContent className="p-6">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <h2 id="accelerator-heading" className="text-lg font-semibold">{t('local.backendTitle')}</h2>
-            <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-1 text-xs ${diagnosticsState === 'ready' && hasGpu
-              ? 'border-success/30 bg-success/10 text-success-strong'
-              : 'border-border bg-muted/40 text-muted-foreground'
-              }`}>
-              <span className={`h-1.5 w-1.5 rounded-full ${diagnosticsState === 'ready' && hasGpu ? 'bg-success' : 'bg-muted-foreground'}`} aria-hidden />
-              {diagnosticsState === 'loading' ? t('local.backendChecking') : diagnosticsState === 'error' ? t('local.backendCheckFailed') : hasGpu ? t('local.backendGpuReady') : t('local.backendCpuOnly')}
-            </span>
+          <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-0 items-center gap-3">
+              <h2 id="accelerator-heading" className="text-lg font-semibold">{t('local.backendTitle')}</h2>
+              <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-1 text-xs ${diagnosticsState === 'ready' && hasGpu
+                ? 'border-success/30 bg-success/10 text-success-strong'
+                : 'border-border bg-muted/40 text-muted-foreground'
+                }`}>
+                <span className={`h-1.5 w-1.5 rounded-full ${diagnosticsState === 'ready' && hasGpu ? 'bg-success' : 'bg-muted-foreground'}`} aria-hidden />
+                {diagnosticsState === 'loading' ? t('local.backendChecking') : diagnosticsState === 'error' ? t('local.backendCheckFailed') : hasGpu ? t('local.backendGpuReady') : t('local.backendCpuOnly')}
+              </span>
+            </div>
+            <Segmented
+              labelledBy="accelerator-heading"
+              value={accelerator}
+              disabled={rebinding}
+              options={[
+                { value: 'auto', label: t('common.auto') },
+                { value: 'gpu', label: 'GPU' },
+                { value: 'cpu', label: 'CPU' },
+              ]}
+              onChange={(value) => void handleSelectAccelerator(value)}
+              className="shrink-0 justify-end"
+            />
           </div>
-          <Segmented
-            labelledBy="accelerator-heading"
-            value={accelerator}
-            disabled={rebinding}
-            options={[
-              { value: 'auto', label: t('common.auto') },
-              { value: 'gpu', label: 'GPU' },
-              { value: 'cpu', label: 'CPU' },
-            ]}
-            onChange={(value) => void handleSelectAccelerator(value)}
-          />
           {diagnosticsState === 'ready' && hasGpu && (
             <p className="mt-2 text-xs text-muted-foreground">
               {gpuSummary}
@@ -974,30 +977,31 @@ export function LocalModeAdvancedSection() {
 
       <Card>
         <CardContent className="p-6">
-          <h2 id="unload-idle-heading" className="mb-1 text-lg font-semibold">{t('local.unloadTitle')}</h2>
-          {/* 这四个选项是在"占着内存"和"下次说话要等模型重新加载"之间取舍，
-              原来的说明只讲"会怎样"，不讲"你该不该关心" */}
-          <p className="mb-3 text-xs text-muted-foreground">
-            {t('local.unloadDesc')}
-          </p>
-          <Segmented
-            labelledBy="unload-idle-heading"
-            value={unloadIdleMinutes}
-            options={[
-              { value: 0, label: t('local.unload.never') },
-              { value: 10, label: t('local.unload.10m') },
-              { value: 30, label: t('local.unload.30m') },
-              { value: 60, label: t('local.unload.1h') },
-            ]}
-            onChange={(value) => void handleSelectUnloadIdle(value)}
-          />
-          <p className="mt-2 text-xs text-muted-foreground">
-            {unloadIdleMinutes === 0
-              ? t('local.unloadNever')
-              : t('local.unloadAfter', {
-                duration: unloadIdleMinutes === 60 ? t('local.unload.1h') : t('local.minutes', { count: unloadIdleMinutes }),
-              })}
-          </p>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <h2 id="unload-idle-heading" className="text-lg font-semibold">{t('local.unloadTitle')}</h2>
+              <p className="mt-1 text-xs text-muted-foreground">{t('local.unloadDesc')}</p>
+              <p className="mt-2 text-xs text-muted-foreground">
+                {unloadIdleMinutes === 0
+                  ? t('local.unloadNever')
+                  : t('local.unloadAfter', {
+                    duration: unloadIdleMinutes === 60 ? t('local.unload.1h') : t('local.minutes', { count: unloadIdleMinutes }),
+                  })}
+              </p>
+            </div>
+            <Segmented
+              labelledBy="unload-idle-heading"
+              value={unloadIdleMinutes}
+              options={[
+                { value: 0, label: t('local.unload.never') },
+                { value: 10, label: t('local.unload.10m') },
+                { value: 30, label: t('local.unload.30m') },
+                { value: 60, label: t('local.unload.1h') },
+              ]}
+              onChange={(value) => void handleSelectUnloadIdle(value)}
+              className="shrink-0 justify-end"
+            />
+          </div>
         </CardContent>
       </Card>
 

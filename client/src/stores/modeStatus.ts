@@ -65,6 +65,7 @@ function cloudProviderShort(provider: string): string {
     case 'qwen_omni_flash':
     case 'qwen_omni_turbo': return t('modeStatus.qwenOmni')
     case 'mimo': return 'MiMo'
+    case 'groq_whisper': return 'Groq'
     default: return provider
   }
 }

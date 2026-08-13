@@ -273,6 +273,64 @@ export function restoreHotwordSpacing(text: string, hotwords: string[]): string 
   return result
 }
 
+// ── 中文标点宽度规范化 ──
+
+/**
+ * 半角 → 全角的对应表。
+ *
+ * **刻意不含句号 `.`**：它的歧义代价太高。小数（3.14）、版本号（v1.2）、域名
+ * （example.com）、文件名里全是半角句点，一旦误转就是破坏内容；而实测
+ * whisper-large-v3-turbo 的中文句号本来就输出全角 `。`，不需要我们兜。
+ * 宁可漏一个也不能错改一个。
+ */
+// i18n-allow-start: 标点符号本身就是这个函数处理的数据
+const HALF_TO_FULL_WIDTH: Record<string, string> = {
+  ',': '，',
+  '?': '？',
+  '!': '！',
+  ';': '；',
+  ':': '：',
+}
+
+/** 汉字区间。与 check-i18n.mjs 用的 CJK 判定保持一致。 */
+const CJK_CHAR = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/
+// i18n-allow-end
+
+/**
+ * 把紧跟在汉字后面的半角标点转成全角。
+ *
+ * 为什么需要：Whisper（Groq 的 whisper-large-v3-turbo）转写中文时**混用两种宽度** ——
+ * 句号给全角 `。`，逗号和问号给半角 `,` `?`。实测四种 prompt 加不给 prompt 输出
+ * 一字不差，所以这是模型自身行为，靠请求参数改不动，只能在文本层归一。
+ *
+ * 判据只有一条：**前一个字符是汉字**。这一条把所有危险场景挡在外面 ——
+ *   · `3,000` / `3.14`：前一个字符是数字，不动
+ *   · `Hello, world`：前一个字符是字母，不动
+ *   · `example.com` / `v1.2`：同上，且句号根本不在表里
+ *   · `中文A,B`：逗号前是 `A`，不动
+ * 而 `今天不错,我们走吧` 里两个逗号前面都是汉字，转成全角。
+ *
+ * 已知缺口（刻意保留）：标点夹在「数字/字母」和汉字之间时不转，例如
+ * `一共100,很便宜` 里那个逗号会留半角。想覆盖它就必须放宽到「后一个字符是汉字」，
+ * 而那会连 `比例3:2中文`、`3,000元` 一起改掉。少一个全角逗号只是观感问题，
+ * 改坏数字是内容损坏 —— 宁可漏改。
+ *
+ * 中文供应商（豆包 / 千问 / MiMo）本来就输出全角，纯英文文本里没有汉字，
+ * 所以对它们这个函数是彻底的空操作 —— 这也是它不需要做成开关的原因：
+ * 它不是排版偏好，是把一种明确的错误宽度纠正过来。
+ */
+export function normalizeChinesePunctuation(text: string): string {
+  if (!text) return text
+  let result = ''
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    const full = HALF_TO_FULL_WIDTH[ch]
+    // 回看用的是原文的前一个字符：转换不会改变「是不是汉字」，所以不必看已产出的结果
+    result += full && CJK_CHAR.test(text[i - 1] ?? '') ? full : ch
+  }
+  return result
+}
+
 /** 去除每行末尾的标点符号（及尾随空白）。 */
 export function stripTrailingPunctuation(text: string): string {
   if (!text) return text
@@ -344,7 +402,8 @@ export interface ApplyTransformsOptions {
 }
 
 /**
- * 统一入口。顺序：智能分段 → 数字规范化 → 用户替换规则 → 去句末标点 → 标点转空格。
+ * 统一入口。顺序：中文标点宽度归一 → 智能分段 → 数字规范化 → 用户替换规则
+ * → 去句末标点 → 标点转空格。
  * 其中除「用户替换规则」外都属于「格式规范」，仅在 rawAsr（无 AI 整理）时执行。
  */
 export async function applyTextTransforms(
@@ -356,6 +415,10 @@ export async function applyTextTransforms(
   // AI 整理过的文本，格式交给 AI；我们只保留文本替换。
   const ownFormat = options.rawAsr ?? true
   let result = text
+  // 排在最前面：后面几步都在读标点做判断（分段找句末、去句末标点），
+  // 让它们看到统一宽度的输入，比让每一步各自兼容两种宽度可靠。
+  // 没有对应开关：它纠正的是一种明确的错误宽度，不是可选的排版偏好。
+  if (ownFormat) result = normalizeChinesePunctuation(result)
   if (ownFormat && opts.autoSegment) result = segmentAsrText(result)
   if (ownFormat && opts.normalizeNumbers) result = convertChineseNumbers(result)
   result = await applyTextReplacements(result)

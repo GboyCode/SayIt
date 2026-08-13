@@ -123,6 +123,14 @@ export function getProbeResult() {
   return invoke<Record<string, unknown>>('get_probe_result')
 }
 
+/** 一次原生捕获同时返回录音目标上下文与插字探测结果。 */
+export function getRecordingContext() {
+  return invoke<{
+    appContext: Record<string, unknown>
+    probe: Record<string, unknown>
+  }>('get_recording_context')
+}
+
 export function getActiveAppContext() {
   return invoke<Record<string, unknown> | null>('get_active_app_context')
 }

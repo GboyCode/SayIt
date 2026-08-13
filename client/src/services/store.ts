@@ -64,6 +64,7 @@ export type HistoryFailReasonCode =
   | 'provider_timeout'
   | 'provider_unreachable'
   | 'provider_bad_key'
+  | 'provider_forbidden'
   | 'provider_rate_limit'
   | 'provider_no_model'
   | 'provider_failed'

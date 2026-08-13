@@ -1,10 +1,54 @@
 import { describe, it, expect } from 'vitest'
 import {
   convertChineseNumbers,
+  normalizeChinesePunctuation,
   restoreHotwordSpacing,
   stripTrailingPunctuation,
   replacePunctuationWithSpace,
 } from '../textPostProcess'
+
+describe('normalizeChinesePunctuation', () => {
+  // Whisper（Groq 的 whisper-large-v3-turbo）转写中文时混用两种宽度：句号给全角，
+  // 逗号和问号给半角。实测改 prompt 无效，只能在文本层归一。
+  it('汉字后面的半角标点转成全角', () => {
+    expect(normalizeChinesePunctuation('今天天气不错,我们出去走走吧,顺便买点东西。你觉得怎么样?'))
+      .toBe('今天天气不错，我们出去走走吧，顺便买点东西。你觉得怎么样？')
+    expect(normalizeChinesePunctuation('太好了!')).toBe('太好了！')
+    expect(normalizeChinesePunctuation('注意:两点;三点')).toBe('注意：两点；三点')
+  })
+
+  // 下面这几条是这个函数存在的全部风险所在：判据写松一点就会破坏内容。
+  it('数字里的逗号与小数点绝不动', () => {
+    expect(normalizeChinesePunctuation('一共 3,000 元')).toBe('一共 3,000 元')
+    expect(normalizeChinesePunctuation('圆周率是 3.14')).toBe('圆周率是 3.14')
+  })
+
+  // 已知缺口，且是刻意留的：标点夹在「数字/字母」和汉字之间时不转。
+  // 想覆盖 `100,很便宜` 就必然会把 `3:2中文`、`3,000元` 这类也一起改掉，
+  // 而少一个全角逗号只是观感问题，改坏数字是内容损坏。宁可漏改。
+  it('前一个字符不是汉字时一律不动，即便后面是中文', () => {
+    expect(normalizeChinesePunctuation('版本 v1.2,已发布')).toBe('版本 v1.2,已发布')
+    expect(normalizeChinesePunctuation('比例 3:2中文')).toBe('比例 3:2中文')
+  })
+
+  it('英文句子里的标点不动', () => {
+    expect(normalizeChinesePunctuation('Hello, world! Are you ok?'))
+      .toBe('Hello, world! Are you ok?')
+    expect(normalizeChinesePunctuation('中文A,B')).toBe('中文A,B')
+  })
+
+  it('网址与句号一律不动（句号不在转换表里）', () => {
+    expect(normalizeChinesePunctuation('访问 example.com 就行')).toBe('访问 example.com 就行')
+    // 半角句号即便紧跟汉字也保持原样：小数/域名/文件名的代价高于收益
+    expect(normalizeChinesePunctuation('好的.')).toBe('好的.')
+  })
+
+  it('本来就是全角、或没有汉字时是空操作', () => {
+    expect(normalizeChinesePunctuation('今天不错，我们走吧。')).toBe('今天不错，我们走吧。')
+    expect(normalizeChinesePunctuation('')).toBe('')
+    expect(normalizeChinesePunctuation(',开头的逗号没有前字符')).toBe(',开头的逗号没有前字符')
+  })
+})
 
 describe('restoreHotwordSpacing', () => {
   it('还原被拆开加空格的热词', () => {

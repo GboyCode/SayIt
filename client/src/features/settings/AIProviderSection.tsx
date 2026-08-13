@@ -243,7 +243,6 @@ function describeStatus(profile: AiProfile, checking: boolean): CardStatus {
   }
 }
 
-const DOC_URL = 'https://my.feishu.cn/wiki/EEdswP97PijkmAkSr4HcuiVlnxf'
 
 // ⓘ 里只放"选哪家"这一件事。"点一张即启用"写在卡头副标题上，不重复说；
 // 卡上标签的含义由标签自己和它的 tooltip 承担。
@@ -976,7 +975,11 @@ export default function AIProviderSection() {
                     {t('ai.keyReused', { provider: draftProvider.label })}
                   </p>
                 )}
-                {/* 密钥入口放在密钥这一格里。英文文档发布前，设置文档只对中文界面显示。 */}
+                {/* 密钥入口放在密钥这一格里。
+                    这里原来还有一个「怎么申请密钥？看配置文档」的链接，去掉了：AI 服务
+                    要做的只有「去控制台复制一把 Key」，上面那个控制台链接就是最短路径，
+                    再挂一篇文档反而暗示这件事很复杂。
+                    （语音识别那边保留了，但只对豆包显示 —— 只有它要在新旧两代控制台之间选。）*/}
                 <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1">
                   {draftProvider.consoleUrl && (
                     <button
@@ -985,12 +988,6 @@ export default function AIProviderSection() {
                       className={linkClass}
                     >
                       {t('ai.openConsole', { provider: draftProvider.label })}
-                      <ExternalLink className="h-3 w-3" aria-hidden />
-                    </button>
-                  )}
-                  {getLocale() === 'zh-CN' && (
-                    <button type="button" onClick={() => void shellOpen(DOC_URL)} className={linkClass}>
-                      {t('ai.howToGetKey')}
                       <ExternalLink className="h-3 w-3" aria-hidden />
                     </button>
                   )}

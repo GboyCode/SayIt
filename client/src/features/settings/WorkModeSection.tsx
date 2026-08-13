@@ -12,7 +12,7 @@ import { getModeStatus, refreshModeStatus, subscribeModeStatus } from '@/stores/
 // 左下角的引擎指示里，服务器模式用的是信号图标而不是 Server——那里报的是"此刻通不通"，
 // 有一条真在跑的连接可报；这张卡不做这种断言（连接状态由卡组右上角那枚徽标负责）。
 // 两处对本地 / 云 API 用同一个图标，对服务器模式刻意不同，因为它们说的不是同一件事。
-import { Cpu, Cloud, Server, Check, type LucideIcon } from 'lucide-react'
+import { Cpu, Cloud, Server, CheckCircle2, type LucideIcon } from 'lucide-react'
 import type { WorkMode } from '@/services/transcription'
 import type { TranslationKey } from '@/i18n'
 import { useT } from '@/i18n/useT'
@@ -139,9 +139,14 @@ export default function WorkModeSection({ value, onChange }: Props) {
                   aria-hidden
                 />
                 {/* 选中态原来只有颜色（1px 边框 + 图标变色 + 5% 的淡底）。加一个对勾，
-                    让"当前是哪个"不依赖颜色感知 */}
-                <div className="flex items-center gap-1 pr-7 text-sm font-medium">
-                  {isActive && <Check className="h-3.5 w-3.5 shrink-0 text-primary" aria-hidden />}
+                    让"当前是哪个"不依赖颜色感知。
+                    用 CheckCircle2 + success-strong 而不是裸 Check + primary，是为了和
+                    「语音识别服务」卡片上的「使用中」标记完全一致 —— 两页都是在选一张卡，
+                    同一个含义不该长成两个样子。别顺手把它统一回 primary。
+                    图标保持 aria-hidden：选中状态已经由外层 role="radio" 的 aria-checked
+                    如实报给读屏，再给图标加一个 label 只会让它念两遍。 */}
+                <div className="flex items-center gap-1.5 pr-7 text-sm font-medium">
+                  {isActive && <CheckCircle2 className="h-4 w-4 shrink-0 text-success-strong" aria-hidden />}
                   {t(m.labelKey)}
                 </div>
                 <div className="mt-1 text-xs text-muted-foreground">{t(m.descKey)}</div>

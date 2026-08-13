@@ -116,7 +116,7 @@ pub async fn transcribe(
         ),
     );
 
-    let client = reqwest::Client::new();
+    let client = super::http_client::shared();
     let start = Instant::now();
 
     let resp = client
@@ -191,7 +191,7 @@ pub async fn test_connection(config: &AsrProviderConfig) -> TestResult {
     let data_url = format!("data:audio/wav;base64,{}", wav_b64);
     let body = build_body(&data_url, "auto");
 
-    let client = reqwest::Client::new();
+    let client = super::http_client::shared();
     let start = Instant::now();
 
     let result = client

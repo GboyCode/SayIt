@@ -249,7 +249,8 @@ fn main() {
 
     // Read PTT setting before moving storage into managed state
     let ptt_setting_val = storage.get("shortcutPTT", None);
-    let ptt_str = ptt_setting_val.as_str().unwrap_or("ShiftRight").to_string();
+    // 兜底键与 storage 种子、前端 defaults.ts 保持一致；绝不能是 Shift（会触发筛选键）
+    let ptt_str = ptt_setting_val.as_str().unwrap_or("ControlRight").to_string();
     let hf_setting_val = storage.get("shortcutHandsFree", None);
     let hf_str = hf_setting_val.as_str().unwrap_or("AltRight").to_string();
     log::info!("PTT setting from DB: raw={:?} parsed={:?}", ptt_setting_val, ptt_str);
@@ -501,6 +502,20 @@ fn main() {
                 commands::shortcuts::register_all_global_shortcuts(app.handle(), storage.inner());
             }
 
+            // 把首次 overlay WebView 的创建成本挪到启动后的空闲时段。延迟执行避免与主窗
+            // 首屏、托盘和键盘钩子争抢启动资源；用户若在此之前已开始口述，预热会看到
+            // overlay 已存在或正在显示并安全跳过。
+            {
+                let overlay_app = app.handle().clone();
+                let _ = thread::Builder::new()
+                    .name("overlay-prewarm".to_string())
+                    .spawn(move || {
+                        thread::sleep(std::time::Duration::from_millis(1_500));
+                        let window_state = overlay_app.state::<WindowState>();
+                        window_state.prewarm_overlay(&overlay_app);
+                    });
+            }
+
             // 首次安装时自动启用开机自启（仅执行一次）
             {
                 use tauri_plugin_autostart::ManagerExt;
@@ -566,6 +581,7 @@ fn main() {
             // Paste / Context
             commands::paste::paste_text,
             commands::paste::get_probe_result,
+            commands::paste::get_recording_context,
             commands::paste::get_active_app_context,
             commands::paste::copy_text,
             // System

@@ -102,6 +102,25 @@ impl WindowState {
         }
     }
 
+    /// 在应用启动后的空闲时段提前创建隐藏的 overlay WebView。
+    ///
+    /// 第一次口述若等到热键按下后才创建 WebView，页面加载和 React 初始化会额外占用
+    /// 数百毫秒。预热只把 renderer 准备好，不显示窗口；真正 present 时仍会重新捕获
+    /// 当前前台显示器、应用最终布局并置顶。
+    pub fn prewarm_overlay(&self, app: &AppHandle) {
+        let _lifecycle_guard = self.overlay_lifecycle.lock().unwrap();
+        if self.active_show_id.load(Ordering::SeqCst) != 0
+            || app.get_webview_window("overlay").is_some()
+        {
+            return;
+        }
+
+        let layout = self.overlay_layout.lock().unwrap().clone();
+        let base_width = *self.overlay_base_width.lock().unwrap();
+        write_log_line("[overlay-health] idle prewarm begin");
+        self.create_overlay(app, layout, base_width, false);
+    }
+
     /// 原子地保存状态、显示原生窗口并请求 Overlay 确认本次渲染。
     pub fn present_overlay(&self, app: &AppHandle, data: Value) -> u64 {
         self.apply_payload_layout(&data);
@@ -432,7 +451,7 @@ impl WindowState {
                 "[overlay-health] handle missing show_id={} — creating",
                 show_id,
             ));
-            self.create_overlay(app, layout, base_width);
+            self.create_overlay(app, layout, base_width, true);
             return false;
         };
 
@@ -547,10 +566,16 @@ impl WindowState {
 
         let layout = self.overlay_layout.lock().unwrap().clone();
         let base_width = *self.overlay_base_width.lock().unwrap();
-        self.create_overlay(app, layout, base_width);
+        self.create_overlay(app, layout, base_width, true);
     }
 
-    fn create_overlay(&self, app: &AppHandle, layout: OverlayLayout, base_width: f64) {
+    fn create_overlay(
+        &self,
+        app: &AppHandle,
+        layout: OverlayLayout,
+        base_width: f64,
+        show_immediately: bool,
+    ) {
         self.reset_renderer_lifecycle();
         let bounds = calc_overlay_bounds(app, &layout, base_width);
         let builder = WebviewWindowBuilder::new(
@@ -578,11 +603,16 @@ impl WindowState {
             Ok(overlay) => {
                 let position_error = self.apply_native_layout(app, &overlay, &layout);
                 set_overlay_interactivity(&overlay, layout.is_interactive());
-                let show_error = overlay.show().err().map(|error| format!("{:?}", error));
+                let show_error = if show_immediately {
+                    overlay.show().err().map(|error| format!("{:?}", error))
+                } else {
+                    None
+                };
                 write_log_line(&format!(
-                    "[overlay-health] create dispatched show_id={} generation={} initial_bounds={:?} position_error={:?} show_error={:?} shell_visible={} diagnostic={}",
+                    "[overlay-health] create dispatched show_id={} generation={} prewarm={} initial_bounds={:?} position_error={:?} show_error={:?} shell_visible={} diagnostic={}",
                     self.active_show_id.load(Ordering::SeqCst),
                     self.active_generation.load(Ordering::SeqCst),
+                    !show_immediately,
                     bounds,
                     position_error,
                     show_error,

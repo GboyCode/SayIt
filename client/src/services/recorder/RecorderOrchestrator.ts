@@ -83,6 +83,7 @@ function classifyHistoryProviderFailure(message: string): HistoryFailReasonCode 
     case 'provider_timeout':
     case 'provider_unreachable':
     case 'provider_bad_key':
+    case 'provider_forbidden':
     case 'provider_rate_limit':
     case 'provider_no_model':
       return code
@@ -282,11 +283,11 @@ export class RecorderOrchestrator {
   private notReadyMessage(): string {
     switch (this.provider.mode) {
       case 'server':
-      return t('recorder.serverDisconnected')
+        return t('recorder.serverDisconnected')
       case 'local':
-      return t('recorder.modelNotDownloaded')
+        return t('recorder.modelNotDownloaded')
       default:
-      return t('recorder.serviceNotReady')
+        return t('recorder.serviceNotReady')
     }
   }
 
@@ -301,7 +302,7 @@ export class RecorderOrchestrator {
         this.cachedPresets = presets
       }
       if (!target) {
-      addRuntimeEvent('warn', 'recorder', 'Failed to switch cleanup preset: preset not found', { presetId })
+        addRuntimeEvent('warn', 'recorder', 'Failed to switch cleanup preset: preset not found', { presetId })
         return
       }
       // 立即生效：更新录音器缓存 + 通知 UI + 悬浮窗提示（均无需等待 IPC）
@@ -357,13 +358,13 @@ export class RecorderOrchestrator {
       }
       if (mode === 'dismiss_fallback') {
         if (token === 0 || token !== this.activeFallbackToken) {
-      addRuntimeEvent('info', 'recorder', 'Ignored stale Esc fallback dismissal', {
+          addRuntimeEvent('info', 'recorder', 'Ignored stale Esc fallback dismissal', {
             token,
             activeFallbackToken: this.activeFallbackToken,
           })
           return
         }
-    addRuntimeEvent('info', 'recorder', 'Fallback card dismissed with Esc', { token })
+        addRuntimeEvent('info', 'recorder', 'Fallback card dismissed with Esc', { token })
         this.activeFallbackToken = 0
         this.overlayService.hide()
       }
@@ -446,7 +447,7 @@ export class RecorderOrchestrator {
     // 9-minute warning from Rust keyboard hook (PTT hold mode)
     bridge.onPTTTimeoutWarning(() => {
       if (this.state === 'recording') {
-      addRuntimeEvent('warn', 'recorder', 'Recording is approaching the five-minute limit')
+        addRuntimeEvent('warn', 'recorder', 'Recording is approaching the five-minute limit')
         this.overlayService.showTimeoutWarning()
       }
     })
@@ -823,7 +824,7 @@ export class RecorderOrchestrator {
                   const savedPath = await saveRecordingAudio(recordId, audioChunks)
                   if (savedPath) historyArtifact.audioFilePath = savedPath
                 } catch (err) {
-      addRuntimeEvent('warn', 'recorder', 'Failed to save audio for empty result', { error: String(err) })
+                  addRuntimeEvent('warn', 'recorder', 'Failed to save audio for empty result', { error: String(err) })
                 }
                 // 保存文件后必须重新验代；失效时同时清文件和可能已存在的记录。
                 if (!this.isRunCurrent(runId)) {
@@ -845,8 +846,8 @@ export class RecorderOrchestrator {
                 isEmpty: true,
                 // 调用本身成功，只是没出字。这一句和上面的报错要能区分开：
                 // 前者多半真没说话，后者是调用失败
-        failReason: t('recorder.noTranscript'),
-        failReasonCode: 'no_transcript',
+                failReason: t('recorder.noTranscript'),
+                failReasonCode: 'no_transcript',
                 audioFilePath: historyArtifact.audioFilePath,
                 ...historyMeta,
               })
@@ -860,7 +861,7 @@ export class RecorderOrchestrator {
           } catch (err) {
             if (historyArtifact) await this.discardCanceledHistory(historyArtifact)
             if (!this.isRunCurrent(runId)) return
-      addRuntimeEvent('warn', 'recorder', 'Failed to write empty result to history', { error: String(err) })
+            addRuntimeEvent('warn', 'recorder', 'Failed to write empty result to history', { error: String(err) })
           }
 
           if (!this.isRunCurrent(runId)) return
@@ -882,7 +883,7 @@ export class RecorderOrchestrator {
           const lateContext = this.consumeTimedOutProcessingContext()
           if (!lateContext) return
 
-      addRuntimeEvent('warn', 'recorder', 'Received a late final result for a timed-out session', {
+          addRuntimeEvent('warn', 'recorder', 'Received a late final result for a timed-out session', {
             timedOutAt: lateContext.timedOutAt,
             lateByMs: Date.now() - lateContext.timedOutAt,
             durationSec: result.durationSec,
@@ -903,7 +904,7 @@ export class RecorderOrchestrator {
           return
         }
         if (this.finalHandledInCurrentRun) {
-      addRuntimeEvent('warn', 'recorder', 'Ignored duplicate final result')
+          addRuntimeEvent('warn', 'recorder', 'Ignored duplicate final result')
           return
         }
         this.finalHandledInCurrentRun = true
@@ -948,7 +949,7 @@ export class RecorderOrchestrator {
       onError: (msg) => {
         const runId = this.activeRunId
         if (!this.isRunCurrent(runId) || (this.state !== 'recording' && this.state !== 'processing')) {
-        addRuntimeEvent('warn', 'backend', 'Ignored error callback from a stale session', { msg, state: this.state, runId })
+          addRuntimeEvent('warn', 'backend', 'Ignored error callback from a stale session', { msg, state: this.state, runId })
           return
         }
         const friendlyFailure = describeProviderError(msg)
@@ -991,7 +992,7 @@ export class RecorderOrchestrator {
                     const savedPath = await saveRecordingAudio(recordId, audioChunks)
                     if (savedPath) historyArtifact.audioFilePath = savedPath
                   } catch (err) {
-        addRuntimeEvent('warn', 'recorder', 'Failed to save audio during error recovery', { error: String(err) })
+                    addRuntimeEvent('warn', 'recorder', 'Failed to save audio during error recovery', { error: String(err) })
                   }
                   if (!this.isRunCurrent(runId)) {
                     await this.discardCanceledHistory(historyArtifact)
@@ -1026,7 +1027,7 @@ export class RecorderOrchestrator {
           } catch (err) {
             if (historyArtifact) await this.discardCanceledHistory(historyArtifact)
             if (!this.isRunCurrent(runId)) return
-        addRuntimeEvent('warn', 'recorder', 'Failed to write error history entry', { error: String(err) })
+            addRuntimeEvent('warn', 'recorder', 'Failed to write error history entry', { error: String(err) })
           }
 
           if (!this.isRunCurrent(runId)) return
@@ -1239,22 +1240,18 @@ export class RecorderOrchestrator {
     this.pendingStopWhileStarting = false
     this.timedOutProcessingContext = null
 
+    // 先给用户即时视觉反馈；overlay 不聚焦，因此后续原生上下文捕获仍指向原目标窗口。
+    // 首次 WebView 已在启动空闲期预热，正常情况下这里只剩一次轻量 show + emit。
+    this.overlayService.showWaiting()
+
     const targetCapture = captureActiveInsertionTarget(undefined, {
       preserveExistingOnFailure: true,
     })
     let activeAppContext: ActiveAppContext | null = null
     try {
-      activeAppContext = await bridge.getActiveAppContext()
-    } catch {
-      activeAppContext = null
-    }
-    this.currentActiveAppContext = activeAppContext
-
-    // Capture probe result NOW (while the target window is still focused).
-    // This is critical for hands-free mode where the user may switch windows
-    // during recording. The probe captures hwnd/focusHwnd of the target.
-    try {
-      this.cachedProbeResult = await this.pasteService.getProbeResult()
+      const recordingContext = await bridge.getRecordingContext()
+      activeAppContext = recordingContext.appContext as unknown as ActiveAppContext
+      this.cachedProbeResult = recordingContext.probe as unknown as ProbeResult
       addRuntimeEvent('info', 'recorder', 'Insertion probe cached at recording start', {
         probeId: this.cachedProbeResult.probeId,
         hwnd: this.cachedProbeResult.hwnd,
@@ -1264,8 +1261,10 @@ export class RecorderOrchestrator {
         verdict: this.cachedProbeResult.verdict,
       })
     } catch {
+      activeAppContext = null
       this.cachedProbeResult = null
     }
+    this.currentActiveAppContext = activeAppContext
 
     this.currentPromptResolution = resolvePromptRouting({
       appContext: activeAppContext,
@@ -1301,10 +1300,6 @@ export class RecorderOrchestrator {
       summary: this.currentPromptResolution.summary,
     })
 
-    // Show overlay immediately in "waiting/preparing" state
-    this.overlayService.clearFallbackHideTimer()
-    this.overlayService.showWaiting()
-
     this.finalHandledInCurrentRun = false
     this.audioSentSamples = 0
     this.wallTimeAtStopSec = 0
@@ -1330,12 +1325,12 @@ export class RecorderOrchestrator {
       if (!this.handsFreeMode) return
       this.handsFreeAutoStopId = setTimeout(() => {
         if (this.state === 'recording' && this.handsFreeMode) {
-      addRuntimeEvent('warn', 'recorder', 'Hands-free recording is approaching the five-minute limit')
+          addRuntimeEvent('warn', 'recorder', 'Hands-free recording is approaching the five-minute limit')
           this.overlayService.showTimeoutWarning()
           // Auto-stop after 1 more minute
           this.handsFreeAutoStopId = setTimeout(() => {
             if (this.state === 'recording' && this.handsFreeMode) {
-      addRuntimeEvent('warn', 'recorder', 'Hands-free recording reached five minutes and stopped automatically')
+              addRuntimeEvent('warn', 'recorder', 'Hands-free recording reached five minutes and stopped automatically')
               void this.stopRecording()
             }
           }, RECORDING_COUNTDOWN_SEC * 1000)
@@ -1379,7 +1374,7 @@ export class RecorderOrchestrator {
           (buffer) => {
             if (!this.isRunCurrent(runId)) return
             if (this.audioSentSamples === 0) {
-            console.log('[ptt-diag] first onData buffer', {
+              console.log('[ptt-diag] first onData buffer', {
                 byteLength: buffer.byteLength,
                 samples: buffer.byteLength / 2,
               })
@@ -1725,7 +1720,7 @@ export class RecorderOrchestrator {
                 const savedPath = await saveRecordingAudio(recordId, audioChunks)
                 if (savedPath) audioFilePath = savedPath
               } catch (err) {
-        addRuntimeEvent('warn', 'recorder', 'Failed to save audio for timeout recovery', { error: String(err) })
+                addRuntimeEvent('warn', 'recorder', 'Failed to save audio for timeout recovery', { error: String(err) })
               }
             }
             historyArtifact = { recordId, audioFilePath }
@@ -1754,12 +1749,12 @@ export class RecorderOrchestrator {
             }
             void bridge.emit('history-updated')
             this.finishRun(timedOutCtx.runId)
-        addRuntimeEvent('info', 'recorder', 'Timed-out recording saved to history for retry', { audioSec: timedOutCtx.audioDurationSec })
+            addRuntimeEvent('info', 'recorder', 'Timed-out recording saved to history for retry', { audioSec: timedOutCtx.audioDurationSec })
           } catch (err) {
             if (historyArtifact) await this.discardCanceledHistory(historyArtifact)
             if (!this.isRunCurrent(timedOutCtx.runId)) return
             this.finishRun(timedOutCtx.runId)
-        addRuntimeEvent('warn', 'recorder', 'Failed to write timeout recovery history entry', { error: String(err) })
+            addRuntimeEvent('warn', 'recorder', 'Failed to write timeout recovery history entry', { error: String(err) })
           }
         })()
       }, LATE_FINAL_GRACE_MS)
@@ -1808,7 +1803,7 @@ export class RecorderOrchestrator {
       return
     }
 
-      addRuntimeEvent('info', 'ptt', 'Ignored toggle request', {
+    addRuntimeEvent('info', 'ptt', 'Ignored toggle request', {
       isHandsFree,
       ignoreReason: 'state_not_toggleable',
       recorderState: this.state,
@@ -1876,7 +1871,7 @@ export class RecorderOrchestrator {
     const elapsedMs = Date.now() - this.lastPTTUpAt
     if (elapsedMs >= MODIFIER_PTT_RELEASE_GUARD_MS) return
     const waitMs = MODIFIER_PTT_RELEASE_GUARD_MS - elapsedMs
-      addRuntimeEvent('info', 'recorder', 'Waiting for modifier keys to settle before inserting text', {
+    addRuntimeEvent('info', 'recorder', 'Waiting for modifier keys to settle before inserting text', {
       waitMs,
       lastPTTUpAt: this.lastPTTUpAt,
     })
@@ -1933,6 +1928,7 @@ export class RecorderOrchestrator {
         doubao_v2: 'Doubao-Seed-ASR-2.0',
         qwen: 'qwen3-asr-flash',
         mimo: 'mimo-v2.5-asr',
+        groq_whisper: 'whisper-large-v3-turbo',
         qwen_omni_35_plus: 'qwen3.5-omni-plus-realtime',
         qwen_omni_35_flash: 'qwen3.5-omni-flash-realtime',
         qwen_omni_flash: 'qwen3-omni-flash-realtime',
@@ -2038,7 +2034,7 @@ export class RecorderOrchestrator {
             const savedPath = await saveRecordingAudio(recordId, context.audioChunks)
             if (savedPath) historyArtifact.audioFilePath = savedPath
           } catch (err) {
-      addRuntimeEvent('warn', 'recorder', 'Failed to save audio file', { error: String(err) })
+            addRuntimeEvent('warn', 'recorder', 'Failed to save audio file', { error: String(err) })
           }
         }
 
@@ -2070,8 +2066,8 @@ export class RecorderOrchestrator {
           failReason: hasText
             ? undefined
             : result.asrText?.trim()
-          ? t('recorder.emptyAfterProcessing')
-          : t('recorder.noTranscript'),
+              ? t('recorder.emptyAfterProcessing')
+              : t('recorder.noTranscript'),
           failReasonCode: hasText
             ? undefined
             : result.asrText?.trim()
