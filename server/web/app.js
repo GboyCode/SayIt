@@ -15,7 +15,10 @@ const MESSAGES = {
     'meta.title': '{app} — Just say it, and write well',
     'meta.description': 'Open-source voice typing for Windows with local, cloud API, and self-hosted modes. Turn speech into polished text in any app.',
     'nav.download': 'Download',
-    'language.switch': '切换到中文',
+    // The accessible name must be in the language of the page the reader is on.
+    // The visible label deliberately shows the *target* language, but a screen
+    // reader on the English page must not be handed a Chinese string.
+    'language.switch': 'Switch to Chinese',
     'hero.headline': 'Just say it, and write well',
     'hero.subheadline': 'Turn speech into polished, ready-to-use text—three times faster than typing.',
     'modes.title': 'Three modes. Your choice.',
@@ -25,7 +28,7 @@ const MESSAGES = {
     'modes.cloud.desc': 'Use your own ASR and AI provider keys',
     'modes.server.title': 'Server mode',
     'modes.server.desc': 'Connect to a public or self-hosted SayIt backend',
-    'features.anywhere': 'Hold to talk, release to type in any app',
+    'features.anywhere': 'Press a shortcut, speak, and the text lands in any app',
     'features.cleanup': 'AI cleanup turns rough speech into clean writing',
     'features.fast': 'Get polished text without breaking your flow',
     'features.rust': 'Lightweight and built with Rust',
@@ -39,7 +42,10 @@ const MESSAGES = {
     'playback.download': 'Download recording',
     'result.waiting': 'Waiting for a recording…',
     'result.receiving': 'Receiving audio…',
-    'result.empty': 'No speech was recognized.',
+    // Not "no speech was recognized": an empty result can also mean the call failed
+    // on the way (quota exhausted, server closed the stream). Naming a cause we did
+    // not verify sends people off to debug a microphone that is working fine.
+    'result.empty': 'No text came back for this recording.',
     'result.copy': 'Copy text',
     'result.copied': 'Copied',
     'result.rawAsr': 'Raw transcript',
@@ -78,7 +84,7 @@ const MESSAGES = {
     'meta.title': '{app} — 随口说，出色写',
     'meta.description': '开源 Windows 语音输入工具，支持本地、云 API 和自部署模式，在任何应用中把口语变成可直接使用的文字。',
     'nav.download': '下载',
-    'language.switch': 'Switch to English',
+    'language.switch': '切换到英文',
     'hero.headline': '随口说，出色写',
     'hero.subheadline': '说话比打字快 3 倍，AI 实时把口语变成可以直接用的书面表达。',
     'modes.title': '三种模式，按需选择',
@@ -88,7 +94,7 @@ const MESSAGES = {
     'modes.cloud.desc': '无需 GPU，对接云端 ASR 和 AI',
     'modes.server.title': '服务器模式',
     'modes.server.desc': 'Docker 一键部署，GPU 加速推理',
-    'features.anywhere': '按住说话，松开即输入到任何应用',
+    'features.anywhere': '按下快捷键说话，文字直接落在任何应用里',
     'features.cleanup': 'AI 自动去除口头禅，输出书面表达',
     'features.fast': '说完即出稿，不打断工作流',
     'features.rust': 'Rust 构建，轻量安全',

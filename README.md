@@ -6,7 +6,7 @@
 
 **Just say it, and write well**
 
-Open-source voice typing for Windows. Hold a shortcut, speak, and release—SayIt transcribes, cleans up, and inserts polished text wherever your cursor is.
+Open-source voice typing for Windows. Press a shortcut and speak—SayIt transcribes, cleans up, and inserts polished text wherever your cursor is.
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](./LICENSE)
 [![Windows](https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows)](https://github.com/crosswk/SayIt/releases/latest)
@@ -91,7 +91,7 @@ Local recognition ships seven GGUF models, with GPU acceleration when available:
 
 1. Download the latest [Windows installer](https://github.com/crosswk/SayIt/releases/latest).
 2. Open SayIt and choose a voice engine. The default public server is enough for a quick trial.
-3. Press the configured shortcut in any app, speak, then release to insert the result.
+3. Press the configured shortcut in any app and speak. By default you press once to start and again to finish; hold-to-talk is available too, under a separate shortcut.
 
 For regular use, choose Local mode or add your own cloud provider keys from the in-app settings. The provider console links are available beside each key field.
 
