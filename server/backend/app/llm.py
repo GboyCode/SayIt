@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import html
 import logging
 import re
 import time
@@ -48,6 +49,26 @@ _DEFAULT_USER_PREFIX = "请校对以下 <asr_text> 标签内的语音转写文�
 _DESKTOP_USER_WRAPPER = "<asr_text>\n{text}\n</asr_text>"
 
 
+def _desktop_user_content(text: str, context: dict[str, str] | None = None) -> str:
+    asr = html.escape(text, quote=True)
+    if not context:
+        return _DESKTOP_USER_WRAPPER.format(text=asr)
+
+    before = str(context.get("text_before") or "")[-500:]
+    selected = str(context.get("selected_text") or "")[:6000]
+    after = str(context.get("text_after") or "")[:300]
+    if not (before or selected or after):
+        return _DESKTOP_USER_WRAPPER.format(text=asr)
+    source = str(context.get("source") or "")[:64]
+    return (
+        f'<text_context source="{html.escape(source, quote=True)}">\n'
+        f'<text_before>{html.escape(before, quote=True)}</text_before>\n'
+        f'<selected_text>{html.escape(selected, quote=True)}</selected_text>\n'
+        f'<text_after>{html.escape(after, quote=True)}</text_after>\n'
+        f'</text_context>\n{_DESKTOP_USER_WRAPPER.format(text=asr)}'
+    )
+
+
 class LLMEngine:
     def __init__(self, profile: LLMProfile) -> None:
         self._cfg = profile
@@ -62,7 +83,8 @@ class LLMEngine:
     # ── public API ──
 
     async def polish(
-        self, text: str, system_prompt: str | None = None, *, is_web_demo: bool = False,
+        self, text: str, system_prompt: str | None = None,
+        text_context: dict[str, str] | None = None, *, is_web_demo: bool = False,
     ) -> tuple[str, int, dict]:
         """Polish text, return (result, elapsed_ms, debug_info).
 
@@ -74,7 +96,9 @@ class LLMEngine:
         if not text or not self._cfg.enabled:
             return text, 0, {"skipped": True}
 
-        messages = self._build_messages(text, system_prompt, is_web_demo=is_web_demo)
+        messages = self._build_messages(
+            text, system_prompt, text_context=text_context, is_web_demo=is_web_demo,
+        )
         provider = self._cfg.provider.lower()
 
         try:
@@ -104,9 +128,16 @@ class LLMEngine:
                 "provider": provider,
                 "model": model,
             }
-            if self._cfg.debug_llm:
+            if self._cfg.debug_llm and not text_context:
                 debug["messages"] = messages
                 debug["raw_output"] = raw
+            elif text_context:
+                debug["text_context"] = {
+                    "source": str(text_context.get("source") or "")[:64],
+                    "before_len": len(str(text_context.get("text_before") or "")),
+                    "selected_len": len(str(text_context.get("selected_text") or "")),
+                    "after_len": len(str(text_context.get("text_after") or "")),
+                }
             return result, ms, debug
         except Exception as e:
             logger.exception("LLM %s failed, returning original", provider)
@@ -115,7 +146,8 @@ class LLMEngine:
     # ── internals ──
 
     def _build_messages(
-        self, text: str, system_prompt: str | None = None, *, is_web_demo: bool = False,
+        self, text: str, system_prompt: str | None = None,
+        text_context: dict[str, str] | None = None, *, is_web_demo: bool = False,
     ) -> list[dict]:
         if not is_web_demo:
             # 桌面模式：system prompt 全由客户端决定（服务器本地 system.txt 仅在客户端
@@ -123,7 +155,7 @@ class LLMEngine:
             sys_p = system_prompt or _read_prompt(
                 f"{self._cfg.prompt_dir}/system.txt", _DEFAULT_SYSTEM_PROMPT
             )
-            user_content = _DESKTOP_USER_WRAPPER.format(text=text)
+            user_content = _desktop_user_content(text, text_context)
             return [{"role": "system", "content": sys_p}, {"role": "user", "content": user_content}]
 
         # Web demo：没有客户端，永远用服务器本地 prompts/ 目录（或内置默认值）兜底——

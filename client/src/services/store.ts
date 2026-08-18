@@ -51,6 +51,18 @@ export interface HistoryRecord {
   styleSummary?: string
   autoAppliedHotwords?: string[]
   manualEditedAt?: number
+  /**
+   * 已提交的 ASR 纠错编号（见 services/asrCorrection.ts）。有值即代表这条提交过，
+   * 入口显示成「已提交」而不是再让用户提交一遍。
+   *
+   * 允许 null 不是随手写的：撤回时要把这几个字段清掉，而 `updateHistoryRecord`
+   * 的 patch 会过一次 JSON.stringify —— **值为 undefined 的键会被整个丢掉**，
+   * 于是"清空"变成"什么都没做"，本地永远显示已提交。必须显式写 null。
+   */
+  asrCorrectionId?: string | null
+  asrCorrectionSubmittedAt?: number | null
+  /** 用户当时给出的正确文本。本地留一份，方便回看自己改了什么。 */
+  asrCorrectedText?: string | null
   // 推理来源信息
   workMode?: 'server' | 'cloud_api' | 'local'
   asrProvider?: string   // 例如 "server" / "doubao" / "sensevoice-small"

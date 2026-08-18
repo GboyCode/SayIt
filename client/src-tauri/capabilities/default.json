@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default capabilities for SayIt",
-  "windows": ["main", "overlay"],
+  "windows": ["main", "overlay", "tray-menu"],
   "permissions": [
     "core:default",
     "core:window:default",

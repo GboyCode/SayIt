@@ -1,9 +1,9 @@
-use serde::Serialize;
-use serde_json::Value;
-use tauri::{AppHandle, State};
 use crate::context::{AppContext, ContextDetector};
 use crate::inject;
 use crate::window::WindowState;
+use serde::Serialize;
+use serde_json::Value;
+use tauri::{AppHandle, State};
 
 #[derive(Serialize)]
 pub struct PasteResult {
@@ -36,13 +36,16 @@ pub fn paste_text(
                 .as_deref()
                 .and_then(|f| f.parse::<isize>().ok())
                 .unwrap_or(0);
-            crate::commands::system::write_log_line(
-                &format!("[RUST] [paste] pre-probed hwnd target={} focus={}", target_val, focus_val)
-            );
+            crate::commands::system::write_log_line(&format!(
+                "[RUST] [paste] pre-probed hwnd target={} focus={}",
+                target_val, focus_val
+            ));
             inject::inject_text_to_hwnd(&text, target_val, focus_val, restore_clipboard)
         }
         _ => {
-            crate::commands::system::write_log_line("[RUST] [paste] no pre-probed hwnd, fallback to inject_text");
+            crate::commands::system::write_log_line(
+                "[RUST] [paste] no pre-probed hwnd, fallback to inject_text",
+            );
             inject::inject_text(&text, restore_clipboard)
         }
     };
@@ -83,9 +86,12 @@ pub fn get_probe_result(detector: State<ContextDetector>) -> Result<Value, Strin
 /// 过去前端连续调用 get_active_app_context + get_probe_result，底层 UI Automation 会
 /// 对同一个窗口完整扫描两遍，既增加热键延迟，也给两次捕获之间的焦点变化留下竞态。
 #[tauri::command]
-pub fn get_recording_context(detector: State<ContextDetector>) -> Result<Value, String> {
+pub fn get_recording_context(
+    include_text_context: Option<bool>,
+    detector: State<ContextDetector>,
+) -> Result<Value, String> {
     let started_at = chrono::Utc::now().timestamp_millis();
-    let ctx = detector.capture("recording_start");
+    let ctx = detector.capture_recording("recording_start", include_text_context.unwrap_or(false));
     let completed_at = chrono::Utc::now().timestamp_millis();
     let app_context = serde_json::to_value(&ctx).map_err(|e| e.to_string())?;
     let probe = probe_result_for_context(&ctx, started_at, completed_at);
@@ -96,12 +102,7 @@ pub fn get_recording_context(detector: State<ContextDetector>) -> Result<Value, 
     }))
 }
 
-fn probe_result_for_context(
-    ctx: &AppContext,
-    started_at: i64,
-    completed_at: i64,
-) -> Value {
-
+fn probe_result_for_context(ctx: &AppContext, started_at: i64, completed_at: i64) -> Value {
     // Determine editability using the same heuristic as inject
     let editable = crate::inject::is_likely_editable_pub(ctx);
 
@@ -136,6 +137,8 @@ fn probe_result_for_context(
         "controlType": &ctx.control_type,
         "automationId": &ctx.automation_id,
         "isValuePatternAvailable": ctx.is_value_pattern_available,
+        "isTextPatternAvailable": ctx.is_text_pattern_available,
+        "isTextPattern2Available": ctx.is_text_pattern2_available,
         "isKeyboardFocusable": ctx.is_keyboard_focusable,
         "isEnabled": ctx.is_enabled,
         "isReadOnly": ctx.is_read_only,

@@ -9,8 +9,9 @@ import {
   hasActiveSession,
 } from './debugLog'
 import { getWSUrl } from './runtimeConfig'
+import { withLegacyServerTextContext } from './contextAware'
 import { setConnectionStatus } from '../stores/connectionStatus'
-import type { ActiveAppContext } from '../types/appContext'
+import type { ActiveAppContext, TextContext } from '../types/appContext'
 import type { ClientRuntimeInfo } from '../types/appApi'
 
 export type WSState = 'disconnected' | 'connecting' | 'connected' | 'error'
@@ -29,6 +30,7 @@ export interface FinalResult {
   durationSec: number
   asrEngine?: string
   asrModel?: string
+  contextApplied?: boolean
 }
 
 export interface AudioStats {
@@ -85,6 +87,10 @@ function computeReconnectDelayMs(closeCode?: number): number {
 }
 let sessionStarted = false
 let audioDropWarned = false
+/** Advertised by new servers in the ready message. Missing means a rolling-upgrade legacy server. */
+let serverSupportsTextContext = false
+/** Whether the current request placed a compatibility capsule in system_prompt. */
+let legacyTextContextForSession = false
 
 // --- Heartbeat ---
 const HEARTBEAT_INTERVAL_MS = 30_000
@@ -100,7 +106,7 @@ function startHeartbeat() {
       ws.send(JSON.stringify({ cmd: 'ping' }))
       // Start pong timeout
       pongTimer = setTimeout(() => {
-    addRuntimeEvent('warn', 'websocket', 'Heartbeat timed out: no pong for 10s; disconnecting')
+        addRuntimeEvent('warn', 'websocket', 'Heartbeat timed out: no pong for 10s; disconnecting')
         // Force close so onclose triggers reconnect
         try { ws?.close(4000, 'heartbeat timeout') } catch { /* ignore */ }
       }, HEARTBEAT_TIMEOUT_MS)
@@ -138,7 +144,9 @@ if ((import.meta as unknown as Record<string, unknown>).hot) {
     }
     try { ws?.close() } catch { /* ignore */ }
     ws = null
+    serverSupportsTextContext = false
     sessionStarted = false
+    legacyTextContextForSession = false
   })
 }
 
@@ -148,6 +156,7 @@ function endSessionIfNeeded() {
     endSession()
   }
   audioDropWarned = false
+  legacyTextContextForSession = false
 }
 
 export function connect(cbs: WSCallbacks): Promise<void> {
@@ -163,7 +172,7 @@ export function connect(cbs: WSCallbacks): Promise<void> {
     // 上一条连接还在（可能仍在 CONNECTING，或刚 open 尚未标记就绪）。这里会主动关掉它再重连，
     // 这正是「连上几秒就被自己关掉、且没发 start」最可能的元凶——记录下来看看是谁触发的。
     const prevState = ws.readyState
-      addRuntimeEvent('warn', 'websocket', 'connect() closed the previous unready connection before reconnecting', {
+    addRuntimeEvent('warn', 'websocket', 'connect() closed the previous unready connection before reconnecting', {
       prevReadyState: prevState, // 0=CONNECTING 1=OPEN 2=CLOSING 3=CLOSED
       caller: shortCallerStack(),
     })
@@ -178,6 +187,7 @@ export function connect(cbs: WSCallbacks): Promise<void> {
 
   return new Promise((resolve, reject) => {
     intentionalClose = false
+    serverSupportsTextContext = false
     updateGlobalState('connecting')
     const wsUrl = getWSUrl()
     connectStartMs = Date.now()
@@ -195,7 +205,7 @@ export function connect(cbs: WSCallbacks): Promise<void> {
           // ignore
         }
         updateGlobalState('error')
-      addRuntimeEvent('error', 'websocket', 'Connection timed out (10s)', { url: wsUrl })
+        addRuntimeEvent('error', 'websocket', 'Connection timed out (10s)', { url: wsUrl })
         reject(new Error('WebSocket connection timeout'))
       }
     }, 10000)
@@ -228,10 +238,12 @@ export function connect(cbs: WSCallbacks): Promise<void> {
 
         switch (msg.type) {
           case 'ready':
-          addRuntimeEvent('info', 'websocket', 'Ready received', {
+            serverSupportsTextContext = msg?.capabilities?.text_context === true
+            addRuntimeEvent('info', 'websocket', 'Ready received', {
               connectionId: msg.connection_id,
               asr: msg.asr,
               llm: msg.llm,
+              textContext: serverSupportsTextContext,
             })
             callbacks.onReady?.({
               connectionId: msg.connection_id,
@@ -251,6 +263,12 @@ export function connect(cbs: WSCallbacks): Promise<void> {
             break
           case 'final': {
             const durationFromAsrDebug = Number(msg?.asr_debug?.duration_sec || 0)
+            const explicitContextApplied = typeof msg.context_applied === 'boolean'
+              ? msg.context_applied
+              : undefined
+            const legacyContextApplied = explicitContextApplied === undefined
+              && legacyTextContextForSession
+              && Boolean(msg?.llm_debug?.provider)
             callbacks.onFinal?.({
               asrText: msg.asr_text,
               llmText: msg.llm_text,
@@ -259,6 +277,7 @@ export function connect(cbs: WSCallbacks): Promise<void> {
               durationSec: Number(msg.duration_sec || durationFromAsrDebug || 0),
               asrEngine: msg.asr_engine || undefined,
               asrModel: msg.asr_model || undefined,
+              contextApplied: explicitContextApplied ?? (legacyContextApplied ? true : undefined),
             })
             break
           }
@@ -297,6 +316,7 @@ export function connect(cbs: WSCallbacks): Promise<void> {
       }
       stopHeartbeat()
       ws = null
+      serverSupportsTextContext = false
       updateGlobalState('disconnected')
 
       const aliveMs = openedAtMs ? Date.now() - openedAtMs : undefined
@@ -343,6 +363,7 @@ export function disconnect() {
   }
   const socket = ws
   ws = null
+  serverSupportsTextContext = false
   try {
     socket?.close()
   } catch {
@@ -357,6 +378,7 @@ export function sendStart(opts?: {
   disableAi?: boolean
   clientMeta?: ClientRuntimeInfo | null
   appContext?: ActiveAppContext | null
+  textContext?: TextContext | null
   source?: string
   hotwords?: string[]
   language?: string
@@ -367,7 +389,11 @@ export function sendStart(opts?: {
   }
 
   const msg: Record<string, unknown> = { cmd: 'start', source: opts?.source || 'live' }
-  if (opts?.systemPrompt) msg.system_prompt = opts.systemPrompt
+  legacyTextContextForSession = Boolean(opts?.textContext && !serverSupportsTextContext)
+  const effectiveSystemPrompt = legacyTextContextForSession && opts?.systemPrompt && opts.textContext
+    ? withLegacyServerTextContext(opts.systemPrompt, opts.textContext)
+    : opts?.systemPrompt
+  if (effectiveSystemPrompt) msg.system_prompt = effectiveSystemPrompt
   if (opts?.disableAi) msg.disable_ai = true
   if (opts?.clientMeta) {
     msg.client_meta = {
@@ -392,6 +418,15 @@ export function sendStart(opts?: {
       control_type: opts.appContext.controlType,
     }
   }
+  if (opts?.textContext) {
+    msg.text_context = {
+      source: opts.textContext.source,
+      text_before: opts.textContext.textBefore,
+      selected_text: opts.textContext.selectedText,
+      text_after: opts.textContext.textAfter,
+      selection_truncated: opts.textContext.selectionTruncated,
+    }
+  }
   if (opts?.hotwords && opts.hotwords.length > 0) {
     msg.hotwords = opts.hotwords
   }
@@ -401,7 +436,19 @@ export function sendStart(opts?: {
 
   try {
     startSession(opts)
-    addMsg('sent', 'start', msg)
+    // Never persist editor text through the compatibility system prompt. The wire request uses the
+    // effective prompt; diagnostics retain the original content-free prompt plus bounded lengths.
+    addMsg('sent', 'start', legacyTextContextForSession
+      ? { ...msg, system_prompt: opts?.systemPrompt }
+      : msg)
+    if (legacyTextContextForSession) {
+      addRuntimeEvent('warn', 'websocket', 'Using legacy server text-context compatibility', {
+        source: opts?.textContext?.source,
+        beforeLen: opts?.textContext?.textBefore.length,
+        selectedLen: opts?.textContext?.selectedText.length,
+        afterLen: opts?.textContext?.textAfter.length,
+      })
+    }
     ws.send(JSON.stringify(msg))
     sessionStarted = true
     audioDropWarned = false
@@ -413,7 +460,12 @@ export function sendStart(opts?: {
   }
 }
 
-export function sendStop(opts?: { pttHoldMs?: number; audioStats?: AudioStats }): boolean {
+export function sendStop(opts?: {
+  pttHoldMs?: number
+  /** 松键时补上的「这次别做 AI」。服务端在收到 stop 之后才开始 ASR+AI，来得及。 */
+  disableAi?: boolean
+  audioStats?: AudioStats
+}): boolean {
   if (!sessionStarted) {
     return false
   }
@@ -429,6 +481,7 @@ export function sendStop(opts?: { pttHoldMs?: number; audioStats?: AudioStats })
     if (typeof opts?.pttHoldMs === 'number' && Number.isFinite(opts.pttHoldMs)) {
       payload.usage_meta = { ptt_hold_ms: Math.max(0, Math.round(opts.pttHoldMs)) }
     }
+    if (opts?.disableAi) payload.disable_ai = true
     if (opts?.audioStats) {
       payload.audio_stats = {
         avg_rms: opts.audioStats.avgRms,
@@ -459,7 +512,7 @@ export function sendAudio(buffer: ArrayBuffer) {
       ws.send(buffer)
       addAudioChunk(buffer)
     } catch (err) {
-    addRuntimeEvent('error', 'websocket', 'Failed to send audio', {
+      addRuntimeEvent('error', 'websocket', 'Failed to send audio', {
         error: String(err),
         bytes: buffer.byteLength,
       })

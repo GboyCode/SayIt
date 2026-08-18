@@ -106,6 +106,7 @@ export class CloudAPIProvider implements TranscriptionProvider {
     return {
       ...opts,
       hotwords: opts.hotwords ? [...opts.hotwords] : undefined,
+      textContext: opts.textContext ? { ...opts.textContext } : undefined,
     }
   }
 
@@ -507,9 +508,12 @@ export class CloudAPIProvider implements TranscriptionProvider {
       // AI 校对（Qwen Omni 已内置 AI，跳过）
       let llmText = asrText
       let llmMs = 0
+      let aiSucceeded = false
 
       const disableAi = startOpts.disableAi ?? false
-      if (!disableAi && !isQwenOmni) {
+      const aiMinDurationSec = Math.max(0, Number(startOpts.aiMinDurationSec) || 0)
+      const shouldUseAi = !disableAi && (aiMinDurationSec === 0 || durationSec >= aiMinDurationSec)
+      if (shouldUseAi && !isQwenOmni) {
         const aiProvider = await getSetting('cloudAi.provider', 'openai_compat') as string
         const aiApiUrl = await getSetting('cloudAi.apiUrl', '') as string
         const aiApiKey = await getSetting('cloudAi.apiKey', '') as string
@@ -526,16 +530,36 @@ export class CloudAPIProvider implements TranscriptionProvider {
 
           try {
             const aiResult = await invoke<AiResult>('cloud_polish', {
-              request: { text: asrText, ai_config: aiConfig, system_prompt: startOpts.systemPrompt || null },
+              request: {
+                text: asrText,
+                ai_config: aiConfig,
+                system_prompt: startOpts.systemPrompt || null,
+                text_context: startOpts.textContext || null,
+              },
             })
             if (!this.isRunCurrent(runId)) return
             llmText = aiResult.text || asrText
             llmMs = aiResult.elapsed_ms
+            aiSucceeded = Boolean(aiResult.text)
           } catch (err) {
             if (!this.isRunCurrent(runId)) return
         addRuntimeEvent('warn', 'cloud_api', 'AI cleanup failed; using raw ASR text', { error: String(err) })
           }
         }
+      }
+
+      if (!disableAi && aiMinDurationSec > 0 && durationSec < aiMinDurationSec) {
+        addRuntimeEvent('info', 'cloud_api', 'AI cleanup skipped below duration threshold', {
+          durationSec,
+          aiMinDurationSec,
+        })
+      }
+
+      // A spoken edit command must never replace the user's selection when AI was unavailable.
+      // Re-inserting the original selection is a safe no-op for the target editor.
+      if (startOpts.textContext?.selectedText && !aiSucceeded) {
+        llmText = startOpts.textContext.selectedText
+        addRuntimeEvent('warn', 'cloud_api', 'Selected-text edit skipped because AI did not complete')
       }
 
       if (!this.isRunCurrent(runId)) return
@@ -546,6 +570,7 @@ export class CloudAPIProvider implements TranscriptionProvider {
 
       this.callbacks.onFinal?.({
         asrText, llmText, asrMs, llmMs, durationSec,
+        contextApplied: startOpts.textContext ? aiSucceeded : undefined,
         ...(isQwenOmni && { asrEngine: 'qwen_omni', asrModel: omniModel }),
       })
       this.callbacks.onDone?.()

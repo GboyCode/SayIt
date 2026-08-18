@@ -67,16 +67,34 @@ export function getBackendBaseUrl(): string {
 }
 
 /**
- * 检查更新时用的地址 —— **故意不跟随** getBackendBaseUrl()。
+ * 检查更新时用的地址 —— **跟随** getBackendBaseUrl()：服务器地址填哪个，就找哪个要更新。
  *
- * 业务后端地址是用户可以改的（服务器模式指向自建服务器）。更新 manifest 如果也跟着改，
- * 这些用户就会去问自己的服务器要更新，拿到 404 后被当成"没配更新"静默返回，
- * 于是永远收不到新版本。更新通道必须固定在官方地址上，和业务后端解耦。
- *
- * 仍然尊重 VITE_BACKEND_BASE_URL：开发时要能把更新通道指到测试服务器上验流程。
+ * 这么定是为了「填一个地址就能整体切到测试环境」这件事足够简单，不用第二个设置项。
+ * 代价与配套约束（改这里之前先看 docs/decisions.md 的「更新通道」一节）：
+ *  · 自建后端的用户，他的服务器上没有 manifest。**所以 checkVersionUpdate 必须保留
+ *    回落到官方地址的那一步** —— 没有它，这些用户会拿到 404、被静默当成"没有新版"，
+ *    从此永远收不到更新。那一步不是优化，是这个设计能成立的前提。
+ *  · 更新包没有签名（main.rs 的 updater 插件因此禁用），manifest 的 SHA-512 只证明
+ *    "下载的字节与 manifest 一致"、不证明"这个包是我们发的"。也就是说这个地址同时
+ *    决定了「谁能在这台机器上装程序」。因此非官方地址时，关于页必须把更新来源显示
+ *    出来（见 isOfficialUpdateChannel 的用处），别让它悄无声息。
  */
 export function getUpdateBaseUrl(): string {
+  return getBackendBaseUrl()
+}
+
+/** 内置的官方更新地址。回落用，也用于判断当前是否偏离了官方通道。 */
+export function getOfficialUpdateBaseUrl(): string {
   return resolveBuiltinDefaultBaseUrl()
+}
+
+/**
+ * 更新是否来自官方地址。
+ * 为 false 时关于页会把实际来源显示出来 —— 一台从别处取更新的机器如果看起来和
+ * 正常机器一样，早晚会被当成正常机器用。
+ */
+export function isOfficialUpdateChannel(): boolean {
+  return normalizeUrl(getUpdateBaseUrl()) === normalizeUrl(getOfficialUpdateBaseUrl())
 }
 
 export async function setBackendBaseUrl(value: string): Promise<string> {

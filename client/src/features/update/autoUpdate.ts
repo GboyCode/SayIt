@@ -24,6 +24,7 @@ import { checkVersionUpdate, compareVersions, type VersionInfo } from './updateC
 import { getSetting, setSetting } from '@/services/store'
 import * as bridge from '@/services/bridge'
 import { addRuntimeEvent } from '@/services/debugLog'
+import { getOfficialUpdateBaseUrl, getUpdateBaseUrl, isOfficialUpdateChannel } from '@/services/runtimeConfig'
 
 /** 已下载待安装的包。持久化到设置里，重启后仍然知道装过什么。 */
 export interface PendingUpdate {
@@ -125,6 +126,19 @@ async function clearPending(): Promise<void> {
 }
 
 /**
+ * 服务器地址变更时丢弃已下载的待安装包（更新来源跟随那个地址，见 getUpdateBaseUrl）。
+ *
+ * 必须做：`ensureDownloaded` 只按版本号判断"这个包已经在盘上了"，而版本号相同不代表
+ * 来自同一台服务器、内容也相同。留着它的后果是"把地址指到测试服务器验一遍"实际装的
+ * 还是上一个来源那个包 —— 测试看起来通过了，测的却不是目标产物。
+ * versionInfo 一起清掉，否则界面还挂着旧地址那次检查的结论。
+ */
+export async function discardPendingForChannelSwitch(): Promise<void> {
+  await clearPending()
+  setState({ versionInfo: null, checkedAt: null, downloadPercent: 0, error: null })
+}
+
+/**
  * 恢复上次已下载的包。
  *
  * 两种情况要作废这条记录：
@@ -193,11 +207,16 @@ async function runCheckAndDownload(): Promise<void> {
     setState({ versionInfo: info, checkedAt: Date.now() })
 
     // 无条件记一条：这是判断"更新到底跑没跑、看到了什么"的唯一依据。
+    // source 是**实际**取到 manifest 的地址：与配置里的地址不一致就说明发生了回落
+    // （配置的服务器上没有 manifest）。少了它，"回落了"和"配置的地址就是官方"
+    // 在日志里长得一模一样。
     addRuntimeEvent(info.error ? 'warn' : 'info', 'update', 'update check finished', {
       current,
       latest: info.latestVersion,
       hasUpdate: info.hasUpdate,
       error: info.error,
+      source: info.sourceUrl,
+      configured: getUpdateBaseUrl(),
     })
 
     if (!info.hasUpdate || !info.downloadUrl) return
@@ -232,9 +251,24 @@ export async function startUpdateService(): Promise<void> {
     const current = readCurrentVersion()
     // 第一条日志无条件写，且带上我们认为自己是哪个版本 —— 排查时先看这行在不在，
     // 不在就说明服务压根没启动，在就往下看 check finished 那行看到了什么。
+    //
+    // channel 也必须记：曾经排查过一次"新版没被检测到"，真相是包发到了 dev 通道而
+    // 客户端查的是生产通道，而当时的日志里完全看不出查的是哪个地址，只能靠手动
+    // curl 两个域名对比才发现（见 pitfalls #26）。
     addRuntimeEvent(current ? 'info' : 'error', 'update', 'update service starting', {
       currentVersion: current ?? '(unreadable)',
+      channel: getUpdateBaseUrl(),
     })
+
+    // 更新来源跟随服务器地址，被带到非官方地址时留一条痕迹。
+    // 这不一定是错的（自建后端、或者故意指到测试服务器都会走到这里），但它是
+    // "为什么没收到新版"最常见的原因，所以必须能从日志里一眼看到。
+    if (!isOfficialUpdateChannel()) {
+      addRuntimeEvent('info', 'update', 'update source follows a custom server address, not the official channel', {
+        channel: getUpdateBaseUrl(),
+        official: getOfficialUpdateBaseUrl(),
+      })
+    }
 
     // 这个开关的 UI 已经撤掉（更新不再让用户关），但**保留读取**：
     // 更新链路自己出故障时（0.0.8 那次把用户锁在死循环里），这是唯一不用发新版

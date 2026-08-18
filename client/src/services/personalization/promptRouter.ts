@@ -78,10 +78,10 @@ export function buildHotwordInjectionPart(hotwords: string[] | undefined): strin
 }
 
 export function resolvePromptRouting(input: PromptRoutingInput): PromptResolution {
-  const matchedRule = [...input.appRules]
-    .filter((rule) => rule.enabled)
-    .sort((left, right) => right.priority - left.priority)
-    .find((rule) => matchesAppPromptRule(rule, input.appContext))
+  // 顺序即优先级：取列表里第一条「已启用且命中」的规则，也就是界面上自上而下的第一条。
+  // 顺序完全由用户在界面上排（启用一条会自动置顶），这里不要再重排。
+  const matchedRule = input.appRules
+    .find((rule) => rule.enabled && matchesAppPromptRule(rule, input.appContext))
 
   const preset = pickPreset(matchedRule?.presetId, input.presets, input.activePresetId)
   const systemPromptParts = [preset.systemPrompt.trim()]

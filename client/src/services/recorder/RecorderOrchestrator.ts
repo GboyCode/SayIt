@@ -56,10 +56,20 @@ import {
   isModifierPTTSetting as _isModifierPTTSetting,
   computeProcessingTimeoutMs as _computeProcessingTimeoutMs,
   classifyMicLevel,
+  judgeOsMicMute,
   type MicLevel,
 } from './helpers'
 import { t } from '@/i18n'
 import { describeProviderError } from '@/lib/errorMessages'
+import { describeMicSource, micSourceChanged } from './micSourceReminder'
+import {
+  CONTEXT_SELECTION_EDIT_PROMPT,
+  CONTEXT_SELECTION_EDIT_PROMPT_SETTING_KEY,
+  normalizeContextSelectionEditPrompt,
+  resolveContextAwareOutput,
+  usableTextContext,
+  withContextAwareInstructions,
+} from '../contextAware'
 
 type StateTransition =
   | ['idle', 'recording']
@@ -76,6 +86,7 @@ const VALID_TRANSITIONS: StateTransition[] = [
 
 const LATE_FINAL_GRACE_MS = 15000
 const MODIFIER_PTT_RELEASE_GUARD_MS = 200
+const MIC_MUTED_AUTO_CANCEL_MS = 3000
 
 function classifyHistoryProviderFailure(message: string): HistoryFailReasonCode {
   const code = describeProviderError(message).code
@@ -144,6 +155,8 @@ export class RecorderOrchestrator {
   private lastPTTUpUsedModifier = false
 
   private cachedMicId = ''
+  /** Last successfully opened input route in this app process. Kept in memory on purpose. */
+  private lastMicSourceIdentity: string | null = null
   /**
    * 是否让浏览器对麦克风做降噪。默认开（底噪大的机器需要），
    * 但降噪是按"人听得舒服"优化的，可能削掉 ASR 要的细节，所以可关。
@@ -160,6 +173,12 @@ export class RecorderOrchestrator {
   private cachedPresets: PromptPreset[] = []
   private cachedActivePresetId = 'intent'
   private cachedAiEnabled = true
+  /** 0 = 所有语音都用 AI；正数 = 达到门槛才调用 AI。 */
+  private cachedAiMinDurationSec = 0
+  /** Reads bounded editor text only when explicitly enabled; default is false. */
+  private cachedContextAwareWriting = false
+  /** User-visible selection-edit prompt. Cached with other recording settings. */
+  private cachedContextSelectionEditPrompt = CONTEXT_SELECTION_EDIT_PROMPT
   private cachedClientRuntimeInfo: ClientRuntimeInfo | null = null
   /** 客户端运行时信息是否已成功采集一次。它是进程内静态元数据（区域/内存/主机名等），
    *  只需启动时取一次，不该挂在每次改设置都触发的刷新热路径上。失败时保持 false 以便重试。 */
@@ -187,11 +206,16 @@ export class RecorderOrchestrator {
   private captureReadyPromise: Promise<void> | null = null
   /** 5-minute auto-stop timer for hands-free mode */
   private handsFreeAutoStopId: ReturnType<typeof setTimeout> | null = null
+  /** 系统确认麦克风静音后的自动取消计时器，避免悬浮窗无限停留。 */
+  private micMutedAutoCancelId: ReturnType<typeof setTimeout> | null = null
+  /** 静音探测代次：实际打开设备的复核必须覆盖较早发起的预检查结果。 */
+  private micMuteProbeSequence = 0
   /** 连续「非正常音量」（静音或偏低）的采样数 */
   private consecutiveSilentSamples = 0
-  /** 当前这段安静里是否出现过「有声音但偏低」的帧（峰值不为零）。
-   *  用于区分「完全无信号（可能被静音/选错设备）」与「有声音但太小」——
-   *  只有整段安静里从没出现过任何信号，才判定为「未检测到声音」。 */
+  /** 当前连续非正常音量的采样数，仅用于判断正常说话候选之间的间隔。 */
+  private consecutiveNonVoicedSamples = 0
+  /** 当前这段安静里是否出现过任何非零采样。
+   * 只要为真，就只能提示「请靠近麦克风」，不能提示「未检测到声音」。 */
   private quietRunSawSignal = false
   /** 连续正常音量的采样数——用于「持续说话一段时间才清除警告」的迟滞判断，避免瞬时小声音把警告瞬间清掉造成闪烁 */
   private consecutiveVoicedSamples = 0
@@ -201,9 +225,19 @@ export class RecorderOrchestrator {
    *  后续安静只是正常停顿思考——只给温和「请靠近麦克风」，绝不再报「未检测到声音」造成惊吓。 */
   private hasDetectedVoiceThisSession = false
   private lastLowVolumeWarnAt = 0
-  /** 系统层面确认麦克风被静音（录音开始时查询得到）。为真时悬浮窗显示红色高警，
+  /** 麦克风被静音已被「系统标志 + 音频信号」双重证实。为真时悬浮窗显示红色高警，
    *  并抑制基于信号的琥珀提醒，直到检测到真实说话（用户中途取消了静音）。 */
   private osMicMuted = false
+  /** 系统报了「端点被静音」，但还没被音频信号证实。
+   *
+   *  为什么不能直接相信系统：IAudioEndpointVolume::GetMute 反映的是端点上的静音**设置**，
+   *  不等于采集流真被切断。实测 Plantronics Blackwire 5220 USB 耳麦（软/硬静音会与 Windows
+   *  端点标志同步）会停在 GetMute=true，而 getUserMedia 照常收到正常音量的音频 —— 于是每次
+   *  按热键都先弹一次红色高警「麦克风已被静音」，说话 0.5s 后又自己消失。
+   *  所以这个标志只当线索：必须等 PCM 证实真的全 0 才升级成 osMicMuted。 */
+  private pendingOsMicMuted = false
+  /** pending 期间累计的全 0 采样数，达到 OS_MIC_MUTE_CONFIRM_SAMPLES 才确认。 */
+  private pendingOsMicMutedSamples = 0
 
   /** Audio stats tracking */
   private audioStatsRmsSum = 0
@@ -455,6 +489,8 @@ export class RecorderOrchestrator {
 
   cleanup() {
     this.clearProcessingTimeout()
+    this.clearMicMutedAutoCancelTimer()
+    this.micMuteProbeSequence++
     this.overlayService.dispose()
     stopInsertionTargetTracking()
     void stopCapture().catch(() => { })
@@ -465,6 +501,10 @@ export class RecorderOrchestrator {
    *  供标题栏/设置页的开关按钮使用，避免快速切换时卡顿。 */
   setAiEnabledCache(next: boolean) {
     this.cachedAiEnabled = next
+  }
+
+  showAiEnabledToast(enabled: boolean) {
+    if (this.state === 'idle') this.overlayService.showAiCleanupToggled(enabled)
   }
 
   /** 仅更新当前润色模式（preset）的缓存值，无 IPC/热词/语言等全量刷新。
@@ -515,6 +555,9 @@ export class RecorderOrchestrator {
       presets,
       activePresetId,
       aiEnabled,
+      aiMinDurationSec,
+      contextAwareWriting,
+      contextSelectionEditPrompt,
       appPromptRules,
       userStats,
       streamingDisplay,
@@ -527,6 +570,9 @@ export class RecorderOrchestrator {
       getPromptPresets(),
       getActivePresetId(),
       getSetting('aiEnabled', false),
+      getSetting('aiMinDurationSec', 0),
+      getSetting('contextAwareWritingEnabled', false),
+      getSetting(CONTEXT_SELECTION_EDIT_PROMPT_SETTING_KEY, CONTEXT_SELECTION_EDIT_PROMPT),
       getAppPromptRules(),
       getUserStats(),
       getSetting('streamingDisplayEnabled', false),
@@ -542,6 +588,9 @@ export class RecorderOrchestrator {
     this.cachedPresets = presets
     this.cachedActivePresetId = activePresetId
     this.cachedAiEnabled = Boolean(aiEnabled)
+    this.cachedAiMinDurationSec = Math.max(0, Math.min(MAX_RECORDING_SEC, Number(aiMinDurationSec) || 0))
+    this.cachedContextAwareWriting = Boolean(contextAwareWriting)
+    this.cachedContextSelectionEditPrompt = normalizeContextSelectionEditPrompt(contextSelectionEditPrompt)
     this.cachedAppPromptRules = appPromptRules
     this.cachedUserStats = userStats
     this.cachedStreamingDisplay = Boolean(streamingDisplay)
@@ -625,6 +674,60 @@ export class RecorderOrchestrator {
     }
   }
 
+  private clearMicMutedAutoCancelTimer() {
+    if (this.micMutedAutoCancelId) {
+      clearTimeout(this.micMutedAutoCancelId)
+      this.micMutedAutoCancelId = null
+    }
+  }
+
+  private scheduleMicMutedAutoCancel(runId: number) {
+    this.clearMicMutedAutoCancelTimer()
+    const closeWhenReady = () => {
+      this.micMutedAutoCancelId = null
+      if (!this.isRunCurrent(runId) || !this.osMicMuted) return
+      if (this.state === 'idle' && this.startRecordingLock) {
+        // 防御：这个计时器现在只在收到音频帧后才排，理论上必定已在 recording。
+        // 万一将来又从「采集就绪前」的路径调用，也不要在这里直接放弃。
+        this.micMutedAutoCancelId = setTimeout(closeWhenReady, 100)
+        return
+      }
+      if (this.state !== 'recording') return
+      addRuntimeEvent('info', 'recorder', 'Muted microphone warning timed out; recording will close automatically', {
+        runId,
+        timeoutMs: MIC_MUTED_AUTO_CANCEL_MS,
+      })
+      void this.cancelRecording(runId, { showCanceled: false, reason: 'mic_muted_timeout' })
+    }
+    this.micMutedAutoCancelId = setTimeout(closeWhenReady, MIC_MUTED_AUTO_CANCEL_MS)
+  }
+
+  /** 在采集链路初始化前查询系统静音状态；默认设备不经过可能很慢的设备枚举。 */
+  private async checkConfiguredMicMuted(runId: number) {
+    // 在任何异步操作之前占用代次；之后发起的实际设备复核可以可靠淘汰本次预检查。
+    const probeSequence = ++this.micMuteProbeSequence
+    // 空值与 Web Media 的 "default" 都表示跟随 Windows 当前默认录音端点。
+    // 直接把 null 交给原生层查询该端点的 GetMute；deviceId 只用于定位，不参与静音判定。
+    if (!this.cachedMicId || this.cachedMicId === 'default') {
+      await this.checkMicMuted(null, runId, probeSequence)
+      return
+    }
+
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices()
+      if (probeSequence !== this.micMuteProbeSequence || !this.isRunCurrent(runId)) return
+      const inputs = devices.filter((device) => device.kind === 'audioinput')
+      const selected = inputs.find((device) => device.deviceId === this.cachedMicId)
+
+      const label = selected?.label?.trim() || ''
+      // 指定设备却无法取得名称时不能回退查系统默认端点，否则可能把另一支麦克风的状态报过来。
+      if (!label) return
+      await this.checkMicMuted(label, runId, probeSequence)
+    } catch {
+      // 预检查失败不影响录音；采集真正打开后还会用 MediaStreamTrack.label 再复核一次。
+    }
+  }
+
   private getLiveElapsedSec() {
     if (this.state === 'recording' && this.recordStartPerf > 0) {
       return elapsedSecFromPerf(this.recordStartPerf)
@@ -644,6 +747,8 @@ export class RecorderOrchestrator {
       textInsertionInFlight: this.textInsertionInFlight,
     })
     this.clearProcessingTimeout()
+    this.clearMicMutedAutoCancelTimer()
+    this.micMuteProbeSequence++
     if (this.handsFreeAutoStopId) {
       clearTimeout(this.handsFreeAutoStopId)
       this.handsFreeAutoStopId = null
@@ -666,12 +771,15 @@ export class RecorderOrchestrator {
     this.currentPromptResolution = null
     this.cachedProbeResult = null
     this.consecutiveSilentSamples = 0
+    this.consecutiveNonVoicedSamples = 0
     this.quietRunSawSignal = false
     this.consecutiveVoicedSamples = 0
     this.currentVolumeWarning = 'none'
     this.hasDetectedVoiceThisSession = false
     this.lastLowVolumeWarnAt = 0
     this.osMicMuted = false
+    this.pendingOsMicMuted = false
+    this.pendingOsMicMutedSamples = 0
     clearCapturedInsertionTarget()
     this.recordStartPerf = 0
     if (!options?.preserveLateFinalContext) {
@@ -694,16 +802,22 @@ export class RecorderOrchestrator {
     } catch { /* 记录可能尚未写入；processFinalResult 完成写入后会再次清理 */ }
   }
 
-  private async cancelRecording(token: number) {
+  private async cancelRecording(
+    token: number,
+    options: { showCanceled?: boolean; reason?: 'user' | 'mic_muted_timeout' } = {},
+  ) {
+    const showCanceled = options.showCanceled ?? true
+    const reason = options.reason ?? 'user'
     if (
       this.state !== 'recording'
       || token === 0
       || token !== this.activeRunId
     ) {
-      addRuntimeEvent('info', 'recorder', 'Ignored Esc recording cancellation', {
+      addRuntimeEvent('info', 'recorder', 'Ignored recording cancellation', {
         state: this.state,
         token,
         activeRunId: this.activeRunId,
+        reason,
       })
       return
     }
@@ -720,11 +834,12 @@ export class RecorderOrchestrator {
     this.finishRun(canceledRunId)
     this.provider.cancel()
 
-    addRuntimeEvent('info', 'recorder', 'Recording canceled by user', {
+    addRuntimeEvent('info', 'recorder', 'Recording canceled', {
       runId: canceledRunId,
       mode: this.provider.mode,
+      reason,
     })
-    this.overlayService.showCanceled()
+    if (showCanceled) this.overlayService.showCanceled()
 
     try {
       await stopCapture()
@@ -734,7 +849,7 @@ export class RecorderOrchestrator {
       // state 在停止采集期间保持 processing，阻止新录音复用同一个 capture；确认旧
       // capture 已结束后再回 idle。keepOverlay 保留短暂的“已取消”反馈。
       if (this.getState() === 'processing' && this.activeRunId === 0) {
-        this.resetToIdle({ keepOverlay: true })
+        this.resetToIdle({ keepOverlay: showCanceled })
       }
       if (this.provider.mode === 'server') this.ensureConnection()
     }
@@ -1239,17 +1354,27 @@ export class RecorderOrchestrator {
     this.startRecordingLock = true
     this.pendingStopWhileStarting = false
     this.timedOutProcessingContext = null
+    this.clearMicMutedAutoCancelTimer()
+    this.osMicMuted = false
+    this.pendingOsMicMuted = false
+    this.pendingOsMicMutedSamples = 0
 
     // 先给用户即时视觉反馈；overlay 不聚焦，因此后续原生上下文捕获仍指向原目标窗口。
     // 首次 WebView 已在启动空闲期预热，正常情况下这里只剩一次轻量 show + emit。
     this.overlayService.showWaiting()
+    // 不等待上下文捕获、Provider 建连或 AudioWorklet 初始化：提前拿到系统静音标志，
+    // 好让第一帧 PCM 一到就能立刻裁决（标志本身不足以判定，见 pendingOsMicMuted）。
+    void this.checkConfiguredMicMuted(runId)
 
     const targetCapture = captureActiveInsertionTarget(undefined, {
       preserveExistingOnFailure: true,
     })
     let activeAppContext: ActiveAppContext | null = null
     try {
-      const recordingContext = await bridge.getRecordingContext()
+      // AI is the only consumer of editor text. If cleanup is off, do not read the text even when
+      // the preference remains enabled, so the privacy boundary matches actual behavior.
+      const includeTextContext = this.cachedContextAwareWriting && this.cachedAiEnabled
+      const recordingContext = await bridge.getRecordingContext(includeTextContext)
       activeAppContext = recordingContext.appContext as unknown as ActiveAppContext
       this.cachedProbeResult = recordingContext.probe as unknown as ProbeResult
       addRuntimeEvent('info', 'recorder', 'Insertion probe cached at recording start', {
@@ -1264,6 +1389,11 @@ export class RecorderOrchestrator {
       activeAppContext = null
       this.cachedProbeResult = null
     }
+    const textContext = usableTextContext(activeAppContext?.textContext)
+    if (activeAppContext) {
+      if (textContext) activeAppContext.textContext = textContext
+      else delete activeAppContext.textContext
+    }
     this.currentActiveAppContext = activeAppContext
 
     this.currentPromptResolution = resolvePromptRouting({
@@ -1275,6 +1405,23 @@ export class RecorderOrchestrator {
       hotwords: this.cachedHotwords,
       injectHotwords: this.cachedInjectHotwords,
     })
+    if (textContext) {
+      this.currentPromptResolution = {
+        ...this.currentPromptResolution,
+        systemPrompt: withContextAwareInstructions(
+          this.currentPromptResolution.systemPrompt,
+          textContext,
+          this.cachedContextSelectionEditPrompt,
+        ),
+        summary: `${this.currentPromptResolution.summary} | Text context: ${textContext.selectedText ? 'selection' : 'caret'}`,
+      }
+      addRuntimeEvent('info', 'recorder', 'Text context captured', {
+        source: textContext.source,
+        beforeLen: textContext.textBefore.length,
+        selectedLen: textContext.selectedText.length,
+        afterLen: textContext.textAfter.length,
+      })
+    }
 
     addRuntimeEvent('info', 'recorder', 'Recording started', {
       micId: this.cachedMicId || 'default',
@@ -1311,12 +1458,12 @@ export class RecorderOrchestrator {
     this.audioStatsSilentFrames = 0
     this.audioStatsTotalFrames = 0
     this.consecutiveSilentSamples = 0
+    this.consecutiveNonVoicedSamples = 0
     this.quietRunSawSignal = false
     this.consecutiveVoicedSamples = 0
     this.currentVolumeWarning = 'none'
     this.hasDetectedVoiceThisSession = false
     this.lastLowVolumeWarnAt = 0
-    this.osMicMuted = false
     resetWaveformBarState(this.overlayWaveState, this.overlayService.getBarCount(), 3)
 
     // Hands-free mode: arm a 5-minute auto-stop timer
@@ -1344,8 +1491,10 @@ export class RecorderOrchestrator {
         runId,
         systemPrompt: this.cachedAiEnabled ? this.currentPromptResolution.systemPrompt : undefined,
         disableAi: !this.cachedAiEnabled,
+        aiMinDurationSec: this.cachedAiMinDurationSec,
         clientMeta: this.cachedClientRuntimeInfo,
         appContext: activeAppContext,
+        textContext,
         hotwords: this.cachedHotwords.length > 0 ? this.cachedHotwords : undefined,
         language: this.cachedLanguage || undefined,
         streamingDisplay: this.cachedStreamingDisplay,
@@ -1353,8 +1502,10 @@ export class RecorderOrchestrator {
       : {
         runId,
         disableAi: !this.cachedAiEnabled,
+        aiMinDurationSec: this.cachedAiMinDurationSec,
         clientMeta: this.cachedClientRuntimeInfo,
         appContext: activeAppContext,
+        textContext,
         hotwords: this.cachedHotwords.length > 0 ? this.cachedHotwords : undefined,
         language: this.cachedLanguage || undefined,
         streamingDisplay: this.cachedStreamingDisplay,
@@ -1393,8 +1544,8 @@ export class RecorderOrchestrator {
             })
             this.overlayService.pushListeningBars(bars)
 
-            // 计算本帧 RMS 与峰值幅度（均归一化到 0..1）。峰值用于区分「完全无信号（可能被静音/
-            // 选错设备）」与「有声音但偏低」：静音流是一串 0（峰值≈0），偏低则有波动只是幅度小。
+            // 计算本帧 RMS 与峰值幅度（均归一化到 0..1）。峰值严格为 0 才表示整帧没有输入；
+            // 只要存在任何非零采样，就必须和「未检测到声音」区分开。
             let sum = 0
             let framePeakRaw = 0
             for (let i = 0; i < pcmFrame.length; i++) {
@@ -1447,8 +1598,22 @@ export class RecorderOrchestrator {
       // 实时读取供应商/WorkspaceId（避免切换供应商后缓存过期，导致非实时模型也弹气泡）。
       void this.applyStreamingActive()
       this.overlayService.startListeningTicker(runId)
+      const micSource = describeMicSource(captureResult, this.cachedMicId, t('mic.title'))
+      if (micSourceChanged(this.lastMicSourceIdentity, micSource.identity)) {
+        this.lastMicSourceIdentity = micSource.identity
+        this.overlayService.showMicSourceHint({ mode: micSource.mode, label: micSource.label })
+        addRuntimeEvent('info', 'recorder', 'Input source reminder shown', {
+          mode: micSource.mode,
+          label: micSource.label,
+        })
+      }
       // 录音一开始就查一次麦克风是否被系统静音，被静音则悬浮窗即时红色高警（不阻塞录音）
-      void this.checkMicMuted()
+      // 用 getUserMedia 实际打开的设备再复核；若系统在初始化期间切换了默认麦克风，以这里为准。
+      void this.checkMicMuted(
+        captureResult.label || null,
+        runId,
+        ++this.micMuteProbeSequence,
+      )
       // 就绪提示音已触发，稍后再静音系统输出（避免把提示音一起静掉）
       this.scheduleSystemMuteIfEnabled()
       armHandsFreeTimer()
@@ -1484,13 +1649,14 @@ export class RecorderOrchestrator {
 
   /**
    * 录音时的音量提醒状态机（两档）：
-   *  - muted（峰值≈0，几乎无信号）：极可能麦克风被静音 / 选错设备 / 未授权 → 「未检测到声音」
+   *  - muted（PCM 全 0）：麦克风没有任何输入 → 「未检测到声音」
    *  - low （有声音但 RMS 偏低）：距离远 / 说太小声 → 「请靠近麦克风」
    *  - voiced（正常）：连续约 0.5s 即认定恢复，清除提醒
    *
    * 关键准确性约束：「未检测到声音」只在「从录音开始就没听到过正常说话，且这整段安静里
-   * 从未出现过任何信号」时才报——避免把说话后的正常停顿思考误判成设备故障（那种情况只
-   * 温和提示「请靠近麦克风」）。计时/迟滞沿用原逻辑：没听到过说话时更早提醒（2s），
+   * 每个采样都为 0」时才报；任何非零输入都只能算声音小。这样也避免把说话后的正常停顿
+   * 思考误判成设备故障（那种情况只温和提示「请靠近麦克风」）。
+   * 计时/迟滞沿用原逻辑：没听到过说话时更早提醒（2s），
    * 听到过后放宽（5s）；同档每 5s 重弹；连续正常音量 0.5s 才清警告，避免瞬时小声闪烁。
    */
   private updateVolumeWarning(level: MicLevel, sampleCount: number) {
@@ -1499,26 +1665,60 @@ export class RecorderOrchestrator {
     const VOICED_GAP_TOLERANCE = 4800 // ~300ms：容忍说话中字与字之间的短暂停顿，不清零已累计的清除进度
     const firstWarn = this.hasDetectedVoiceThisSession ? 80000 : 32000 // 5s / 2s @16kHz
 
+    // 系统报了端点静音，但那只是设置标志，不代表采集流真被切断（见 pendingOsMicMuted）。
+    // 用真实 PCM 裁决：全 0 累计到阈值才升级成红色高警；一旦出现任何非零采样，
+    // 就说明这块设备的 mute 标志不作数，本次录音永久丢弃这条线索。
+    if (this.pendingOsMicMuted) {
+      const decision = judgeOsMicMute(this.pendingOsMicMutedSamples, level, sampleCount)
+      if (decision.verdict === 'confirmed') {
+        this.pendingOsMicMuted = false
+        this.pendingOsMicMutedSamples = 0
+        this.osMicMuted = true
+        addRuntimeEvent('warn', 'recorder', 'Microphone is muted by the operating system (confirmed: audio is all-zero)')
+        this.overlayService.showMicMutedAlert()
+        this.scheduleMicMutedAutoCancel(this.activeRunId)
+      } else if (decision.verdict === 'dismissed') {
+        this.pendingOsMicMuted = false
+        this.pendingOsMicMutedSamples = 0
+        addRuntimeEvent('info', 'recorder', 'System reported the microphone as muted but audio is flowing; ignoring the flag')
+      } else {
+        this.pendingOsMicMutedSamples = decision.silentSamples
+      }
+    }
+
     // 系统已确认被静音：保持红色高警，不让琥珀提醒覆盖它；
     // 一旦收到真实说话（用户中途取消了静音）立即恢复正常。
     if (this.osMicMuted) {
-      if (level !== 'voiced') return
+      if (level === 'voiced') {
+        this.consecutiveVoicedSamples += sampleCount
+        this.consecutiveNonVoicedSamples = 0
+        if (this.consecutiveVoicedSamples < CLEAR_VOICED) return
+      } else {
+        this.consecutiveNonVoicedSamples += sampleCount
+        if (this.consecutiveNonVoicedSamples >= VOICED_GAP_TOLERANCE) this.consecutiveVoicedSamples = 0
+        return
+      }
       this.osMicMuted = false
+      this.clearMicMutedAutoCancelTimer()
       this.overlayService.clearWarning()
       this.currentVolumeWarning = 'none'
       this.consecutiveVoicedSamples = 0
       this.consecutiveSilentSamples = 0
+      this.consecutiveNonVoicedSamples = 0
       this.quietRunSawSignal = false
       this.hasDetectedVoiceThisSession = true
       return
     }
 
     if (level === 'voiced') {
+      // 即使还不足 0.5s、尚未确认恢复正常，也已经证明输入不为零。
+      this.quietRunSawSignal = true
       this.consecutiveVoicedSamples += sampleCount
-      this.consecutiveSilentSamples = 0
-      this.quietRunSawSignal = false
+      this.consecutiveNonVoicedSamples = 0
       if (this.consecutiveVoicedSamples >= CLEAR_VOICED) {
         this.hasDetectedVoiceThisSession = true
+        this.consecutiveSilentSamples = 0
+        this.quietRunSawSignal = false
         if (this.currentVolumeWarning !== 'none') {
           this.overlayService.clearWarning()
           this.currentVolumeWarning = 'none'
@@ -1527,17 +1727,18 @@ export class RecorderOrchestrator {
       return
     }
 
-    // 非正常音量（muted / low）：累计安静时长；本段安静里只要出现过任何信号就记下来
+    // 非正常音量（muted / low）：累计安静时长；任何非零输入都永久标记本段并非「无声音」。
     this.consecutiveSilentSamples += sampleCount
+    this.consecutiveNonVoicedSamples += sampleCount
     if (level === 'low') this.quietRunSawSignal = true
     // 说话时字与字之间的短暂停顿（<~300ms）不清零已累计的正常音量，否则一句话里的自然
     // 停顿会反复把"清除进度"打回 0，导致明明在正常说话也凑不满连续 0.5s、警告始终清不掉。
     // 只有持续安静超过这个小间隙，才认为不是说话停顿、归零重新计。
-    if (this.consecutiveSilentSamples >= VOICED_GAP_TOLERANCE) this.consecutiveVoicedSamples = 0
+    if (this.consecutiveNonVoicedSamples >= VOICED_GAP_TOLERANCE) this.consecutiveVoicedSamples = 0
 
     if (this.consecutiveSilentSamples < firstWarn) return
 
-    // 只有「从没听到过说话 且 这段安静里完全没有信号」才报「未检测到声音」，其余一律温和「请靠近麦克风」
+    // 只有从未正常说过话且整段所有采样均为 0，才允许提示「未检测到声音」。
     const kind: 'muted' | 'low' =
       !this.hasDetectedVoiceThisSession && !this.quietRunSawSignal ? 'muted' : 'low'
 
@@ -1556,21 +1757,43 @@ export class RecorderOrchestrator {
   }
 
   /**
-   * 录音开始时查询系统麦克风是否被静音；确认被静音则悬浮窗即时红色高警「麦克风已被静音」。
-   * 仅在能可靠定位设备时才据此判定（系统默认设备，或按名字唯一匹配到选中设备），
+   * 录音开始时查询系统麦克风的静音标志，作为「麦克风已被静音」红色高警的**线索**记录下来；
+   * 真正弹警告要等音频帧证实 PCM 全 0（见 pendingOsMicMuted）——系统标志会骗人。
+   * 仅在能可靠定位设备时才采信（系统默认设备，或按名字唯一匹配到选中设备），
    * 否则（如选了特定设备但拿不到名字/同名多个）返回不判定，交给基于信号的琥珀提醒兜底。
    */
-  private async checkMicMuted() {
+  private async checkMicMuted(
+    activeDeviceLabel: string | null,
+    runId: number,
+    probeSequence: number,
+  ) {
     try {
-      // 目前仅可靠支持系统默认麦克风的静音查询；选了特定设备时交给信号检测兜底（不硬报静音）
-      if (this.cachedMicId) return
-      const res = await invoke<{ matched: boolean; muted: boolean }>('get_mic_mute_state', { deviceLabel: null })
-      // 查询是异步的，回来时可能已停止录音 / 已听到说话，则不再弹
-      if (this.state !== 'recording' || this.hasDetectedVoiceThisSession) return
-      if (res.matched && res.muted) {
-        this.osMicMuted = true
-        addRuntimeEvent('warn', 'recorder', 'Microphone is muted by the operating system')
-        this.overlayService.showMicMutedAlert()
+      // 查询本次 getUserMedia 实际打开的端点，而不是根据设置值或 deviceId 猜测。
+      // 设备名无法唯一匹配时 Rust 返回 matched=false，继续交给信号检测兜底。
+      const res = await invoke<{ matched: boolean; muted: boolean }>('get_mic_mute_state', {
+        deviceLabel: activeDeviceLabel,
+      })
+      // 后发的实际设备复核优先；旧探测、旧录音或已恢复正常说话时都不能再弹。
+      if (probeSequence !== this.micMuteProbeSequence || !this.isRunCurrent(runId)) return
+      if (this.state !== 'recording' && !(this.state === 'idle' && this.startRecordingLock)) return
+      if (this.hasDetectedVoiceThisSession || !res.matched) return
+
+      if (res.muted) {
+        // 只记线索、不弹 UI：等音频帧证实真的全 0（原因见 pendingOsMicMuted 注释）。
+        // 已确认、或已在等待证实时都不要重置累计进度（预检查与实际设备复核都会走到这里）。
+        if (this.osMicMuted || this.pendingOsMicMuted) return
+        this.pendingOsMicMuted = true
+        this.pendingOsMicMutedSamples = 0
+        addRuntimeEvent('info', 'recorder', 'System reports the microphone endpoint is muted; waiting for audio to confirm')
+      } else {
+        // 实际打开的端点与预检查不一致，或用户在初始化期间取消了静音。
+        this.pendingOsMicMuted = false
+        this.pendingOsMicMutedSamples = 0
+        if (this.osMicMuted) {
+          this.osMicMuted = false
+          this.clearMicMutedAutoCancelTimer()
+          this.overlayService.clearWarning()
+        }
       }
     } catch { /* 查询失败不影响录音，交给信号检测兜底 */ }
   }
@@ -1582,6 +1805,7 @@ export class RecorderOrchestrator {
     }
 
     const runId = this.activeRunId
+    this.clearMicMutedAutoCancelTimer()
 
     // Wait for capture setup to complete (getUserMedia + AudioWorklet can take time)
     if (this.captureReadyPromise) {
@@ -1640,8 +1864,18 @@ export class RecorderOrchestrator {
       return
     }
 
+    // 短语音门槛只能等到这里才判断：时长要录完才知道。audioDur 用的是边发边累计的
+    // 已发送采样数（不是本地攒下来的音频），所以不影响上传，服务器模式照旧流式。
+    //
+    // 本地/云 API 模式的 AI 是 Provider 在 ASR 之后自己另发的一次请求，它们在那时用
+    // 同一个时长自行判断；这里这份只给服务器模式用 —— 服务端的 AI 紧跟 ASR 执行，
+    // 客户端插不进中间，只能把结论随 stop 一起送过去。
+    const skipAiForShortSpeech = this.cachedAiMinDurationSec > 0
+      && audioDur < this.cachedAiMinDurationSec
+
     this.provider.stop({
       pttHoldMs,
+      disableAi: skipAiForShortSpeech || undefined,
       audioStats: this.audioStatsTotalFrames > 0 ? {
         avgRms: Math.round((this.audioStatsRmsSum / this.audioStatsTotalFrames) * 10000) / 10000,
         peakRms: Math.round(this.audioStatsPeakRms * 10000) / 10000,
@@ -1650,7 +1884,12 @@ export class RecorderOrchestrator {
         totalFrames: this.audioStatsTotalFrames,
       } : undefined,
     })
-    addRuntimeEvent('info', 'recorder', 'Stop sent', { audioSec: audioDur, pttHoldMs: Math.round(pttHoldMs) })
+    addRuntimeEvent('info', 'recorder', 'Stop sent', {
+      audioSec: audioDur,
+      pttHoldMs: Math.round(pttHoldMs),
+      aiMinDurationSec: this.cachedAiMinDurationSec || undefined,
+      skipAiForShortSpeech: skipAiForShortSpeech || undefined,
+    })
 
     if (!this.transition('processing')) {
       this.finishRun(runId)
@@ -1977,11 +2216,20 @@ export class RecorderOrchestrator {
 
     // llmText === asrText 说明这段没经过 AI 整理（极速模式，或后端未跑 LLM 直接回 asrText）。
     // 此时文本仍是纯 ASR，「格式规范」由我们兜底；AI 整理过的文本则把格式交给 AI，只做文本替换。
-    const rawAsr = !result.llmText || result.llmText === result.asrText
-    const baseText = rawAsr ? result.asrText : result.llmText
+    // New clients may talk to an older server that does not understand text_context. In that case
+    // contextApplied is absent: paste the original selection back unchanged instead of replacing it
+    // with a spoken edit command.
+    const { baseText, rawAsr, selectedEditWasApplied } = resolveContextAwareOutput({
+      asrText: result.asrText,
+      llmText: result.llmText,
+      contextApplied: result.contextApplied,
+      textContext: context.appContext?.textContext,
+    })
     let textToPaste: string
     try {
-      textToPaste = await applyTextTransforms(baseText, { rawAsr })
+      textToPaste = selectedEditWasApplied
+        ? await applyTextTransforms(baseText, { rawAsr })
+        : baseText
     } catch (error) {
       if (!this.isRunCurrent(runId)) return
       addRuntimeEvent('warn', 'recorder', 'Text post-processing failed', { error: String(error), runId })
@@ -2019,6 +2267,7 @@ export class RecorderOrchestrator {
       audioSec: audioDur,
       textLen: textToPaste ? textToPaste.length : 0,
       source: options.source,
+      contextApplied: result.contextApplied,
     })
 
     try {

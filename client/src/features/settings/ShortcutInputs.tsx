@@ -266,6 +266,7 @@ export function ComboShortcutInput({
   label,
   description,
   comboOnly = false,
+  allowMouseShortcut = false,
   validate,
 }: {
   value: string
@@ -274,6 +275,8 @@ export function ComboShortcutInput({
   description: string
   /** 仅接受"修饰键+主键"的组合键，拒绝单键/单修饰键（用于预设切换快捷键）。 */
   comboOnly?: boolean
+  /** 组合键为主的设置也可额外允许鼠标侧键/中键（AI 整理开关）。 */
+  allowMouseShortcut?: boolean
   validate?: ShortcutValidate
 }) {
   const [recording, setRecording] = useState(false)
@@ -358,10 +361,11 @@ export function ComboShortcutInput({
 
     window.addEventListener('keydown', handleKeyDown)
     window.addEventListener('keyup', handleKeyUp)
-    // 仅单键模式接受鼠标侧键（comboOnly 只收组合键）；侧键由 Rust 底层鼠标钩子捕获后回报
+    // 鼠标侧键由 Rust 底层鼠标钩子捕获后回报。少数以组合键为主的设置（AI 整理开关）
+    // 也可显式放行鼠标单键。
     // （捕获模式由 useSuspendHotkeys 开启）。
     let off: (() => void) | undefined
-    if (!comboOnly) {
+    if (!comboOnly || allowMouseShortcut) {
       off = bridge.onMouseShortcutCaptured(({ setting }) => {
         if (!isShortcutCaptureOwner(cancelRecording)) return
         if (!setting || committingRef.current) return
@@ -389,14 +393,16 @@ export function ComboShortcutInput({
       window.removeEventListener('keyup', handleKeyUp)
       off?.()
     }
-  }, [recording, handleKeyDown, handleKeyUp, comboOnly, cancelRecording, onChange, validate, showConflict])
+  }, [recording, handleKeyDown, handleKeyUp, comboOnly, allowMouseShortcut, cancelRecording, onChange, validate, showConflict])
 
   // 显示：单键用 getSingleKeyDisplay，组合键用 displayAccelerator
   const isSingleKey = resolveSingleKeyShortcut(tempValue || value) !== undefined
   const displayValue = tempValue || value || ''
-  const keys = isSingleKey
-    ? [getSingleKeyDisplay(displayValue)]
-    : displayAccelerator(displayValue)
+  const keys = !displayValue
+    ? [t('shortcut.notSet')]
+    : isSingleKey
+      ? [getSingleKeyDisplay(displayValue)]
+      : displayAccelerator(displayValue)
 
   return (
     <div>

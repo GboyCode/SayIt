@@ -30,6 +30,8 @@ export const DEFAULTS: Record<string, unknown> = {
   // keyboard/mod.rs 的 PttKeyConfig::fallback()。
   shortcutPTT: 'ControlRight',
   shortcutHandsFree: 'AltRight', // 免提模式。默认右 Alt 单键。也支持组合键格式如 'Control+Shift+S'
+  // AI 整理总开关。留空 = 不注册，避免升级时意外占用用户已有的全局组合键。
+  shortcutToggleAi: '',
 
   // ── 麦克风 ──
   selectedMic: '', // 设备 ID，空字符串 = 系统默认
@@ -43,6 +45,10 @@ export const DEFAULTS: Record<string, unknown> = {
 
   // ── AI 校对 ──
   aiEnabled: true, // 是否开启 AI 校对。可选: true | false
+  // 0 = 每段语音都整理；大于 0 时，仅录音达到该秒数才调用 AI（最多 300 秒）。
+  aiMinDurationSec: 0,
+  // 读取光标附近文字/选区并交给 AI，用于上下文续写与语音编辑。涉及正文读取，默认关闭。
+  contextAwareWritingEnabled: false,
   aiPromptAppend: '', // 全局附加 prompt
   'ai.builtinPromptLanguage': 'zh-CN', // 内置 Prompt 内容语言；与界面语言相互独立
 

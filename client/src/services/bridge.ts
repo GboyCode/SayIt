@@ -124,11 +124,11 @@ export function getProbeResult() {
 }
 
 /** 一次原生捕获同时返回录音目标上下文与插字探测结果。 */
-export function getRecordingContext() {
+export function getRecordingContext(includeTextContext = false) {
   return invoke<{
     appContext: Record<string, unknown>
     probe: Record<string, unknown>
-  }>('get_recording_context')
+  }>('get_recording_context', { includeTextContext })
 }
 
 export function getActiveAppContext() {
@@ -313,6 +313,32 @@ export function verifyUpdatePackage(filePath: string, sha512?: string | null) {
   return invoke<boolean>('verify_update_package', { filePath, sha512: sha512 ?? null })
 }
 
+// ─── Tray ───
+
+/**
+ * 把托盘右键菜单里「AI 整理」那一项刷成给定状态（文字上的开/关 + 状态图标）。
+ *
+ * 托盘菜单只在启动时建一次（Tauri v2 没有「菜单即将弹出」的钩子），
+ * 所以界面里每次切开关都要主动回写，否则右键看到的是上一次的状态。
+ */
+export function setTrayAiEnabled(enabled: boolean) {
+  return invoke<void>('set_tray_ai_enabled', { enabled }).catch(() => { })
+}
+
+/** 托盘右键切换了「AI 整理」（Rust 已落库，payload 是切换后的值）。 */
+export function onAiCleanupChanged(cb: (enabled: boolean) => void) {
+  const unlisten = listen<{ enabled?: boolean }>('ai-cleanup-changed', (event) => {
+    cb(Boolean(event.payload?.enabled))
+  })
+  return () => { unlisten.then((fn) => fn()) }
+}
+
+/** AI 整理快捷键被触发；前端负责更新内存、持久化和悬浮窗提示。 */
+export function onAiCleanupToggleRequested(cb: () => void) {
+  const unlisten = listen('toggle-ai-cleanup', () => cb())
+  return () => { unlisten.then((fn) => fn()) }
+}
+
 export function setPTTLabConfig(data: unknown) {
   console.log('[bridge] setPTTLabConfig called', data)
   invoke('set_ptt_lab_config', { data }).catch((err) => {
@@ -332,6 +358,16 @@ export function savePcmAsWav(id: string, pcmBase64: string, sampleRate?: number)
 
 export function readAudioFile(filePath: string) {
   return invoke<string | null>('read_audio_file', { filePath })
+}
+
+/**
+ * 录音文件是否还在。
+ *
+ * 保留期到了之后 Rust 只删文件、不清历史记录里的 audioFilePath，
+ * 所以「记录里有路径」不等于「文件还在」，凡是依赖录音的入口都要先问这一句。
+ */
+export function audioFileExists(filePath: string) {
+  return invoke<boolean>('audio_file_exists', { filePath })
 }
 
 export function deleteAudioFile(filePath: string) {

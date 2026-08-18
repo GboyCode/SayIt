@@ -5,7 +5,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # ---------------------------------------------------------------------------
 # SQL dialect helpers
@@ -205,6 +205,32 @@ class Database:
                     created_at BIGINT NOT NULL
                 )
                 """,
+                # 用户主动提交的 ASR 纠错样本（音频文件另存 runtime/asr-corrections/）。
+                # 与「服务端静默录音」无关，见 app/asr_corrections.py 顶部说明。
+                f"""
+                CREATE TABLE IF NOT EXISTS asr_corrections (
+                    id {self.dialect.autoincrement_pk},
+                    correction_id TEXT NOT NULL UNIQUE,
+                    machine_id TEXT NOT NULL,
+                    client_ip TEXT,
+                    app_version TEXT,
+                    client_record_id TEXT,
+                    audio_path TEXT NOT NULL,
+                    audio_bytes INTEGER NOT NULL DEFAULT 0,
+                    audio_sha256 TEXT NOT NULL,
+                    audio_duration_ms INTEGER NOT NULL DEFAULT 0,
+                    original_asr_text TEXT NOT NULL,
+                    corrected_text TEXT NOT NULL,
+                    asr_provider TEXT,
+                    language TEXT,
+                    hotwords_json TEXT,
+                    consent_version TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    review_note TEXT,
+                    created_at BIGINT NOT NULL,
+                    updated_at BIGINT NOT NULL
+                )
+                """,
             ]
             for sql in ddl:
                 self._exec_ddl(sql)
@@ -224,6 +250,11 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_service_logs_session_id ON service_logs(session_id)",
                 "CREATE INDEX IF NOT EXISTS idx_feedback_machine_id ON feedback(machine_id)",
                 "CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback(created_at DESC)",
+                # machine_id/client_ip + created_at 是限流查询的形状；sha256 用于查重
+                "CREATE INDEX IF NOT EXISTS idx_asr_corrections_machine ON asr_corrections(machine_id, created_at DESC)",
+                "CREATE INDEX IF NOT EXISTS idx_asr_corrections_ip ON asr_corrections(client_ip, created_at DESC)",
+                "CREATE INDEX IF NOT EXISTS idx_asr_corrections_sha ON asr_corrections(audio_sha256)",
+                "CREATE INDEX IF NOT EXISTS idx_asr_corrections_status ON asr_corrections(status, created_at DESC)",
             ]
             for sql in indexes:
                 self._exec_ddl(sql)

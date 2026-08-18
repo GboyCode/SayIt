@@ -21,15 +21,17 @@ pub fn shortcuts_changed(
     let ptt_str = ptt_setting.as_str().unwrap_or("ControlRight");
     let hf_val = storage.get("shortcutHandsFree", None);
     let hf_key = hf_val.as_str().unwrap_or("AltRight");
+    let ai_toggle_val = storage.get("shortcutToggleAi", None);
+    let ai_toggle_key = ai_toggle_val.as_str().unwrap_or("");
 
-    // Reconfigure PTT + hands-free keyboard hook
-    hook.reconfigure(&app, ptt_str, hf_key);
+    // Reconfigure PTT + hands-free + AI cleanup single-key/mouse hook
+    hook.reconfigure(&app, ptt_str, hf_key, ai_toggle_key);
 
     // 重新注册所有 global_shortcut（免提组合键 + 各润色模式切换快捷键）
     register_all_global_shortcuts(&app, storage.inner());
 }
 
-/// 集中注册所有 global_shortcut：免提组合键 + 各润色模式切换快捷键。
+/// 集中注册所有 global_shortcut：免提组合键、AI 整理开关和各润色模式切换快捷键。
 ///
 /// `unregister_all` 会清空全部已注册的 global_shortcut，因此这两类必须在同一处
 /// 一次性重注册，否则会互相覆盖。单键（PTT/免提单键）不走这里，由底层键盘钩子处理。
@@ -54,6 +56,22 @@ pub fn register_all_global_shortcuts(app: &AppHandle, storage: &Storage) {
             log::warn!("Failed to register hands-free shortcut '{}': {}", hf_key, e);
         } else {
             log::info!("Registered hands-free shortcut: {}", hf_key);
+        }
+    }
+
+    // AI 整理开关快捷键。留空即不注册，避免默认占用用户已有组合键。
+    let ai_toggle = storage.get("shortcutToggleAi", None);
+    let ai_toggle_key = ai_toggle.as_str().unwrap_or("").to_string();
+    if !ai_toggle_key.is_empty() && ai_toggle_key.contains('+') {
+        let ai_toggle_for_log = ai_toggle_key.clone();
+        if let Err(e) = gs.on_shortcut(ai_toggle_key.as_str(), move |app, _shortcut, event| {
+            if event.state == ShortcutState::Pressed {
+                let _ = app.emit("toggle-ai-cleanup", serde_json::json!({ "source": "globalShortcut" }));
+            }
+        }) {
+            log::warn!("Failed to register AI cleanup shortcut '{}': {}", ai_toggle_for_log, e);
+        } else {
+            log::info!("Registered AI cleanup shortcut: {}", ai_toggle_for_log);
         }
     }
 

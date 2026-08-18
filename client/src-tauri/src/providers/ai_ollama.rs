@@ -3,7 +3,7 @@
 
 use super::diag;
 use super::prompt::wrap_user_text;
-use super::types::{AiProviderConfig, AiResult, TestResult};
+use super::types::{AiProviderConfig, AiResult, TestResult, TextContext};
 use std::time::Instant;
 
 const SCOPE: &str = "ai/ollama";
@@ -13,6 +13,7 @@ pub async fn polish(
     text: &str,
     config: &AiProviderConfig,
     system_prompt: Option<&str>,
+    text_context: Option<&TextContext>,
 ) -> Result<AiResult, String> {
     if text.trim().is_empty() {
         return Ok(AiResult {
@@ -25,7 +26,7 @@ pub async fn polish(
     let sys_prompt = system_prompt.unwrap_or("你是语音转文本的校对助手。");
     // Ollama /api/generate 是单一 prompt 字符串，没有 system/user 角色区分，
     // 这里手动拼接：system prompt 在前，user 消息（中性标签包裹）在后。
-    let combined = format!("{}\n\n{}", sys_prompt, wrap_user_text(text));
+    let combined = format!("{}\n\n{}", sys_prompt, wrap_user_text(text, text_context));
 
     let model = if config.model.is_empty() {
         "qwen2.5:7b"
@@ -75,10 +76,13 @@ pub async fn polish(
         ));
     }
 
-    let body_text = resp
-        .text()
-        .await
-        .map_err(|e| diag::fail(SCOPE, "read_body", format!("Failed to read response: {}", e)))?;
+    let body_text = resp.text().await.map_err(|e| {
+        diag::fail(
+            SCOPE,
+            "read_body",
+            format!("Failed to read response: {}", e),
+        )
+    })?;
     let data: serde_json::Value = serde_json::from_str(&body_text).map_err(|e| {
         diag::fail(
             SCOPE,
@@ -114,7 +118,11 @@ pub async fn polish(
     }
 
     Ok(AiResult {
-        text: if result_text.is_empty() { text.to_string() } else { result_text },
+        text: if result_text.is_empty() {
+            text.to_string()
+        } else {
+            result_text
+        },
         elapsed_ms,
     })
 }
@@ -161,7 +169,9 @@ pub async fn test_connection(config: &AiProviderConfig) -> TestResult {
                 .to_string();
             let detail = format!(
                 "Elapsed: {}ms\nModel: {}\nSent: \"{}\"\nReply: {}",
-                elapsed_ms, model, prompt,
+                elapsed_ms,
+                model,
+                prompt,
                 if reply.is_empty() { "(empty)" } else { &reply }
             );
             TestResult {
@@ -191,7 +201,11 @@ pub async fn test_connection(config: &AiProviderConfig) -> TestResult {
         }
         Err(e) => TestResult {
             ok: false,
-            message: diag::fail("ai/ollama-test", "http_send", format!("Connection failed: {}", e)),
+            message: diag::fail(
+                "ai/ollama-test",
+                "http_send",
+                format!("Connection failed: {}", e),
+            ),
             elapsed_ms,
             detail: format!("Model: {}\nRequest URL: {}", model, url),
         },

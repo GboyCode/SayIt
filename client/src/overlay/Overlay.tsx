@@ -1,6 +1,6 @@
 import * as bridge from '../services/bridge'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Copy, Check, X } from 'lucide-react'
+import { Copy, Check, MicVocal, X } from 'lucide-react'
 import { isLocale, setLocale } from '@/i18n'
 import { useT } from '@/i18n/useT'
 import { addRuntimeEvent } from '../services/debugLog'
@@ -27,6 +27,8 @@ interface OverlayPayload {
   toastTone?: 'info' | 'warn'
   streaming?: boolean
   streamingText?: string
+  micSourceMode?: 'auto' | 'fixed' | null
+  micSourceLabel?: string
   /** 界面语言，由主窗随每次更新下发（见 OverlayCommonPayload.locale）。 */
   locale?: string
   _overlayShowId?: number
@@ -93,6 +95,8 @@ export default function Overlay() {
   const [thinkingDuration, setThinkingDuration] = useState(0)
   const [warning, setWarning] = useState('')
   const [warningTone, setWarningTone] = useState<'warn' | 'error'>('warn')
+  const [micSourceMode, setMicSourceMode] = useState<'auto' | 'fixed' | null>(null)
+  const [micSourceLabel, setMicSourceLabel] = useState('')
   const rootRef = useRef<HTMLDivElement | null>(null)
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const elapsedSecRef = useRef(0)
@@ -156,12 +160,18 @@ export default function Overlay() {
       if (payload.warningTone === 'warn' || payload.warningTone === 'error') setWarningTone(payload.warningTone)
       if (typeof payload.streamingText === 'string') setStreamingText(payload.streamingText)
       if (typeof payload.streaming === 'boolean') setStreamingOn(payload.streaming)
+      if (payload.micSourceMode === 'auto' || payload.micSourceMode === 'fixed' || payload.micSourceMode === null) {
+        setMicSourceMode(payload.micSourceMode)
+      }
+      if (typeof payload.micSourceLabel === 'string') setMicSourceLabel(payload.micSourceLabel)
       if (payload.state === 'waiting') {
         setElapsedSec(0)
         setWarning('')
         setWarningTone('warn')
         setStreamingText('')
         setStreamingOn(false)
+        setMicSourceMode(null)
+        setMicSourceLabel('')
         setBars((prev) => Array(prev.length).fill(3))
       }
 
@@ -226,6 +236,11 @@ export default function Overlay() {
 
   const showStreamingBubble = state === 'listening' && (streamingOn || streamingText.trim().length > 0)
   const hasStreamingText = streamingText.trim().length > 0
+  const showMicSourceHint = Boolean(
+    micSourceMode
+    && micSourceLabel.trim()
+    && (state === 'listening' || state === 'thinking'),
+  )
 
   const { text: timerText, countdown: inCountdown, remainingSec } = useMemo(
     () => formatRecordingTimer(elapsedSec),
@@ -328,6 +343,28 @@ export default function Overlay() {
         </div>
       ) : (
         <div data-overlay-content className="flex flex-col items-center gap-2">
+          {showMicSourceHint && (
+            <div
+              className="pointer-events-none flex min-w-0 max-w-[calc(100vw-16px)] items-center gap-1.5 overflow-hidden whitespace-nowrap rounded-full border px-3 py-1.5 font-normal"
+              style={{
+                background: 'rgba(11, 11, 12, 0.94)',
+                color: 'var(--overlay-text)',
+                borderColor: 'var(--overlay-border)',
+                boxShadow: '0 2px 10px rgba(0, 0, 0, 0.2)',
+                backdropFilter: 'blur(8px)',
+              }}
+            >
+              <MicVocal
+                className="h-3.5 w-3.5 shrink-0"
+                strokeWidth={1.8}
+                style={{ color: '#ffffff' }}
+                aria-hidden
+              />
+              <span className="min-w-0 truncate text-xs font-normal" style={{ color: '#ffffff' }}>
+                {micSourceLabel}
+              </span>
+            </div>
+          )}
           {showStreamingBubble && (
             <div
               className="pointer-events-none relative flex max-w-[440px] flex-col rounded-2xl border px-4 py-2.5"

@@ -106,12 +106,15 @@ export class LocalProvider extends BufferedProvider {
 
     let llmText = asrText
     let llmMs = 0
+    let aiSucceeded = false
 
     const aiEnabled = await getSetting('aiEnabled', false)
     if (!this.isRunCurrent(runId)) return
     const disableAi = startOpts?.disableAi ?? false
+    const aiMinDurationSec = Math.max(0, Number(startOpts?.aiMinDurationSec) || 0)
+    const shouldUseAi = !disableAi && (aiMinDurationSec === 0 || durationSec >= aiMinDurationSec)
 
-    if (aiEnabled && !disableAi) {
+    if (aiEnabled && shouldUseAi) {
       const aiProvider = await getSetting('cloudAi.provider', 'openai_compat') as string
       const aiApiUrl = await getSetting('cloudAi.apiUrl', '') as string
       const aiApiKey = await getSetting('cloudAi.apiKey', '') as string
@@ -125,11 +128,13 @@ export class LocalProvider extends BufferedProvider {
               text: asrText,
               ai_config: { provider: aiProvider, api_url: aiApiUrl, api_key: aiApiKey, model: aiModel },
               system_prompt: startOpts?.systemPrompt || null,
+              text_context: startOpts?.textContext || null,
             },
           })
           if (!this.isRunCurrent(runId)) return
           llmText = aiResult.text || asrText
           llmMs = aiResult.elapsed_ms
+          aiSucceeded = Boolean(aiResult.text)
         } catch (err) {
           if (!this.isRunCurrent(runId)) return
         addRuntimeEvent('warn', 'local', 'AI cleanup failed; using raw ASR text', { error: String(err) })
@@ -137,11 +142,26 @@ export class LocalProvider extends BufferedProvider {
       }
     }
 
+    if (aiEnabled && !disableAi && aiMinDurationSec > 0 && durationSec < aiMinDurationSec) {
+      addRuntimeEvent('info', 'local', 'AI cleanup skipped below duration threshold', {
+        durationSec,
+        aiMinDurationSec,
+      })
+    }
+
+    if (startOpts?.textContext?.selectedText && !aiSucceeded) {
+      llmText = startOpts.textContext.selectedText
+      addRuntimeEvent('warn', 'local', 'Selected-text edit skipped because AI did not complete')
+    }
+
     if (!this.isRunCurrent(runId)) return
     const totalMs = Math.round(performance.now() - startTime)
     addRuntimeEvent('info', 'local', 'Processing complete', { durationSec, asrMs, llmMs, totalMs, runId })
 
-    this.callbacks.onFinal?.({ asrText, llmText, asrMs, llmMs, durationSec })
+    this.callbacks.onFinal?.({
+      asrText, llmText, asrMs, llmMs, durationSec,
+      contextApplied: startOpts?.textContext ? aiSucceeded : undefined,
+    })
     this.callbacks.onDone?.()
   }
 }

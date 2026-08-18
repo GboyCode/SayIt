@@ -16,9 +16,25 @@ use windows::Win32::Graphics::Gdi::{
 };
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, GetWindowTextW,
-    GetWindowThreadProcessId, GUITHREADINFO,
+    GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, GetWindowTextW, GetWindowThreadProcessId,
+    GUITHREADINFO,
 };
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TextContext {
+    /// UI Automation pattern used to obtain the text. Useful for diagnostics only.
+    pub source: String,
+    /// Text immediately before the caret/selection. Capped locally before serialization.
+    pub text_before: String,
+    /// Selected text. Empty means this is ordinary dictation rather than an edit command.
+    pub selected_text: String,
+    /// Text immediately after the caret/selection. Capped locally before serialization.
+    pub text_after: String,
+    /// A large selection is deliberately not sent to AI, because replacing a partial selection
+    /// would risk data loss.
+    pub selection_truncated: bool,
+}
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct AppContext {
@@ -47,12 +63,22 @@ pub struct AppContext {
     pub automation_id: String,
     #[serde(rename = "isValuePatternAvailable")]
     pub is_value_pattern_available: bool,
+    #[serde(rename = "isTextPatternAvailable")]
+    pub is_text_pattern_available: bool,
+    #[serde(rename = "isTextPattern2Available")]
+    pub is_text_pattern2_available: bool,
     #[serde(rename = "isKeyboardFocusable")]
     pub is_keyboard_focusable: bool,
     #[serde(rename = "isEnabled")]
     pub is_enabled: bool,
     #[serde(rename = "isReadOnly")]
     pub is_read_only: Option<bool>,
+    #[serde(rename = "isPassword")]
+    pub is_password: bool,
+    /// Present only when the user explicitly enabled context-aware writing. Ordinary foreground
+    /// tracking and diagnostics never read or retain editor text.
+    #[serde(rename = "textContext", skip_serializing_if = "Option::is_none")]
+    pub text_context: Option<TextContext>,
 }
 
 /// 前台窗口所在显示器的物理工作区，已排除任务栏。
@@ -80,7 +106,16 @@ impl ContextDetector {
 
     /// Capture the current foreground window context
     pub fn capture(&self, reason: &str) -> AppContext {
-        let ctx = capture_context(reason);
+        let ctx = capture_context_with_text(reason, false);
+        *self.cached_context.lock().unwrap() = Some(ctx.clone());
+        ctx
+    }
+
+    /// Capture the recording target, optionally including a bounded slice of editor text.
+    /// This separate entry point is intentional: WinEvent hooks must never start reading text
+    /// merely because the feature exists.
+    pub fn capture_recording(&self, reason: &str, include_text_context: bool) -> AppContext {
+        let ctx = capture_context_with_text(reason, include_text_context);
         *self.cached_context.lock().unwrap() = Some(ctx.clone());
         ctx
     }
@@ -104,11 +139,9 @@ impl ContextDetector {
         let cached_for_cb = cached.clone();
 
         thread::spawn(move || {
+            use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
             use windows::Win32::UI::WindowsAndMessaging::{
-                GetMessageW, TranslateMessage, DispatchMessageW, MSG,
-            };
-            use windows::Win32::UI::Accessibility::{
-                SetWinEventHook, HWINEVENTHOOK,
+                DispatchMessageW, GetMessageW, TranslateMessage, MSG,
             };
 
             // WinEvent constants
@@ -162,7 +195,8 @@ impl ContextDetector {
                     EVENT_SYSTEM_FOREGROUND,
                     None,
                     Some(winevent_proc),
-                    0, 0,
+                    0,
+                    0,
                     WINEVENT_OUTOFCONTEXT,
                 );
 
@@ -171,7 +205,8 @@ impl ContextDetector {
                     EVENT_OBJECT_FOCUS,
                     None,
                     Some(winevent_proc),
-                    0, 0,
+                    0,
+                    0,
                     WINEVENT_OUTOFCONTEXT,
                 );
 
@@ -192,6 +227,11 @@ impl ContextDetector {
 /// Standalone capture function (no &self needed, usable from callbacks)
 #[cfg(windows)]
 pub fn capture_context(reason: &str) -> AppContext {
+    capture_context_with_text(reason, false)
+}
+
+#[cfg(windows)]
+fn capture_context_with_text(reason: &str, include_text_context: bool) -> AppContext {
     let mut ctx = AppContext {
         reason: reason.to_string(),
         timestamp: chrono::Utc::now().timestamp_millis(),
@@ -234,7 +274,7 @@ pub fn capture_context(reason: &str) -> AppContext {
         // UI Automation: get focused element's ControlType, ValuePattern, etc.
         // This is critical for Chromium-class windows where GetGUIThreadInfo
         // doesn't report caret/focus reliably.
-        populate_uia_fields(&mut ctx);
+        populate_uia_fields(&mut ctx, include_text_context);
     }
     ctx
 }
@@ -276,29 +316,27 @@ pub fn capture_foreground_monitor() -> Option<MonitorBounds> {
 /// Populates control_type, automation_id, is_value_pattern_available,
 /// is_keyboard_focusable, is_enabled, is_read_only in AppContext.
 #[cfg(windows)]
-unsafe fn populate_uia_fields(ctx: &mut AppContext) {
+unsafe fn populate_uia_fields(ctx: &mut AppContext, include_text_context: bool) {
     use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CoUninitialize,
-        CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+        COINIT_APARTMENTTHREADED,
     };
     use windows::Win32::UI::Accessibility::{
-        CUIAutomation, IUIAutomation,
-        UIA_ControlTypePropertyId, UIA_AutomationIdPropertyId,
-        UIA_IsValuePatternAvailablePropertyId, UIA_IsKeyboardFocusablePropertyId,
-        UIA_IsEnabledPropertyId, UIA_ValueIsReadOnlyPropertyId,
+        CUIAutomation, IUIAutomation, UIA_AutomationIdPropertyId, UIA_ControlTypePropertyId,
+        UIA_IsEnabledPropertyId, UIA_IsKeyboardFocusablePropertyId, UIA_IsPasswordPropertyId,
+        UIA_IsTextPattern2AvailablePropertyId, UIA_IsTextPatternAvailablePropertyId,
+        UIA_IsValuePatternAvailablePropertyId, UIA_ValueIsReadOnlyPropertyId,
     };
     // CoInitialize for this thread (may already be initialized — that's ok)
     let co_init_result = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
     let need_co_uninit = co_init_result.is_ok();
 
     let result = (|| -> Result<(), String> {
-        let uia: IUIAutomation = CoCreateInstance(
-            &CUIAutomation,
-            None,
-            CLSCTX_INPROC_SERVER,
-        ).map_err(|e| format!("CoCreateInstance CUIAutomation: {}", e))?;
+        let uia: IUIAutomation = CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
+            .map_err(|e| format!("CoCreateInstance CUIAutomation: {}", e))?;
 
-        let focused = uia.GetFocusedElement()
+        let focused = uia
+            .GetFocusedElement()
             .map_err(|e| format!("GetFocusedElement: {}", e))?;
 
         // ControlType (int → string name)
@@ -322,6 +360,29 @@ unsafe fn populate_uia_fields(ctx: &mut AppContext) {
         if let Ok(v) = vp_val {
             if let Ok(b) = bool::try_from(&v) {
                 ctx.is_value_pattern_available = b;
+            }
+        }
+
+        let tp_val = focused.GetCurrentPropertyValue(UIA_IsTextPatternAvailablePropertyId);
+        if let Ok(v) = tp_val {
+            if let Ok(b) = bool::try_from(&v) {
+                ctx.is_text_pattern_available = b;
+            }
+        }
+
+        let tp2_val = focused.GetCurrentPropertyValue(UIA_IsTextPattern2AvailablePropertyId);
+        if let Ok(v) = tp2_val {
+            if let Ok(b) = bool::try_from(&v) {
+                ctx.is_text_pattern2_available = b;
+            }
+        }
+
+        // Password controls are a hard boundary. Never ask a pattern for their value or text,
+        // even when the user enabled context-aware writing globally.
+        let password_val = focused.GetCurrentPropertyValue(UIA_IsPasswordPropertyId);
+        if let Ok(v) = password_val {
+            if let Ok(b) = bool::try_from(&v) {
+                ctx.is_password = b;
             }
         }
 
@@ -351,6 +412,10 @@ unsafe fn populate_uia_fields(ctx: &mut AppContext) {
             }
         }
 
+        if include_text_context && !ctx.is_password && ctx.is_enabled {
+            ctx.text_context = capture_uia_text_context(&uia, &focused);
+        }
+
         Ok(())
     })();
 
@@ -361,6 +426,206 @@ unsafe fn populate_uia_fields(ctx: &mut AppContext) {
     if need_co_uninit {
         CoUninitialize();
     }
+}
+
+#[cfg(windows)]
+const TEXT_BEFORE_LIMIT: i32 = 500;
+#[cfg(windows)]
+const TEXT_AFTER_LIMIT: i32 = 300;
+#[cfg(windows)]
+const SELECTED_TEXT_LIMIT: i32 = 6000;
+
+/// Read a small, caret-relative slice rather than the whole document. TextPattern is attempted on
+/// the focused element and a few ancestors because Chromium/Office often put it on the enclosing
+/// Document element. ValuePattern is a conservative fallback for simple inputs and is treated as
+/// text-before-caret only (most such controls expose no selection/caret API through UIA).
+#[cfg(windows)]
+unsafe fn capture_uia_text_context(
+    uia: &windows::Win32::UI::Accessibility::IUIAutomation,
+    focused: &windows::Win32::UI::Accessibility::IUIAutomationElement,
+) -> Option<TextContext> {
+    use windows::core::Interface;
+    use windows::Win32::UI::Accessibility::{
+        IUIAutomationElement, IUIAutomationTextPattern, IUIAutomationTextPattern2,
+        IUIAutomationValuePattern, UIA_TextPattern2Id, UIA_TextPatternId, UIA_ValuePatternId,
+    };
+
+    let mut element: IUIAutomationElement = focused.clone();
+    let walker = uia.RawViewWalker().ok();
+    let value_fallback = focused
+        .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+        .ok()
+        .and_then(|pattern| pattern.CurrentValue().ok())
+        .map(|value| sanitize_uia_text(&value.to_string()))
+        .filter(|value| !value.is_empty());
+
+    for _depth in 0..=4 {
+        if let Ok(pattern2) =
+            element.GetCurrentPatternAs::<IUIAutomationTextPattern2>(UIA_TextPattern2Id)
+        {
+            let mut active = windows::Win32::Foundation::BOOL::default();
+            let caret = pattern2
+                .GetCaretRange(&mut active)
+                .ok()
+                .filter(|_| active.as_bool());
+            let base: IUIAutomationTextPattern = pattern2.cast().ok()?;
+            if let Some(context) = text_context_from_pattern(&base, caret, "text_pattern2") {
+                return Some(context);
+            }
+        }
+
+        if let Ok(pattern) =
+            element.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
+        {
+            if let Some(context) = text_context_from_pattern(&pattern, None, "text_pattern") {
+                return Some(context);
+            }
+        }
+
+        let Some(ref tree_walker) = walker else { break };
+        let Ok(parent) = tree_walker.GetParentElement(&element) else {
+            break;
+        };
+        element = parent;
+    }
+
+    value_fallback.map(|value| TextContext {
+        source: "value_pattern_tail".to_string(),
+        text_before: tail_chars(&value, TEXT_BEFORE_LIMIT as usize),
+        ..Default::default()
+    })
+}
+
+#[cfg(windows)]
+unsafe fn text_context_from_pattern(
+    pattern: &windows::Win32::UI::Accessibility::IUIAutomationTextPattern,
+    caret: Option<windows::Win32::UI::Accessibility::IUIAutomationTextRange>,
+    source: &str,
+) -> Option<TextContext> {
+    use windows::Win32::UI::Accessibility::IUIAutomationTextRange;
+
+    let selection_range = pattern.GetSelection().ok().and_then(|ranges| {
+        (ranges.Length().ok().unwrap_or(0) > 0)
+            .then(|| ranges.GetElement(0).ok())
+            .flatten()
+    });
+
+    let mut selected_text = String::new();
+    let mut selection_truncated = false;
+    if let Some(ref range) = selection_range {
+        if let Ok(text) = range.GetText(SELECTED_TEXT_LIMIT + 1) {
+            let raw = sanitize_uia_text(&text.to_string());
+            if raw.chars().count() > SELECTED_TEXT_LIMIT as usize {
+                // Do not send a partial selection to AI: its output would replace the complete
+                // selection and could silently discard content it never saw.
+                selection_truncated = true;
+            } else if !raw.trim().is_empty() {
+                selected_text = raw;
+            }
+        }
+    }
+
+    let anchor: IUIAutomationTextRange = if !selected_text.is_empty() {
+        selection_range.clone()?
+    } else {
+        caret.or(selection_range)?
+    };
+
+    let text_before = text_before_range(&anchor).unwrap_or_default();
+    let text_after = text_after_range(&anchor).unwrap_or_default();
+    if text_before.is_empty()
+        && selected_text.is_empty()
+        && text_after.is_empty()
+        && !selection_truncated
+    {
+        return None;
+    }
+
+    Some(TextContext {
+        source: source.to_string(),
+        text_before,
+        selected_text,
+        text_after,
+        selection_truncated,
+    })
+}
+
+#[cfg(windows)]
+unsafe fn text_before_range(
+    anchor: &windows::Win32::UI::Accessibility::IUIAutomationTextRange,
+) -> Option<String> {
+    use windows::Win32::UI::Accessibility::{
+        TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start, TextUnit_Character,
+    };
+    let range = anchor.Clone().ok()?;
+    range
+        .MoveEndpointByRange(
+            TextPatternRangeEndpoint_End,
+            anchor,
+            TextPatternRangeEndpoint_Start,
+        )
+        .ok()?;
+    range
+        .MoveEndpointByRange(
+            TextPatternRangeEndpoint_Start,
+            anchor,
+            TextPatternRangeEndpoint_Start,
+        )
+        .ok()?;
+    let _ = range.MoveEndpointByUnit(
+        TextPatternRangeEndpoint_Start,
+        TextUnit_Character,
+        -TEXT_BEFORE_LIMIT,
+    );
+    range
+        .GetText(TEXT_BEFORE_LIMIT)
+        .ok()
+        .map(|v| sanitize_uia_text(&v.to_string()))
+}
+
+#[cfg(windows)]
+unsafe fn text_after_range(
+    anchor: &windows::Win32::UI::Accessibility::IUIAutomationTextRange,
+) -> Option<String> {
+    use windows::Win32::UI::Accessibility::{
+        TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start, TextUnit_Character,
+    };
+    let range = anchor.Clone().ok()?;
+    range
+        .MoveEndpointByRange(
+            TextPatternRangeEndpoint_Start,
+            anchor,
+            TextPatternRangeEndpoint_End,
+        )
+        .ok()?;
+    range
+        .MoveEndpointByRange(
+            TextPatternRangeEndpoint_End,
+            anchor,
+            TextPatternRangeEndpoint_End,
+        )
+        .ok()?;
+    let _ = range.MoveEndpointByUnit(
+        TextPatternRangeEndpoint_End,
+        TextUnit_Character,
+        TEXT_AFTER_LIMIT,
+    );
+    range
+        .GetText(TEXT_AFTER_LIMIT)
+        .ok()
+        .map(|v| sanitize_uia_text(&v.to_string()))
+}
+
+fn sanitize_uia_text(value: &str) -> String {
+    value
+        .replace('\0', "")
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+}
+
+fn tail_chars(value: &str, limit: usize) -> String {
+    let count = value.chars().count();
+    value.chars().skip(count.saturating_sub(limit)).collect()
 }
 
 /// Map UIA ControlType ID to a human-readable name.
@@ -430,22 +695,29 @@ pub fn capture_foreground_monitor() -> Option<MonitorBounds> {
 pub unsafe fn read_window_text(hwnd: HWND) -> String {
     let mut buf = [0u16; 512];
     let len = GetWindowTextW(hwnd, &mut buf);
-    if len > 0 { String::from_utf16_lossy(&buf[..len as usize]) } else { String::new() }
+    if len > 0 {
+        String::from_utf16_lossy(&buf[..len as usize])
+    } else {
+        String::new()
+    }
 }
 
 #[cfg(windows)]
 pub unsafe fn read_class_name(hwnd: HWND) -> String {
     let mut buf = [0u16; 256];
     let len = GetClassNameW(hwnd, &mut buf);
-    if len > 0 { String::from_utf16_lossy(&buf[..len as usize]) } else { String::new() }
+    if len > 0 {
+        String::from_utf16_lossy(&buf[..len as usize])
+    } else {
+        String::new()
+    }
 }
-
 
 /// pid → 可执行文件名（不含路径）。inject 模块用它指认「是谁占着剪贴板」。
 #[cfg(windows)]
 pub(crate) fn get_process_name(pid: u32) -> String {
-    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
     use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
     unsafe {
         match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
             Ok(h) => {
@@ -460,8 +732,8 @@ pub(crate) fn get_process_name(pid: u32) -> String {
 
 #[cfg(windows)]
 fn get_process_path(pid: u32) -> String {
-    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
     use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
     unsafe {
         match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
             Ok(h) => {

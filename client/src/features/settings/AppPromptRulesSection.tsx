@@ -1,10 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ChevronDown, ChevronUp, Plus, Trash2, Crosshair } from 'lucide-react'
 import * as bridge from '@/services/bridge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Select } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import { useSortable, DragHandle } from '@/components/ui/sortable'
+import { cn } from '@/lib/utils'
 import type { PromptPreset } from '@/services/store'
 import type { AppPromptRule } from '@/services/personalization/types'
 import { useT } from '@/i18n/useT'
@@ -54,6 +56,8 @@ export default function AppPromptRulesSection({
   presets,
   rules,
   onSaveRule,
+  onToggleRule,
+  onMoveRule,
   onResetRule,
   onCreateRule,
   onDeleteRule,
@@ -61,6 +65,9 @@ export default function AppPromptRulesSection({
   presets: PromptPreset[]
   rules: AppPromptRule[]
   onSaveRule: (rule: AppPromptRule) => Promise<void> | void
+  /** 开关不走草稿，按下即落库（并把启用的规则置顶），见 AIInstructionsPage.handleToggleAppRule */
+  onToggleRule: (ruleId: string, enabled: boolean) => Promise<void> | void
+  onMoveRule: (from: number, to: number) => Promise<void> | void
   onResetRule: (ruleId: string) => Promise<void> | void
   onCreateRule: (draft: { name: string; processNames: string[]; presetId?: string; promptAppend: string }) => Promise<void> | void
   onDeleteRule: (ruleId: string) => Promise<void> | void
@@ -75,18 +82,38 @@ export default function AppPromptRulesSection({
   const [countdown, setCountdown] = useState(0)
   const [detectHint, setDetectHint] = useState<DetectHint>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  /** 上一轮的已存值，用来分辨"外部真改了内容"和"只是开关或顺序变了" */
+  const savedSnapshot = useRef<Record<string, AppPromptRule>>({})
+  const expansionInitialized = useRef(false)
+
+  const canSort = rules.length > 1
+  const ruleSortable = useSortable({ onMove: (from, to) => void onMoveRule(from, to) })
 
   useEffect(() => {
-    const nextDrafts: Record<string, AppPromptRule> = {}
-    const expanded = new Set<string>()
-    for (const rule of rules) {
-      nextDrafts[rule.id] = { ...rule, matcher: { ...rule.matcher } }
-      if (rule.enabled) {
-        expanded.add(rule.id)
+    setDrafts((current) => {
+      const nextDrafts: Record<string, AppPromptRule> = {}
+      for (const rule of rules) {
+        const previous = savedSnapshot.current[rule.id]
+        const draft = current[rule.id]
+        // 开关和拖拽都是即时落库的，一动就会走到这里。此时若把草稿整个重置，
+        // 用户正在编辑、还没点"保存规则"的附加提示词就被静默冲掉了。
+        // 所以只在「除 enabled 之外确实变了」（保存过、恢复默认）时才用已存值覆盖草稿。
+        const contentChanged = !previous || !isSameRule({ ...previous, enabled: rule.enabled }, rule)
+        nextDrafts[rule.id] = draft && !contentChanged
+          ? { ...draft, enabled: rule.enabled }
+          : { ...rule, matcher: { ...rule.matcher } }
       }
+      return nextDrafts
+    })
+    savedSnapshot.current = Object.fromEntries(rules.map((rule) => [rule.id, rule]))
+
+    // 展开状态只在首次载入时按"已启用"推一次。以前每次 rules 变化都重算，
+    // 而现在开关即时落库、拖动也会改 rules —— 那样每动一下都会把用户手动
+    // 折叠/展开的状态弹回去。
+    if (!expansionInitialized.current && rules.length > 0) {
+      expansionInitialized.current = true
+      setExpandedRules(new Set(rules.filter((rule) => rule.enabled).map((rule) => rule.id)))
     }
-    setDrafts(nextDrafts)
-    setExpandedRules(expanded)
   }, [rules])
 
   const presetOptions = [
@@ -106,6 +133,22 @@ export default function AppPromptRulesSection({
         },
       }
     })
+  }
+
+  /**
+   * 启用/停用即时落库（不需要再点"保存规则"）—— 开关是个状态类控件，
+   * 按下去却要另外点保存才算数，用户会以为已经生效了。
+   * 顺手同步展开状态：刚启用的规则通常要接着看一眼它的配置。
+   */
+  const handleToggle = (rule: AppPromptRule) => {
+    const enabled = !rule.enabled
+    setExpandedRules((current) => {
+      const next = new Set(current)
+      if (enabled) next.add(rule.id)
+      else next.delete(rule.id)
+      return next
+    })
+    void onToggleRule(rule.id, enabled)
   }
 
   const toggleExpanded = (ruleId: string) => {
@@ -188,6 +231,11 @@ export default function AppPromptRulesSection({
             <p className="mt-1 text-xs text-muted-foreground">
               {t('appPrompt.desc')}
             </p>
+            {canSort && (
+              <p className="mt-1.5 text-xs text-muted-foreground/70">
+                {t('appPrompt.orderHint')}
+              </p>
+            )}
           </div>
           {!newRule && (
             <Button
@@ -293,19 +341,29 @@ export default function AppPromptRulesSection({
         )}
 
         <div className="space-y-2">
-          {rules.map((rule) => {
+          {rules.map((rule, index) => {
             const draft = drafts[rule.id] || rule
             const dirty = !isSameRule(draft, rule)
             const isExpanded = expandedRules.has(rule.id)
 
             return (
-              <div key={rule.id} className="rounded-lg border bg-card">
+              <div
+                key={rule.id}
+                {...(canSort ? ruleSortable.rowProps(index) : {})}
+                className={cn('group rounded-lg border bg-card', canSort && ruleSortable.rowClassName(index))}
+              >
                 {/* 标题栏 */}
                 <div
                   className="flex cursor-pointer items-center justify-between gap-4 rounded-t-lg bg-muted/30 px-4 py-2.5"
                   onClick={() => toggleExpanded(rule.id)}
                 >
                   <div className="flex min-w-0 flex-1 items-center gap-2">
+                    {canSort && (
+                      <DragHandle
+                        {...ruleSortable.handleProps(index, t('appPrompt.drag', { name: appPromptRuleDisplayName(rule) }))}
+                        onClick={(event) => event.stopPropagation()}
+                      />
+                    )}
                     <div className="shrink-0">
                       {isExpanded ? (
                         <ChevronUp className="h-3.5 w-3.5 text-muted-foreground" />
@@ -321,8 +379,8 @@ export default function AppPromptRulesSection({
 
                   <div onClick={(e) => e.stopPropagation()}>
                     <Switch
-                      checked={draft.enabled}
-                      onChange={() => updateDraft(rule.id, { enabled: !draft.enabled })}
+                      checked={rule.enabled}
+                      onChange={() => handleToggle(rule)}
                     />
                   </div>
                 </div>

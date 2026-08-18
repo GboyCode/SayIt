@@ -16,6 +16,10 @@ const OVERLAY_FALLBACK_HEIGHT: f64 = 224.0;
 // 流式实时显示：录音气泡 + 波形条堆叠，需要更宽更高的窗口
 const OVERLAY_STREAMING_WIDTH: f64 = 480.0;
 const OVERLAY_STREAMING_HEIGHT: f64 = 200.0;
+// 输入源状态条显示在胶囊上方；窗口仍锚定底部，因此只向上扩展。
+const OVERLAY_MIC_HINT_WIDTH: f64 = 480.0;
+const OVERLAY_MIC_HINT_HEIGHT: f64 = 104.0;
+const OVERLAY_STREAMING_MIC_HINT_HEIGHT: f64 = 244.0;
 const OVERLAY_SCREEN_MARGIN: f64 = 8.0;
 const ACK_FIRST_TIMEOUT_MS: u64 = 1_200;
 const ACK_SECOND_TIMEOUT_MS: u64 = 700;
@@ -36,9 +40,11 @@ fn now_ms() -> i64 {
 #[derive(Debug, Clone, PartialEq)]
 enum OverlayLayout {
     Base,
+    BaseWithMicHint,
     Fallback,
     /// 流式实时显示：气泡 + 波形，窗口更大且非交互
     Streaming,
+    StreamingWithMicHint,
 }
 
 impl OverlayLayout {
@@ -51,8 +57,16 @@ impl OverlayLayout {
     fn dimensions(&self, base_width: f64) -> (f64, f64) {
         match self {
             OverlayLayout::Base => (base_width, OVERLAY_BASE_HEIGHT),
+            OverlayLayout::BaseWithMicHint => (
+                base_width.max(OVERLAY_MIC_HINT_WIDTH),
+                OVERLAY_MIC_HINT_HEIGHT,
+            ),
             OverlayLayout::Fallback => (OVERLAY_FALLBACK_WIDTH, OVERLAY_FALLBACK_HEIGHT),
             OverlayLayout::Streaming => (OVERLAY_STREAMING_WIDTH, OVERLAY_STREAMING_HEIGHT),
+            OverlayLayout::StreamingWithMicHint => (
+                OVERLAY_STREAMING_WIDTH,
+                OVERLAY_STREAMING_MIC_HINT_HEIGHT,
+            ),
         }
     }
 }
@@ -396,11 +410,20 @@ impl WindowState {
                 .and_then(Value::as_str)
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false);
+        let mic_hint_on = data
+            .get("micSourceLabel")
+            .and_then(Value::as_str)
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
         let next_layout = if state == Some("fallback") {
             OverlayLayout::Fallback
+        } else if state == Some("listening") && streaming_on && mic_hint_on {
+            OverlayLayout::StreamingWithMicHint
         } else if state == Some("listening") && streaming_on {
             // 录音中开启了实时显示 → 放大窗口容纳气泡（整段录音保持该尺寸，中途不再缩放）
             OverlayLayout::Streaming
+        } else if matches!(state, Some("listening") | Some("thinking")) && mic_hint_on {
+            OverlayLayout::BaseWithMicHint
         } else {
             OverlayLayout::Base
         };

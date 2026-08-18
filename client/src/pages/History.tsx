@@ -372,6 +372,17 @@ export default function History() {
     setRecords((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)))
   }
 
+  /**
+   * 记下「这条的 ASR 纠错已提交 / 已撤回」。
+   *
+   * 只写 asrCorrection* 三个字段，**不动 llmText / charCount / manualEditedAt** ——
+   * 纠正的是识别原文，正文和统计不该被它带着改（handleEdit 改的才是正文）。
+   */
+  const handleSaveAsrCorrection = async (id: string, patch: Partial<HistoryRecord>) => {
+    await updateHistoryRecord(id, patch)
+    setRecords((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)))
+  }
+
   const handleExport = async () => {
     const result = await exportHistory({ keyword: debouncedKeyword })
     setExportResult(result)
@@ -546,6 +557,7 @@ export default function History() {
         onToggleFavorite={handleToggleFavorite}
         onReprocess={handleReprocess}
         onEdit={handleEdit}
+        onSaveAsrCorrection={handleSaveAsrCorrection}
         highlight={debouncedKeyword}
         emptyText={keyword.trim() ? t('history.emptyNoMatch') : favoriteOnly ? t('history.emptyFavorites') : t('history.empty')}
       />

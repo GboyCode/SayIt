@@ -3,8 +3,8 @@ import { BUILTIN_APP_RULES } from '@/services/personalization/defaults'
 import {
   getAppPromptRules,
   saveAppPromptRules,
-  CUSTOM_RULE_PRIORITY,
 } from '@/services/personalization/store'
+import { moveItem } from '@/components/ui/sortable'
 import type { AppPromptRule } from '@/services/personalization/types'
 import {
   refreshPreset,
@@ -183,13 +183,41 @@ export default function AIInstructionsPage() {
     setPromptPresetsCache(nextPresets)
   }
 
-  const handleSaveAppRule = async (rule: AppPromptRule) => {
-    const nextRules = appPromptRules
-      .map((item) => (item.id === rule.id ? rule : item))
-      .sort((left, right) => right.priority - left.priority)
+  /**
+   * 应用规则的唯一写入口：先更新界面，再落库，最后刷新录音器缓存。
+   * 数组顺序就是命中优先级（见 AppPromptRule 的注释），所以这里绝不排序。
+   */
+  const applyAppRules = async (nextRules: AppPromptRule[]) => {
     setAppPromptRules(nextRules)
     await saveAppPromptRules(nextRules)
     await refreshRecorderSettings()
+  }
+
+  const handleSaveAppRule = async (rule: AppPromptRule) => {
+    await applyAppRules(appPromptRules.map((item) => (item.id === rule.id ? rule : item)))
+  }
+
+  /**
+   * 开关即时生效，并且**启用时把规则挪到最前面**。
+   *
+   * 一是它这就成了优先级最高的规则（刚打开的那条最该说话）；二是内置规则有 9 条、
+   * 默认全关，用户启用靠底部的一条（比如 QQ）后，它仍埋在一堆没启用的规则中间，
+   * 得翻半页才找得到。置顶后"启用中的规则"自然聚在顶部。
+   * 关闭不挪位置：让刚关掉的那条留在原处，方便反悔。
+   */
+  const handleToggleAppRule = async (ruleId: string, enabled: boolean) => {
+    const target = appPromptRules.find((rule) => rule.id === ruleId)
+    if (!target) return
+    const updated = { ...target, enabled }
+    await applyAppRules(enabled
+      ? [updated, ...appPromptRules.filter((rule) => rule.id !== ruleId)]
+      : appPromptRules.map((rule) => (rule.id === ruleId ? updated : rule)))
+  }
+
+  const handleMoveAppRule = async (from: number, to: number) => {
+    const nextRules = moveItem(appPromptRules, from, to)
+    if (nextRules === appPromptRules) return
+    await applyAppRules(nextRules)
   }
 
   const handleCreateAppRule = async (draft: {
@@ -205,33 +233,25 @@ export default function AIInstructionsPage() {
       name: draft.name,
       builtin: false,
       enabled: true,
-      priority: CUSTOM_RULE_PRIORITY,
       presetId: draft.presetId,
       promptAppend: draft.promptAppend,
       matcher: { processNames: draft.processNames, windowTitleIncludes: [], windowClasses: [], automationIds: [] },
     }
-    const nextRules = [...appPromptRules, rule].sort((left, right) => right.priority - left.priority)
-    setAppPromptRules(nextRules)
-    await saveAppPromptRules(nextRules)
-    await refreshRecorderSettings()
+    // 新建即启用，因此放到最前面（与"启用置顶"一致），也免得新规则被内置规则抢先命中
+    await applyAppRules([rule, ...appPromptRules])
   }
 
   const handleDeleteAppRule = async (ruleId: string) => {
-    const nextRules = appPromptRules.filter((rule) => rule.id !== ruleId)
-    setAppPromptRules(nextRules)
-    await saveAppPromptRules(nextRules)
-    await refreshRecorderSettings()
+    await applyAppRules(appPromptRules.filter((rule) => rule.id !== ruleId))
   }
 
   const handleResetAppRule = async (ruleId: string) => {
     const fallback = BUILTIN_APP_RULES.find((rule) => rule.id === ruleId)
     if (!fallback) return
-    const nextRules = appPromptRules
-      .map((rule) => (rule.id === ruleId ? { ...fallback, matcher: { ...fallback.matcher } } : rule))
-      .sort((left, right) => right.priority - left.priority)
-    setAppPromptRules(nextRules)
-    await saveAppPromptRules(nextRules)
-    await refreshRecorderSettings()
+    // 只恢复内容，不动它在列表里的位置 —— 用户排好的顺序不该被"恢复默认"顺手打乱
+    await applyAppRules(appPromptRules.map((rule) => (
+      rule.id === ruleId ? { ...fallback, matcher: { ...fallback.matcher } } : rule
+    )))
   }
 
   return (
@@ -270,6 +290,8 @@ export default function AIInstructionsPage() {
           presets={presets}
           rules={appPromptRules}
           onSaveRule={handleSaveAppRule}
+          onToggleRule={handleToggleAppRule}
+          onMoveRule={handleMoveAppRule}
           onResetRule={handleResetAppRule}
           onCreateRule={handleCreateAppRule}
           onDeleteRule={handleDeleteAppRule}

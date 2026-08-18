@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .asr import ASREngine
+from .asr_corrections import router as asr_corrections_router
 from .config import load_config
 from .db import Database
 from .diagnostics import create_upload_token, router as diagnostics_router
@@ -146,6 +147,7 @@ async def _lifespan(app: FastAPI):
 app = FastAPI(title="SayIt", lifespan=_lifespan)
 app.state.config = cfg
 app.include_router(diagnostics_router)
+app.include_router(asr_corrections_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -281,6 +283,31 @@ def _normalize_app_context(payload: object) -> dict[str, str]:
     }
 
 
+def _normalize_text_context(payload: object) -> dict[str, str] | None:
+    """Validate and cap ephemeral editor text at the server boundary.
+
+    A truncated selection is rejected completely: AI output replaces the whole selection, so
+    processing only its prefix could destroy unseen text.
+    """
+    data = payload if isinstance(payload, dict) else {}
+    if bool(_pick(data, "selection_truncated", "selectionTruncated")):
+        return None
+
+    def _text(key: str, alternate: str, limit: int, *, tail: bool = False) -> str:
+        value = str(_pick(data, key, alternate) or "").replace("\x00", "")
+        return value[-limit:] if tail else value[:limit]
+
+    normalized = {
+        "source": _text("source", "source", 64),
+        "text_before": _text("text_before", "textBefore", 500, tail=True),
+        "selected_text": _text("selected_text", "selectedText", 6000),
+        "text_after": _text("text_after", "textAfter", 300),
+    }
+    if not any(normalized[key] for key in ("text_before", "selected_text", "text_after")):
+        return None
+    return normalized
+
+
 def _normalize_usage_meta(payload: object) -> dict[str, int | None]:
     data = payload if isinstance(payload, dict) else {}
     raw = _pick(data, "ptt_hold_ms", "pttHoldMs")
@@ -373,6 +400,7 @@ async def _run_asr_llm(
     context: str | None = None,
     language: str | None = None,
     system_prompt: str | None = None,
+    text_context: dict[str, str] | None = None,
     disable_ai: bool = False,
     use_web_demo_profile: bool = False,
 ) -> dict:
@@ -443,12 +471,25 @@ async def _run_asr_llm(
     llm_text, llm_ms, llm_debug = asr_text, 0, {}
     if asr_text and selected_llm and selected_profile.enabled and not disable_ai:
         llm_text, llm_ms, llm_debug = await selected_llm.polish(
-            asr_text, system_prompt, is_web_demo=use_web_demo_profile,
+            asr_text, system_prompt, text_context=text_context,
+            is_web_demo=use_web_demo_profile,
         )
         if cfg.logging.slow_llm_ms and llm_ms >= cfg.logging.slow_llm_ms:
             logger.warning("Slow LLM detected duration_sec=%.2f llm_ms=%d", duration, llm_ms)
 
-    result.update({"llm_text": llm_text, "llm_ms": llm_ms, "llm_debug": llm_debug})
+    # Do not overwrite selected text with a spoken command when the server has no usable LLM or
+    # polishing failed. Re-inserting the original selection is a safe no-op in the editor.
+    if text_context and text_context.get("selected_text") and not llm_debug.get("provider"):
+        llm_text = text_context["selected_text"]
+        llm_debug = {**llm_debug, "selected_edit_skipped": True}
+
+    context_applied = bool(text_context and llm_debug.get("provider"))
+    result.update({
+        "llm_text": llm_text,
+        "llm_ms": llm_ms,
+        "llm_debug": llm_debug,
+        "context_applied": context_applied if text_context else None,
+    })
     return result
 
 
@@ -638,6 +679,7 @@ async def ws_transcribe(ws: WebSocket):
     last_audio_stats: dict[str, float | int | None] = {}
     client_meta: dict[str, str] = {}
     app_context: dict[str, str] = {}
+    text_context: dict[str, str] | None = None
     web_demo_slot_acquired = False
     logger.info("ws connected")
 
@@ -731,6 +773,7 @@ async def ws_transcribe(ws: WebSocket):
                 context=ctx_override,
                 language=lang_override,
                 system_prompt=sys_prompt,
+                text_context=text_context,
                 disable_ai=disable_ai,
                 use_web_demo_profile=is_web_demo,
             )
@@ -796,6 +839,7 @@ async def ws_transcribe(ws: WebSocket):
             "llm_debug": result.get("llm_debug", {}),
             "asr_engine": cfg.asr.engine,
             "asr_model": "FireRedASR2-AED-TensorRT" if cfg.asr.engine == "firered" else cfg.asr.model,
+            "context_applied": result.get("context_applied"),
         }
         # Audit log: metadata only (no transcript text persisted)
         logger.info(
@@ -831,6 +875,7 @@ async def ws_transcribe(ws: WebSocket):
                 "asr": asr_engine is not None,
                 "llm": _selected_llm_engine(is_web_demo) is not None,
                 "client": "web_demo" if is_web_demo else "desktop",
+                "capabilities": {"text_context": True},
             }
         )
         while True:
@@ -898,6 +943,9 @@ async def ws_transcribe(ws: WebSocket):
                 source = str(payload.get("source") or "live").strip()
                 client_meta = _normalize_client_meta(payload.get("client_meta"))
                 app_context = _normalize_app_context(payload.get("app_context"))
+                # Web demo never reads another application's editor, and must not accept a caller-
+                # supplied imitation of that privileged desktop context.
+                text_context = None if is_web_demo else _normalize_text_context(payload.get("text_context"))
                 last_usage_meta = {"ptt_hold_ms": None}
                 last_audio_stats = {}
                 session_id = telemetry.create_session(
@@ -921,6 +969,12 @@ async def ws_transcribe(ws: WebSocket):
                 )
             elif cmd == "stop":
                 active = False
+                # 客户端在松键时才知道这次录了多久（短语音门槛），所以允许 stop 追加
+                # 「别做 AI」。只能追加、不能反过来打开 —— start 已经关掉的不该被重开。
+                if payload.get("disable_ai"):
+                    if not disable_ai:
+                        logger.info("stop requested disable_ai (client-side rule)")
+                    disable_ai = True
                 last_usage_meta = _normalize_usage_meta(payload.get("usage_meta"))
                 last_audio_stats = _normalize_audio_stats(payload.get("audio_stats"))
                 await _process_stop()

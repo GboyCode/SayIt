@@ -1,6 +1,6 @@
 [package]
 name = "sayit"
-version = "0.1.7"
+version = "0.1.8"
 authors = ["Liu Qianglong", "Claude"]
 edition = "2021"
 
@@ -69,7 +69,11 @@ windows = { version = "0.58", features = [
   "Win32_System_Memory",
   "Win32_System_SystemInformation",
   "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_Variant",
   "Win32_Graphics_Gdi",
+  "Win32_Devices_FunctionDiscovery",
+  "Win32_UI_Shell_PropertiesSystem",
   "Win32_Media_Audio",
   "Win32_Media_Audio_Endpoints",
 ] }

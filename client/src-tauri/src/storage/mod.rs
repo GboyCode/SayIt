@@ -12,6 +12,7 @@ const DEFAULT_SETTINGS: &[(&str, &str)] = &[
     ("shortcutPTT", r#""ControlRight""#),
     ("shortcutPTTCombo", r#""Alt+Q""#),
     ("shortcutHandsFree", r#""AltRight""#),
+    ("shortcutToggleAi", r#""""#),
     ("autoLaunch", "true"),
     ("selectedMic", r#""""#),
     ("hotwords", "[]"),

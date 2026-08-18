@@ -330,5 +330,17 @@ function sanitizeStartMessage(data: Record<string, unknown>): Record<string, unk
     result.client_meta = meta
   }
 
+  // Editor text is ephemeral and must never enter runtime logs/debug exports. Keep only enough
+  // metadata to verify whether capture worked on a user's machine.
+  if (result.text_context && typeof result.text_context === 'object') {
+    const context = result.text_context as Record<string, unknown>
+    result.text_context = {
+      source: String(context.source || ''),
+      before_len: String(context.text_before || '').length,
+      selected_len: String(context.selected_text || '').length,
+      after_len: String(context.text_after || '').length,
+    }
+  }
+
   return result
 }

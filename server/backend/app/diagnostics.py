@@ -17,7 +17,9 @@ from fastapi.responses import JSONResponse
 router = APIRouter()
 
 DIAGNOSTICS_DIR = Path(__file__).resolve().parents[2] / "runtime" / "diagnostics_reports"
-DIAGNOSTICS_DIR.mkdir(exist_ok=True)
+# parents=True 不能省：干净检出里没有 server/runtime（整目录 gitignore），
+# 少了它就在 import 阶段抛 FileNotFoundError —— 表现是整个后端起不来 / 测试收集失败。
+DIAGNOSTICS_DIR.mkdir(parents=True, exist_ok=True)
 
 MAX_ZIP_SIZE = 50 * 1024 * 1024
 MAX_TOTAL_UNZIPPED_SIZE = 80 * 1024 * 1024

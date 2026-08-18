@@ -13,8 +13,6 @@
 //! 两者可以不一致 —— 英文版 Windows 把区域设成中国是很常见的组合。
 //! 界面语言只能跟显示语言，跟区域格式会把英文用户判成中文。
 
-use crate::storage::Storage;
-
 /// 受支持的界面语言。取值与前端 `Locale` 一一对应。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lang {
@@ -63,38 +61,6 @@ pub fn system_ui_lang() -> Lang {
     match std::env::var("LANG") {
         Ok(value) if value.to_ascii_lowercase().starts_with("zh") => Lang::ZhCn,
         _ => Lang::En,
-    }
-}
-
-/// 当前实际生效的界面语言：`ui.language` 为 `auto`（或缺失/脏值）时按系统显示语言定。
-pub fn effective_lang(storage: &Storage) -> Lang {
-    match storage.get("ui.language", None).as_str() {
-        Some("zh-CN") => Lang::ZhCn,
-        Some("en") => Lang::En,
-        _ => system_ui_lang(),
-    }
-}
-
-/// 托盘文案。刻意写死在 Rust 里而不去读前端的 locale JSON：
-/// 只有三条，且托盘在前端加载之前就要建好，为它引入一条读文件的启动路径不值。
-pub struct TrayStrings {
-    pub show: &'static str,
-    pub quit: &'static str,
-    pub tooltip: &'static str,
-}
-
-pub fn tray_strings(lang: Lang) -> TrayStrings {
-    match lang {
-        Lang::ZhCn => TrayStrings {
-            show: "显示主窗口",
-            quit: "退出 SayIt",
-            tooltip: "SayIt — 随口说，出色写",
-        },
-        Lang::En => TrayStrings {
-            show: "Show main window",
-            quit: "Quit SayIt",
-            tooltip: "SayIt — Speak freely, write well",
-        },
     }
 }
 

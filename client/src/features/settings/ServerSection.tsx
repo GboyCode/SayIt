@@ -14,6 +14,7 @@ import {
   setBackendBaseUrl as persistBackendBaseUrl,
 } from '@/services/runtimeConfig'
 import { reconnectProvider } from '@/services/recorder'
+import { checkForUpdateNow, discardPendingForChannelSwitch } from '@/features/update/autoUpdate'
 import { getSetting, setSetting } from '@/services/store'
 import { setEngineDraftDirty } from '@/stores/engineDraft'
 import { describeServerError } from '@/lib/errorMessages'
@@ -116,6 +117,12 @@ export default function ServerSection() {
       // 地址已变更：无论下方健康检查成功与否，都按新地址强制重连，
       // 让左下角连接状态反映新配置（改成错误地址后应显示未连接，而非仍旧"已连接"）
       reconnectProvider()
+      // 更新检查跟随这个地址，所以换了地址就要重新查一次（见 getUpdateBaseUrl）。
+      // 必须先丢弃已下载的包：ensureDownloaded 只按版本号判断"已经在盘上了"，
+      // 版本号相同不代表来自同一台服务器，留着会让"指到测试服务器验一遍"
+      // 实际装的还是上一个来源那个包。
+      await discardPendingForChannelSwitch()
+      void checkForUpdateNow()
     } catch (error) {
       setResult({ tone: 'error', message: t('server.saveFailed'), detail: String(error) })
       setBusy(false)
@@ -148,6 +155,8 @@ export default function ServerSection() {
       setSavedBaseUrl(next)
       setEngineDraftDirty(false)
       reconnectProvider()
+      await discardPendingForChannelSwitch()
+      void checkForUpdateNow()
       const payload = await probeHealth(next)
       setResult(describeHealth(payload, t('server.restoredPrefix', { url: next })))
     } catch (error) {

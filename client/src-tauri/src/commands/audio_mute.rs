@@ -140,21 +140,74 @@ pub fn restore_system_output() -> Result<bool, String> {
 // 麦克风静音状态查询
 // ─────────────────────────────────────────────────────────────────────────
 
+/// 浏览器会给默认设备名加上 Default/Communications 前缀；Windows 端点友好名没有。
+/// 这里只做名字规范化以定位本次实际打开的端点，不参与静音与否的判断。
+fn normalize_mic_label(label: &str) -> String {
+    let trimmed = label.trim();
+    let lower = trimmed.to_lowercase();
+    let without_route_prefix = ["default", "communications", "默认值", "默认", "通信"]
+        .iter()
+        .find_map(|prefix| {
+            let prefix_lower = prefix.to_lowercase();
+            lower.starts_with(&prefix_lower).then(|| {
+                trimmed[prefix.len()..].trim_start_matches(|c: char| {
+                    c.is_whitespace() || matches!(c, '-' | '–' | '—' | ':')
+                })
+            })
+        })
+        .unwrap_or(trimmed);
+
+    without_route_prefix
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+#[cfg(windows)]
+unsafe fn get_device_friendly_name(
+    device: &windows::Win32::Media::Audio::IMMDevice,
+) -> Result<String, String> {
+    use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
+    use windows::Win32::System::Com::StructuredStorage::{
+        PropVariantClear, PropVariantToStringAlloc,
+    };
+    use windows::Win32::System::Com::{CoTaskMemFree, STGM_READ};
+
+    let store = device
+        .OpenPropertyStore(STGM_READ)
+        .map_err(|e| format!("OpenPropertyStore: {}", e))?;
+    let mut value = store
+        .GetValue(&PKEY_Device_FriendlyName)
+        .map_err(|e| format!("GetValue(PKEY_Device_FriendlyName): {}", e))?;
+
+    let name_result = (|| -> Result<String, String> {
+        let ptr = PropVariantToStringAlloc(&value)
+            .map_err(|e| format!("PropVariantToStringAlloc: {}", e))?;
+        let text = ptr
+            .to_string()
+            .map_err(|e| format!("FriendlyName to_string: {}", e));
+        CoTaskMemFree(Some(ptr.0.cast()));
+        text
+    })();
+    let clear_result = PropVariantClear(&mut value)
+        .map_err(|e| format!("PropVariantClear: {}", e));
+    clear_result?;
+    name_result
+}
+
 /// 查询采集设备的静音状态。
 ///
-/// 当前实现只可靠支持「系统默认麦克风」（`label` 为 None/空）：直接查默认采集端点的静音开关。
-/// 若指定了特定设备名（`label` 非空），由于浏览器 deviceId 与系统设备不易可靠对应（按友好名
-/// 匹配在 windows-rs 0.58 上读取属性受限，且同名设备会有歧义），这里返回 `matched=false`，
-/// 交由前端基于音频信号的检测兜底，避免误报。后续可在此扩展按名字匹配。
+/// 前端传入 getUserMedia 实际打开的 MediaStreamTrack.label。这里枚举 Windows 采集端点，
+/// 按规范化后的友好名唯一匹配，再读取该端点真实的 IAudioEndpointVolume::GetMute 状态。
+/// 找不到或出现同名多个端点时返回 matched=false，绝不猜测静音。
 #[cfg(windows)]
 unsafe fn query_mic_mute(label: Option<&str>) -> Result<MicMuteState, String> {
-    // 指定了特定设备 → 暂不做匹配，交给信号检测
-    if label.map(str::trim).filter(|s| !s.is_empty()).is_some() {
-        return Ok(MicMuteState { matched: false, muted: false });
-    }
-
     use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
-    use windows::Win32::Media::Audio::{eCapture, eConsole, IMMDeviceEnumerator, MMDeviceEnumerator};
+    use windows::Win32::Media::Audio::{
+        eCapture, eConsole, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator,
+        DEVICE_STATE_ACTIVE,
+    };
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, CLSCTX_INPROC_SERVER,
         COINIT_APARTMENTTHREADED,
@@ -167,9 +220,55 @@ unsafe fn query_mic_mute(label: Option<&str>) -> Result<MicMuteState, String> {
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_INPROC_SERVER)
                 .map_err(|e| format!("CoCreateInstance MMDeviceEnumerator: {}", e))?;
-        let device = enumerator
-            .GetDefaultAudioEndpoint(eCapture, eConsole)
-            .map_err(|e| format!("GetDefaultAudioEndpoint(eCapture): {}", e))?;
+
+        let device: IMMDevice = if let Some(target_label) =
+            label.map(str::trim).filter(|s| !s.is_empty())
+        {
+            let target = normalize_mic_label(target_label);
+            let devices = enumerator
+                .EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE)
+                .map_err(|e| format!("EnumAudioEndpoints(eCapture): {}", e))?;
+            let count = devices
+                .GetCount()
+                .map_err(|e| format!("IMMDeviceCollection.GetCount: {}", e))?;
+            let mut matched: Option<IMMDevice> = None;
+
+            for index in 0..count {
+                let candidate = devices
+                    .Item(index)
+                    .map_err(|e| format!("IMMDeviceCollection.Item({}): {}", index, e))?;
+                let friendly_name = match get_device_friendly_name(&candidate) {
+                    Ok(name) => name,
+                    Err(_) => continue,
+                };
+                if normalize_mic_label(&friendly_name) != target {
+                    continue;
+                }
+                if matched.is_some() {
+                    // 同名设备无法可靠区分；宁可回退信号检测，也不查询错端点。
+                    return Ok(MicMuteState {
+                        matched: false,
+                        muted: false,
+                    });
+                }
+                matched = Some(candidate);
+            }
+
+            match matched {
+                Some(device) => device,
+                None => {
+                    return Ok(MicMuteState {
+                        matched: false,
+                        muted: false,
+                    })
+                }
+            }
+        } else {
+            enumerator
+                .GetDefaultAudioEndpoint(eCapture, eConsole)
+                .map_err(|e| format!("GetDefaultAudioEndpoint(eCapture): {}", e))?
+        };
+
         let endpoint: IAudioEndpointVolume = device
             .Activate(CLSCTX_ALL, None)
             .map_err(|e| format!("Activate IAudioEndpointVolume: {}", e))?;
@@ -188,7 +287,7 @@ unsafe fn query_mic_mute(label: Option<&str>) -> Result<MicMuteState, String> {
 }
 
 /// 查询麦克风是否被系统静音。
-/// `device_label`：前端选中麦克风的名字（enumerateDevices 的 label）；传 None/空表示系统默认麦克风。
+/// `device_label`：本次 MediaStreamTrack 实际打开的设备名；传 None/空才回退查询系统默认麦克风。
 /// 返回 `matched=false` 时表示无法可靠定位设备（如选了特定设备但同名多个），前端应退回信号检测。
 #[tauri::command]
 pub fn get_mic_mute_state(device_label: Option<String>) -> MicMuteState {
@@ -209,5 +308,27 @@ pub fn get_mic_mute_state(device_label: Option<String>) -> MicMuteState {
     {
         let _ = device_label;
         MicMuteState { matched: false, muted: false }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_mic_label;
+
+    #[test]
+    fn browser_route_prefix_does_not_change_endpoint_identity() {
+        assert_eq!(
+            normalize_mic_label("Default - Headset Microphone (Plantronics Blackwire 5220 Series)"),
+            normalize_mic_label("Headset Microphone (Plantronics Blackwire 5220 Series)")
+        );
+        assert_eq!(
+            normalize_mic_label("Communications: USB Microphone"),
+            "usb microphone"
+        );
+    }
+
+    #[test]
+    fn ordinary_device_name_is_preserved_for_matching() {
+        assert_eq!(normalize_mic_label("  Studio   Mic  "), "studio mic");
     }
 }

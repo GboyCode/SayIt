@@ -7,4 +7,5 @@ pub mod paste;
 pub mod shortcuts;
 pub mod storage;
 pub mod system;
+pub mod tray;
 pub mod window;

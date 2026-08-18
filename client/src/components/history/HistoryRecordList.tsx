@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Trash2, VolumeX, Star, Play, Pause, RotateCcw, Loader2, Download, Check, Copy, X, FolderOpen, Pencil, ChevronDown, ChevronUp } from 'lucide-react'
+import { Trash2, VolumeX, Star, Play, Pause, RotateCcw, Loader2, Download, Check, Copy, X, FolderOpen, Pencil, ChevronDown, ChevronUp, SpellCheck } from 'lucide-react'
 import { Tooltip } from '@/components/ui/tooltip'
 import { Card, CardContent } from '@/components/ui/card'
 import { type HistoryRecord } from '@/services/store'
@@ -10,22 +10,9 @@ import { invoke } from '@tauri-apps/api/core'
 import { getLocale, t } from '@/i18n'
 import { useT } from '@/i18n/useT'
 import { historyFailureReasonDisplay } from '@/i18n/displayNames'
-
-/**
- * 历史记录里同一时刻只允许播放一条录音。
- * 记录当前正在播放的 <audio>，播放新的一条时先暂停上一条——只 pause、不重置进度，
- * 所以之后可从原位置续播；被暂停那条会触发它自己的 onpause，按钮状态随之复位。
- */
-let activeHistoryAudio: HTMLAudioElement | null = null
-function claimHistoryPlayback(audio: HTMLAudioElement) {
-  if (activeHistoryAudio && activeHistoryAudio !== audio) {
-    activeHistoryAudio.pause()
-  }
-  activeHistoryAudio = audio
-}
-function releaseHistoryPlayback(audio: HTMLAudioElement) {
-  if (activeHistoryAudio === audio) activeHistoryAudio = null
-}
+import { useRecordingPlayback } from './useRecordingPlayback'
+import { AudioProgressBar } from './AudioProgressBar'
+import { AsrCorrectionDialog } from './AsrCorrectionDialog'
 
 /** 云 API 内部 key → 用户友好的模型 ID */
 const ASR_PROVIDER_DISPLAY: Record<string, string> = {
@@ -46,6 +33,8 @@ interface HistoryRecordListProps {
   onReprocess?: (record: HistoryRecord) => Promise<void> | void
   /** 手工编辑转换结果并保存 */
   onEdit?: (id: string, nextText: string) => Promise<void> | void
+  /** 记下「这条的 ASR 纠错已提交/已撤回」，由页面写回本地记录 */
+  onSaveAsrCorrection?: (id: string, patch: Partial<HistoryRecord>) => Promise<void> | void
   emptyText?: string
   /** 搜索关键词：在正文与 ASR 原文里高亮命中处 */
   highlight?: string
@@ -101,6 +90,7 @@ function HistoryItem({
   onToggleFavorite,
   onReprocess,
   onEdit,
+  onSaveAsrCorrection,
   highlight = '',
 }: {
   record: HistoryRecord
@@ -108,6 +98,7 @@ function HistoryItem({
   onToggleFavorite?: (nextFavorite: boolean) => void
   onReprocess?: () => Promise<void> | void
   onEdit?: (nextText: string) => Promise<void> | void
+  onSaveAsrCorrection?: (patch: Partial<HistoryRecord>) => Promise<void> | void
   highlight?: string
 }) {
   // 详情区靠**点「展开详情」按钮**开合，不用 hover。
@@ -120,20 +111,13 @@ function HistoryItem({
   const [expanded, setExpanded] = useState(false)
   const [editing, setEditing] = useState(false)
   const [editText, setEditText] = useState('')
-  const [audioPlaying, setAudioPlaying] = useState(false)
-  const [audioLoading, setAudioLoading] = useState(false)
   const [reprocessing, setReprocessing] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [downloadStatus, setDownloadStatus] = useState<'idle' | 'ok' | 'fail'>('idle')
   const [downloadPath, setDownloadPath] = useState('')
   const [copied, setCopied] = useState(false)
-  const [currentTime, setCurrentTime] = useState(0)
-  const [duration, setDuration] = useState(0)
-  const [playbackRate, setPlaybackRate] = useState(1)
-  const [audioReady, setAudioReady] = useState(false)
-  const audioRef = useRef<HTMLAudioElement | null>(null)
-  const audioUrlRef = useRef<string>('')
-  const rafRef = useRef<number>(0)
+  const [correcting, setCorrecting] = useState(false)
+  const playback = useRecordingPlayback(record.audioFilePath)
 
   const text = record.llmText || record.asrText
   const isEmpty = record.isEmpty || (!text && record.charCount === 0)
@@ -143,92 +127,18 @@ function HistoryItem({
     asrSec: record.asrDurationSec,
   })
 
-  // Cleanup audio on unmount
-  useEffect(() => {
-    return () => {
-      cancelAnimationFrame(rafRef.current)
-      if (audioRef.current) {
-        releaseHistoryPlayback(audioRef.current)
-        audioRef.current.pause()
-        audioRef.current = null
-      }
-      if (audioUrlRef.current) {
-        URL.revokeObjectURL(audioUrlRef.current)
-        audioUrlRef.current = ''
-      }
-    }
-  }, [])
-
-  // Sync time via requestAnimationFrame for smooth progress
-  useEffect(() => {
-    function tick() {
-      if (audioRef.current) {
-        setCurrentTime(audioRef.current.currentTime)
-      }
-      if (audioPlaying) {
-        rafRef.current = requestAnimationFrame(tick)
-      }
-    }
-    if (audioPlaying) {
-      rafRef.current = requestAnimationFrame(tick)
-    }
-    return () => cancelAnimationFrame(rafRef.current)
-  }, [audioPlaying])
-
-  const handleTogglePlayback = useCallback(async () => {
-    if (!record.audioFilePath) return
-
-    // If already playing, pause
-    if (audioRef.current && audioPlaying) {
-      audioRef.current.pause()
-      setAudioPlaying(false)
-      return
-    }
-
-    // If we have an audio element ready, resume
-    if (audioRef.current && audioUrlRef.current) {
-      audioRef.current.playbackRate = playbackRate
-      await audioRef.current.play()
-      setAudioPlaying(true)
-      return
-    }
-
-    // Load audio file
-    setAudioLoading(true)
-    try {
-      const dataUrl = await loadAudioAsDataUrl(record.audioFilePath)
-      if (!dataUrl) {
-        setAudioLoading(false)
-        return
-      }
-      const audio = new Audio(dataUrl)
-      audioRef.current = audio
-      audioUrlRef.current = dataUrl
-      audio.playbackRate = playbackRate
-      audio.onloadedmetadata = () => {
-        setDuration(audio.duration)
-        setAudioReady(true)
-      }
-      // 原生 timeupdate 兜底：远程桌面 / 窗口失焦时 requestAnimationFrame 会被降频甚至暂停，
-      // 导致进度条卡住。timeupdate 是媒体事件，不受 rAF 节流影响，保证进度稳定推进。
-      audio.ontimeupdate = () => setCurrentTime(audio.currentTime)
-      audio.onended = () => {
-        releaseHistoryPlayback(audio)
-        setAudioPlaying(false)
-        setCurrentTime(0)
-      }
-      audio.onpause = () => setAudioPlaying(false)
-      audio.onplay = () => {
-        claimHistoryPlayback(audio)
-        setAudioPlaying(true)
-      }
-      await audio.play()
-    } catch {
-      // ignore playback errors
-    } finally {
-      setAudioLoading(false)
-    }
-  }, [record.audioFilePath, audioPlaying, playbackRate])
+  /**
+   * 「纠正识别」入口的门槛。
+   *
+   * 只有服务器模式：只有服务器上的模型是我们能改的，云 API / 本地模型认错了，
+   * 把用户音频收上来既没用又是一次隐私意外（见 docs/decisions.md）。
+   * 必须有录音路径：没有音频的纠正对改进识别没有用。路径存在但文件已被保留期清掉
+   * 这种情况留给面板去说明 —— 列表渲染时不该为每一行去摸一次磁盘。
+   */
+  const canCorrectAsr = Boolean(
+    onSaveAsrCorrection && record.workMode === 'server' && record.asrText && !isEmpty && record.audioFilePath,
+  )
+  const asrCorrectionSubmitted = Boolean(record.asrCorrectionId)
 
   const handleReprocess = useCallback(async () => {
     if (!onReprocess || reprocessing) return
@@ -311,29 +221,6 @@ function HistoryItem({
       setDownloading(false)
     }
   }, [record.audioFilePath, record.timestamp, downloading])
-
-  const handleSeek = useCallback((value: number) => {
-    if (audioRef.current) {
-      audioRef.current.currentTime = value
-      setCurrentTime(value)
-    }
-  }, [])
-
-  const handleRateChange = useCallback((rate: number) => {
-    setPlaybackRate(rate)
-    if (audioRef.current) {
-      audioRef.current.playbackRate = rate
-    }
-  }, [])
-
-  const formatElapsed = (value: number) => {
-    const safe = Number.isFinite(value) ? Math.max(0, value) : 0
-    const m = Math.floor(safe / 60)
-    const s = Math.floor(safe % 60)
-    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-  }
-
-  const progress = duration > 0 ? Math.min(currentTime / duration, 1) : 0
 
   const open = expanded
 
@@ -527,17 +414,17 @@ function HistoryItem({
                       </Tooltip>
                     )}
                     {record.audioFilePath && (
-                      <Tooltip content={audioPlaying ? t('record.pause') : t('record.play')}>
+                      <Tooltip content={playback.playing ? t('record.pause') : t('record.play')}>
                         <button
                           type="button"
-                          onClick={() => { void handleTogglePlayback() }}
-                          disabled={audioLoading}
+                          onClick={() => { void playback.toggle() }}
+                          disabled={playback.loading}
                           className="relative top-[0.5px] flex h-7 w-7 items-center justify-center rounded p-1.5 hover:bg-accent disabled:opacity-50"
-                          aria-label={audioPlaying ? t('record.pause') : t('record.play')}
+                          aria-label={playback.playing ? t('record.pause') : t('record.play')}
                         >
-                          {audioLoading ? (
+                          {playback.loading ? (
                             <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                          ) : audioPlaying ? (
+                          ) : playback.playing ? (
                             <Pause className="h-3.5 w-3.5 text-primary" />
                           ) : (
                             <Play className="h-3.5 w-3.5 text-muted-foreground" />
@@ -563,6 +450,18 @@ function HistoryItem({
                           ) : (
                             <Download className="h-3.5 w-3.5 text-muted-foreground" />
                           )}
+                        </button>
+                      </Tooltip>
+                    )}
+                    {canCorrectAsr && (
+                      <Tooltip content={asrCorrectionSubmitted ? t('asrCorrection.entrySubmitted') : t('asrCorrection.entry')}>
+                        <button
+                          type="button"
+                          onClick={() => setCorrecting(true)}
+                          className="relative top-[0.5px] flex h-7 w-7 items-center justify-center rounded p-1.5 hover:bg-accent"
+                          aria-label={asrCorrectionSubmitted ? t('asrCorrection.entrySubmitted') : t('asrCorrection.entry')}
+                        >
+                          <SpellCheck className={`h-3.5 w-3.5 ${asrCorrectionSubmitted ? 'text-success' : 'text-muted-foreground'}`} />
                         </button>
                       </Tooltip>
                     )}
@@ -603,50 +502,20 @@ function HistoryItem({
                   </div>
                 )}
                 {/* 音频进度条 + 倍速 */}
-                {audioReady && (
-                  <div className="col-span-2 mt-2 flex items-center gap-2">
-                    <span className="w-[72px] shrink-0 text-[11px] tabular-nums text-muted-foreground">
-                      {formatElapsed(currentTime)} / {formatElapsed(duration)}
-                    </span>
-                    <div className="relative h-3 min-w-0 flex-1 overflow-visible">
-                      <div className="absolute left-0 right-0 top-1/2 h-px -translate-y-1/2 bg-border" />
-                      <div className="absolute left-0 top-1/2 h-px -translate-y-1/2 bg-foreground" style={{ width: `${progress * 100}%` }} />
-                      <div
-                        className="absolute top-1/2 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-foreground bg-card shadow-sm"
-                        style={{ left: `${progress * 100}%` }}
-                      />
-                      <input
-                        type="range"
-                        min={0}
-                        max={Math.max(duration, 0.1)}
-                        step={0.1}
-                        value={Math.min(currentTime, duration || 0)}
-                        onChange={(e) => handleSeek(Number(e.target.value))}
-                        className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                      />
-                    </div>
-                    <div className="flex shrink-0 gap-0.5">
-                      {[0.75, 1, 1.5, 2, 2.5].map((rate) => (
-                        <button
-                          key={rate}
-                          type="button"
-                          onClick={() => handleRateChange(rate)}
-                          className={`rounded px-1.5 py-0.5 text-[11px] transition-colors ${playbackRate === rate
-                            ? 'bg-foreground text-background font-medium'
-                            : 'text-muted-foreground hover:bg-accent'
-                            }`}
-                        >
-                          {rate}x
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
+                {playback.ready && <AudioProgressBar playback={playback} className="col-span-2 mt-2" />}
               </div>
             </div>
           </div>
         </div>
       </div>
+
+      {correcting && onSaveAsrCorrection && (
+        <AsrCorrectionDialog
+          record={record}
+          onClose={() => setCorrecting(false)}
+          onSubmitted={(patch) => { void onSaveAsrCorrection(patch) }}
+        />
+      )}
     </div>
   )
 }
@@ -658,6 +527,7 @@ function DayGroup({
   onToggleFavorite,
   onReprocess,
   onEdit,
+  onSaveAsrCorrection,
   highlight,
 }: {
   label: string
@@ -666,6 +536,7 @@ function DayGroup({
   onToggleFavorite?: (id: string, nextFavorite: boolean) => Promise<void> | void
   onReprocess?: (record: HistoryRecord) => Promise<void> | void
   onEdit?: (id: string, nextText: string) => Promise<void> | void
+  onSaveAsrCorrection?: (id: string, patch: Partial<HistoryRecord>) => Promise<void> | void
   highlight?: string
 }) {
   return (
@@ -681,6 +552,7 @@ function DayGroup({
               onToggleFavorite={onToggleFavorite ? (next) => onToggleFavorite(record.id, next) : undefined}
               onReprocess={onReprocess ? () => onReprocess(record) : undefined}
               onEdit={onEdit ? (nextText) => onEdit(record.id, nextText) : undefined}
+              onSaveAsrCorrection={onSaveAsrCorrection ? (patch) => onSaveAsrCorrection(record.id, patch) : undefined}
               highlight={highlight}
             />
           ))}
@@ -696,6 +568,7 @@ export default function HistoryRecordList({
   onToggleFavorite,
   onReprocess,
   onEdit,
+  onSaveAsrCorrection,
   emptyText,
   highlight,
 }: HistoryRecordListProps) {
@@ -744,6 +617,7 @@ export default function HistoryRecordList({
           onToggleFavorite={onToggleFavorite}
           onReprocess={onReprocess}
           onEdit={onEdit}
+          onSaveAsrCorrection={onSaveAsrCorrection}
           highlight={highlight}
         />
       ))}

@@ -5,21 +5,46 @@ import {
   isModifierPTTSetting,
   computeProcessingTimeoutMs,
   classifyMicLevel,
-  MIC_MUTE_PEAK_THRESHOLD,
+  judgeOsMicMute,
+  MIC_NO_SIGNAL_PEAK_THRESHOLD,
   MIC_LOW_RMS_THRESHOLD,
+  OS_MIC_MUTE_CONFIRM_SAMPLES,
 } from '../helpers'
 
-describe('classifyMicLevel', () => {
-  it('峰值≈0 判为 muted（无信号 / 可能被静音）', () => {
-    expect(classifyMicLevel(0, 0)).toBe('muted')
-    // 即使 RMS 因为某些原因不为 0，只要峰值低于阈值仍算无信号
-    expect(classifyMicLevel(0.05, MIC_MUTE_PEAK_THRESHOLD - 0.0001)).toBe('muted')
+describe('judgeOsMicMute', () => {
+  // 回归：Plantronics Blackwire 5220 停在 GetMute=true 但音频照常流动，
+  // 直接采信系统标志会导致每次按热键都先误报一次「麦克风已被静音」。
+  it('音频在流动时立刻丢弃系统的静音标志', () => {
+    expect(judgeOsMicMute(0, 'voiced', 1600)).toEqual({ verdict: 'dismissed' })
+    expect(judgeOsMicMute(0, 'low', 1600)).toEqual({ verdict: 'dismissed' })
   })
 
-  it('有峰值但 RMS 偏低 判为 low（请靠近麦克风）', () => {
+  it('已攒到快要确认时，一帧非零信号也能推翻它', () => {
+    expect(judgeOsMicMute(OS_MIC_MUTE_CONFIRM_SAMPLES - 1, 'low', 1600))
+      .toEqual({ verdict: 'dismissed' })
+  })
+
+  it('全 0 采样未达阈值时继续攒证据，不弹警告', () => {
+    expect(judgeOsMicMute(0, 'muted', 1600)).toEqual({ verdict: 'wait', silentSamples: 1600 })
+    expect(judgeOsMicMute(1600, 'muted', 1600)).toEqual({ verdict: 'wait', silentSamples: 3200 })
+  })
+
+  it('全 0 采样累计到阈值才确认真被静音', () => {
+    expect(judgeOsMicMute(OS_MIC_MUTE_CONFIRM_SAMPLES - 1600, 'muted', 1600))
+      .toEqual({ verdict: 'confirmed' })
+  })
+})
+
+describe('classifyMicLevel', () => {
+  it('只有 PCM 峰值严格为 0 才判为 muted', () => {
+    expect(classifyMicLevel(0, 0)).toBe('muted')
+    expect(classifyMicLevel(0.05, MIC_NO_SIGNAL_PEAK_THRESHOLD)).toBe('muted')
+  })
+
+  it('任何非零输入即使极小也判为 low', () => {
+    expect(classifyMicLevel(Number.MIN_VALUE, Number.MIN_VALUE)).toBe('low')
     expect(classifyMicLevel(0.004, 0.05)).toBe('low')
-    // 峰值刚好达标、RMS 低于低音量阈值
-    expect(classifyMicLevel(MIC_LOW_RMS_THRESHOLD - 0.0001, MIC_MUTE_PEAK_THRESHOLD)).toBe('low')
+    expect(classifyMicLevel(MIC_LOW_RMS_THRESHOLD - 0.0001, 1 / 32768)).toBe('low')
   })
 
   it('RMS 达到正常水平 判为 voiced', () => {

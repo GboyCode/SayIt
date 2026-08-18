@@ -31,16 +31,12 @@ function normalizeAppPromptRule(raw: unknown, fallback?: AppPromptRule): AppProm
   const name = String(value.name || fallback?.name || '').trim()
   if (!id || !appId || !name) return fallback ? { ...fallback } : null
 
-  const priorityValue = Number(value.priority ?? fallback?.priority ?? 0)
-  const priority = Number.isFinite(priorityValue) ? priorityValue : 0
-
   return {
     id,
     appId,
     name,
     builtin: value.builtin === true || fallback?.builtin === true,
     enabled: typeof value.enabled === 'boolean' ? value.enabled : fallback?.enabled ?? false,
-    priority,
     presetId: String(value.presetId ?? fallback?.presetId ?? '').trim() || undefined,
     promptAppend: String(value.promptAppend ?? fallback?.promptAppend ?? '').trim(),
     matcher: normalizeMatcher(value.matcher ?? fallback?.matcher ?? {}),
@@ -52,7 +48,7 @@ function normalizeUserStats(raw: unknown): UserStats {
   if (!raw || typeof raw !== 'object') return defaults
 
   const value = raw as Record<string, unknown>
-  
+
   const domainWordsRaw = value.domainWords && typeof value.domainWords === 'object'
     ? value.domainWords as Record<string, unknown>
     : {}
@@ -90,36 +86,39 @@ function normalizeUserStats(raw: unknown): UserStats {
   }
 }
 
-/** 新建的用户规则默认优先级：高于所有内置规则，"我自己加的应该说话最响"。 */
-export const CUSTOM_RULE_PRIORITY = 200
-
+/**
+ * 读取应用规则，**原样保留存档里的数组顺序**（顺序即优先级，见 AppPromptRule 的注释）。
+ *
+ * 这里不能再按任何字段重排：界面上拖出来的顺序就是存进去的顺序，重排一次就等于
+ * 用户白拖。老存档虽然带着 priority，但当时写入前已经按它排好序了，直接沿用即可。
+ */
 export async function getAppPromptRules(): Promise<AppPromptRule[]> {
   const saved = await getSetting<unknown>(APP_PROMPT_RULES_KEY, [])
-  const savedById = new Map<string, AppPromptRule>()
-  const savedOrder: AppPromptRule[] = []
+  const builtinById = new Map(BUILTIN_APP_RULES.map((rule) => [rule.id, rule]))
+  const ordered: AppPromptRule[] = []
+  const seen = new Set<string>()
 
   if (Array.isArray(saved)) {
     for (const item of saved) {
-      const normalized = normalizeAppPromptRule(item)
-      if (normalized) {
-        savedById.set(normalized.id, normalized)
-        savedOrder.push(normalized)
-      }
+      const id = String((item as { id?: unknown } | null)?.id ?? '').trim()
+      // 内置规则以 BUILTIN_APP_RULES 为骨架（用户只能改其中几个字段，删不掉）；
+      // 不在内置清单里的是用户自建规则，原样保留。
+      const skeleton = builtinById.get(id)
+      const normalized = normalizeAppPromptRule(item, skeleton)
+      if (!normalized || seen.has(normalized.id)) continue
+      seen.add(normalized.id)
+      ordered.push(skeleton ? normalized : { ...normalized, builtin: false })
     }
   }
 
-  // 内置规则以 BUILTIN_APP_RULES 为骨架（用户只能改其中几个字段，删不掉）
-  const builtinIds = new Set(BUILTIN_APP_RULES.map((rule) => rule.id))
-  const builtins = BUILTIN_APP_RULES
-    .map((rule) => normalizeAppPromptRule(savedById.get(rule.id), rule) || { ...rule })
+  // 存档里没出现过的内置规则：全新安装（此时顺序就是 BUILTIN_APP_RULES 的顺序），
+  // 或版本更新新增的规则 —— 后者追加到末尾。新增的内置规则默认关闭，位置不影响行为，
+  // 用户启用它时会自动置顶。
+  const missing = BUILTIN_APP_RULES
+    .filter((rule) => !seen.has(rule.id))
+    .map((rule) => ({ ...rule, matcher: { ...rule.matcher } }))
 
-  // 用户自建规则：存过、且不在内置清单里的。以前这里只返回内置骨架，
-  // 用户存进去的额外规则会被静默丢掉，所以界面上也就没法提供"新建"。
-  const customs = savedOrder
-    .filter((rule) => !builtinIds.has(rule.id))
-    .map((rule) => ({ ...rule, builtin: false }))
-
-  return [...builtins, ...customs].sort((left, right) => right.priority - left.priority)
+  return [...ordered, ...missing]
 }
 
 export async function saveAppPromptRules(rules: AppPromptRule[]): Promise<void> {
@@ -143,7 +142,7 @@ export async function recordSessionStats(appId: string, wordCount: number): Prom
   nextStats.totalWords += safeWordCount
   nextStats.totalSessions += 1
   nextStats.lastUsedAt = now
-  
+
   if (!nextStats.firstUsedAt) {
     nextStats.firstUsedAt = now
   }

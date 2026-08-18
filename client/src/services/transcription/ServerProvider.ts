@@ -46,6 +46,7 @@ export class ServerProvider implements TranscriptionProvider {
           durationSec: result.durationSec,
           asrEngine: result.asrEngine,
           asrModel: result.asrModel,
+          contextApplied: result.contextApplied,
         })
       },
       onDone: () => {

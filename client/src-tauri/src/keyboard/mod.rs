@@ -400,6 +400,10 @@ struct HookSharedState {
     /// VK codes for hands-free toggle key (empty = not using hook for hands-free)
     hf_vk_codes: Vec<u32>,
     hf_setting: String,
+    /// AI 整理开关支持单键与鼠标按键；组合键仍由 global_shortcut 处理。
+    ai_toggle_key_down: AtomicBool,
+    ai_toggle_vk_codes: Vec<u32>,
+    ai_toggle_setting: String,
     app_handle: AppHandle,
 }
 
@@ -410,6 +414,7 @@ enum HookAction {
     PttDown { vk: u32, gen: u64 },
     PttUp { vk: u32, gen: u64, reason: &'static str },
     HfToggle { vk: u32 },
+    AiToggle { vk: u32 },
     Escape { mode: u32, token: u64 },
     Diag { vk: u32, msg_name: &'static str, flags: u32, scan_code: u32 },
     Shutdown,
@@ -1021,11 +1026,11 @@ impl KeyboardHookManager {
         }
     }
 
-    /// Start the keyboard hook with the given PTT setting and optional hands-free setting
-    pub fn start(&self, app: &AppHandle, ptt_setting: &str, hf_setting: &str) {
+    /// Start the keyboard hook with PTT, hands-free, and AI-cleanup single-key settings.
+    pub fn start(&self, app: &AppHandle, ptt_setting: &str, hf_setting: &str, ai_toggle_setting: &str) {
         crate::commands::system::write_log_line(&format!(
-            "[ptt-lifecycle] start() called ptt_setting={} hf_setting={}",
-            ptt_setting, hf_setting,
+            "[ptt-lifecycle] start() called ptt_setting={} hf_setting={} ai_toggle_setting={}",
+            ptt_setting, hf_setting, ai_toggle_setting,
         ));
         let has_hook_thread = self.hook_thread.lock().unwrap().is_some();
         if self.running.load(Ordering::SeqCst) || has_hook_thread {
@@ -1035,6 +1040,11 @@ impl KeyboardHookManager {
         let ptt_config = ptt_key_config(ptt_setting);
         let hf_vk_codes = if is_single_key_setting(hf_setting) {
             vk_codes_for_setting(hf_setting)
+        } else {
+            vec![] // combo key — handled by global_shortcut, not hook
+        };
+        let ai_toggle_vk_codes = if is_single_key_setting(ai_toggle_setting) {
+            vk_codes_for_setting(ai_toggle_setting)
         } else {
             vec![] // combo key — handled by global_shortcut, not hook
         };
@@ -1062,6 +1072,9 @@ impl KeyboardHookManager {
             hf_key_down: AtomicBool::new(false),
             hf_vk_codes,
             hf_setting: hf_setting.to_string(),
+            ai_toggle_key_down: AtomicBool::new(false),
+            ai_toggle_vk_codes,
+            ai_toggle_setting: ai_toggle_setting.to_string(),
             app_handle: app.clone(),
         });
 
@@ -1157,16 +1170,16 @@ impl KeyboardHookManager {
         *self.shared_state.lock().unwrap() = None;
     }
 
-    /// Reconfigure with new PTT and hands-free settings
-    pub fn reconfigure(&self, app: &AppHandle, ptt_setting: &str, hf_setting: &str) {
+    /// Reconfigure with new PTT, hands-free, and AI-cleanup settings.
+    pub fn reconfigure(&self, app: &AppHandle, ptt_setting: &str, hf_setting: &str, ai_toggle_setting: &str) {
         let count = RECONFIGURE_COUNT.fetch_add(1, Ordering::SeqCst) + 1;
         crate::commands::system::write_log_line(&format!(
-            "[ptt-lifecycle] reconfigure() #{} ptt_setting={} hf_setting={} — waiting for old hook shutdown",
-            count, ptt_setting, hf_setting,
+            "[ptt-lifecycle] reconfigure() #{} ptt_setting={} hf_setting={} ai_toggle_setting={} — waiting for old hook shutdown",
+            count, ptt_setting, hf_setting, ai_toggle_setting,
         ));
         self.stop();
         // stop() 已 join 旧 hook 与 dispatcher，可直接启动新实例。
-        self.start(app, ptt_setting, hf_setting);
+        self.start(app, ptt_setting, hf_setting, ai_toggle_setting);
     }
 
     /// Set hands-free mode active (suppresses PTT up events temporarily)
@@ -1247,6 +1260,15 @@ impl KeyboardHookManager {
                             &format!("[RUST] [hf] toggle vk={} setting={}", vk, dispatch_state.hf_setting)
                         );
                         let _ = dispatch_state.app_handle.emit("toggle-hands-free", serde_json::json!({
+                            "source": "rust_hook",
+                            "vk": vk,
+                        }));
+                    }
+                    HookAction::AiToggle { vk } => {
+                        crate::commands::system::write_log_line(
+                            &format!("[RUST] [ai-toggle] vk={} setting={}", vk, dispatch_state.ai_toggle_setting)
+                        );
+                        let _ = dispatch_state.app_handle.emit("toggle-ai-cleanup", serde_json::json!({
                             "source": "rust_hook",
                             "vk": vk,
                         }));
@@ -1494,6 +1516,10 @@ unsafe extern "system" fn low_level_mouse_proc(
             let is_hf_key = !state.hf_vk_codes.is_empty()
                 && state.hf_vk_codes.contains(&vk)
                 && !is_ptt_key; // 同一键时 PTT 优先
+            let is_ai_toggle_key = !state.ai_toggle_vk_codes.is_empty()
+                && state.ai_toggle_vk_codes.contains(&vk)
+                && !is_ptt_key
+                && !is_hf_key; // PTT / 免提高于 AI 开关
 
             if let Some(member_index) = ptt_member {
                 // 鼠标按键只允许旧单键格式；按下和抬起都吞掉，避免误触发其它程序导航。
@@ -1557,6 +1583,24 @@ unsafe extern "system" fn low_level_mouse_proc(
                     }
                 }
                 if is_up && end_hf_press(&state.hf_key_down) {
+                    consumed = true;
+                }
+            }
+
+            if is_ai_toggle_key {
+                if is_down {
+                    consumed = true;
+                    if begin_hf_press(&state.ai_toggle_key_down) {
+                        HOOK_ACTION_TX.with(|tx| {
+                            if let Some(sender) = tx.borrow().as_ref() {
+                                if sender.send(HookAction::AiToggle { vk }).is_err() {
+                                    TRY_SEND_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
+                        });
+                    }
+                }
+                if is_up && end_hf_press(&state.ai_toggle_key_down) {
                     consumed = true;
                 }
             }
@@ -1745,6 +1789,10 @@ unsafe extern "system" fn low_level_keyboard_proc(
                 let is_hf_key = !state.hf_vk_codes.is_empty()
                     && state.hf_vk_codes.contains(&vk)
                     && !is_ptt_key; // PTT takes priority if same key
+                let is_ai_toggle_key = !state.ai_toggle_vk_codes.is_empty()
+                    && state.ai_toggle_vk_codes.contains(&vk)
+                    && !is_ptt_key
+                    && !is_hf_key; // PTT / hands-free take priority if misconfigured
 
                 // Alt 键（VK_LMENU=0xA4 / VK_RMENU=0xA5）作为单键热键时，keyup 也必须吞掉。
                 // 否则被放行的 Alt 抬起会被 Windows 判为「单击了一下 Alt」→ 激活前台程序的
@@ -1891,6 +1939,26 @@ unsafe extern "system" fn low_level_keyboard_proc(
                         if end_hf_press(&state.hf_key_down) || is_alt_key {
                             consumed = true;
                         }
+                    }
+                }
+
+                if is_ai_toggle_key {
+                    let is_up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
+                    let is_down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
+                    if is_down {
+                        consumed = true;
+                        if begin_hf_press(&state.ai_toggle_key_down) {
+                            HOOK_ACTION_TX.with(|tx| {
+                                if let Some(sender) = tx.borrow().as_ref() {
+                                    if sender.send(HookAction::AiToggle { vk }).is_err() {
+                                        TRY_SEND_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                }
+                            });
+                        }
+                    }
+                    if is_up && (end_hf_press(&state.ai_toggle_key_down) || is_alt_key) {
+                        consumed = true;
                     }
                 }
             }

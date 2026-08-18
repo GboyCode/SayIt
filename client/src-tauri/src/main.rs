@@ -18,7 +18,6 @@ use keyboard::KeyboardHookManager;
 use context::ContextDetector;
 use tauri::{Manager, Emitter};
 use tauri::tray::{TrayIconBuilder, MouseButton, MouseButtonState, TrayIconEvent};
-use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use std::thread;
 
 /// Environment-level WebView2 flags must be identical for every webview that shares
@@ -47,8 +46,11 @@ fn browser_args_fingerprint(value: &str) -> String {
 
 /// Clean up expired audio files based on retention setting.
 fn cleanup_expired_audio(storage: &Storage) {
-    let retention_val = storage.get("audioRetentionDays", Some(&serde_json::json!(30)));
-    let retention_days = retention_val.as_i64().unwrap_or(30);
+    // 默认必须和前端 defaults.ts 的 audioRetentionDays 一致（-1 = 永久保留）。
+    // 曾经这里写死 30：用户从没动过这个设置时，界面显示"永久"，实际 30 天就被删掉了 ——
+    // 不报错、没有提示，只是录音悄悄消失（"纠正识别"入口大面积置灰就是这么来的）。
+    let retention_val = storage.get("audioRetentionDays", Some(&serde_json::json!(-1)));
+    let retention_days = retention_val.as_i64().unwrap_or(-1);
     if retention_days < 0 {
         return; // -1 = keep forever
     }
@@ -253,6 +255,8 @@ fn main() {
     let ptt_str = ptt_setting_val.as_str().unwrap_or("ControlRight").to_string();
     let hf_setting_val = storage.get("shortcutHandsFree", None);
     let hf_str = hf_setting_val.as_str().unwrap_or("AltRight").to_string();
+    let ai_toggle_setting_val = storage.get("shortcutToggleAi", None);
+    let ai_toggle_str = ai_toggle_setting_val.as_str().unwrap_or("").to_string();
     log::info!("PTT setting from DB: raw={:?} parsed={:?}", ptt_setting_val, ptt_str);
     log::info!("HF setting from DB: raw={:?} parsed={:?}", hf_setting_val, hf_str);
 
@@ -349,7 +353,7 @@ fn main() {
             }
 
             let hook: tauri::State<KeyboardHookManager> = app.state();
-            hook.start(app.handle(), &ptt_str, &hf_str);
+            hook.start(app.handle(), &ptt_str, &hf_str, &ai_toggle_str);
 
             // 每 60s 记录一次键盘钩子健康快照（[ptt-watchdog] 日志行），
             // 用于排查"过一段时间后 Alt 说话没反应"这类间歇性问题：
@@ -440,51 +444,51 @@ fn main() {
 
             // 系统托盘图标
             {
-                // 语言在建菜单之前就要定下来：托盘是开机即可见的 UI，
-                // 等前端起来再改文案会先闪一遍错误语言。
-                let tray_lang = {
-                    let storage: tauri::State<Storage> = app.state();
-                    locale::effective_lang(storage.inner())
-                };
-                let tray_text = locale::tray_strings(tray_lang);
-                let show_item = MenuItemBuilder::with_id("show", tray_text.show).build(app)?;
-                let quit_item = MenuItemBuilder::with_id("quit", tray_text.quit).build(app)?;
-                let tray_menu = MenuBuilder::new(app)
-                    .item(&show_item)
-                    .separator()
-                    .item(&quit_item)
-                    .build()?;
+                // 自定义菜单窗口在启动时预创建并隐藏；右键时只定位、显示，没有首开延迟。
+                commands::tray::create_tray_menu_window(app.handle())?;
 
-                let ico_bytes = include_bytes!("../icons/icon.ico");
-                let icon = tauri::image::Image::from_bytes(ico_bytes)
+                // 每张托盘图都由 256px 原图直接生成，避免 256 → 32 → 系统实际尺寸的
+                // 二次缩放。按窗口所在屏幕的缩放比例选最接近 Windows 托盘槽位的尺寸；
+                // Logo 的轮廓和完整 SayIt 字样都不变，只对小图做了轻微锐化。
+                let tray_scale = app
+                    .get_webview_window("main")
+                    .and_then(|window| window.scale_factor().ok())
+                    .unwrap_or(1.0);
+                let (tray_icon_bytes, tray_icon_size): (&[u8], u32) = if tray_scale >= 1.75 {
+                    (include_bytes!("../icons/tray-32.png"), 32)
+                } else if tray_scale >= 1.375 {
+                    (include_bytes!("../icons/tray-24.png"), 24)
+                } else if tray_scale >= 1.125 {
+                    (include_bytes!("../icons/tray-20.png"), 20)
+                } else {
+                    (include_bytes!("../icons/tray-16.png"), 16)
+                };
+                log::info!(
+                    "[tray] icon size={}px for scale factor {:.2}",
+                    tray_icon_size,
+                    tray_scale
+                );
+                let icon = tauri::image::Image::from_bytes(tray_icon_bytes)
                     .expect("failed to load tray icon");
 
                 let _tray = TrayIconBuilder::new()
                     .icon(icon)
-                    .tooltip(tray_text.tooltip)
-                    .menu(&tray_menu)
-                    .on_menu_event(|app, event| {
-                        match event.id().as_ref() {
-                            "show" => {
-                                if let Some(w) = app.get_webview_window("main") {
-                                    let _ = w.show();
-                                    let _ = w.unminimize();
-                                    let _ = w.set_focus();
-                                }
-                            }
-                            "quit" => {
-                                app.exit(0);
-                            }
-                            _ => {}
-                        }
-                    })
+                    .tooltip("SayIt")
                     .on_tray_icon_event(|tray, event| {
-                        // 左键单击托盘图标 → 显示主窗口
-                        if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
-                            if let Some(w) = tray.app_handle().get_webview_window("main") {
-                                let _ = w.show();
-                                let _ = w.unminimize();
-                                let _ = w.set_focus();
+                        if let TrayIconEvent::Click { button, button_state: MouseButtonState::Up, position, .. } = event {
+                            match button {
+                                MouseButton::Left => {
+                                    commands::tray::hide_tray_menu(tray.app_handle().clone());
+                                    if let Some(w) = tray.app_handle().get_webview_window("main") {
+                                        let _ = w.show();
+                                        let _ = w.unminimize();
+                                        let _ = w.set_focus();
+                                    }
+                                }
+                                MouseButton::Right => {
+                                    commands::tray::show_tray_menu(tray.app_handle(), position);
+                                }
+                                _ => {}
                             }
                         }
                     })
@@ -596,10 +600,18 @@ fn main() {
             commands::system::save_audio_to_downloads,
             commands::system::reveal_file_in_folder,
             commands::system::open_folder,
+            // Tray
+            commands::tray::set_tray_ai_enabled,
+            commands::tray::get_tray_ai_enabled,
+            commands::tray::toggle_tray_ai_enabled,
+            commands::tray::show_main_from_tray,
+            commands::tray::hide_tray_menu,
+            commands::tray::quit_from_tray,
             // Audio
             commands::audio::save_audio_file,
             commands::audio::save_pcm_as_wav,
             commands::audio::read_audio_file,
+            commands::audio::audio_file_exists,
             commands::audio::delete_audio_file,
             // Audio output mute (录音期间静音系统输出，防回采)
             commands::audio_mute::mute_system_output,

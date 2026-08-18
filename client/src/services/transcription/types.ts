@@ -1,7 +1,7 @@
 // 转写 Provider 抽象层类型定义
 // 所有工作模式（服务器 / 云 API / 本地）共享此接口
 
-import type { ActiveAppContext } from '../../types/appContext'
+import type { ActiveAppContext, TextContext } from '../../types/appContext'
 import type { ClientRuntimeInfo } from '../../types/appApi'
 
 export type WorkMode = 'server' | 'cloud_api' | 'local'
@@ -22,6 +22,8 @@ export interface FinalResult {
   durationSec: number
   asrEngine?: string
   asrModel?: string
+  /** True only when the AI actually received and processed this run's editor context. */
+  contextApplied?: boolean
 }
 
 export interface TranscriptionCallbacks {
@@ -40,8 +42,12 @@ export interface StartOptions {
   runId: number
   systemPrompt?: string
   disableAi?: boolean
+  /** 录音未达到该时长时只做识别，不调用 AI。0 / undefined = 不设门槛。 */
+  aiMinDurationSec?: number
   clientMeta?: ClientRuntimeInfo | null
   appContext?: ActiveAppContext | null
+  /** Bounded editor text captured at recording start. Never persisted in history/logs. */
+  textContext?: TextContext | null
   source?: 'live' | 'history_reprocess'
   hotwords?: string[]
   language?: string
@@ -51,6 +57,12 @@ export interface StartOptions {
 
 export interface StopOptions {
   pttHoldMs?: number
+  /**
+   * 松键时才知道的「这次别做 AI 整理」。目前只有短语音门槛会用到：录音时长要等录完
+   * 才知道，而服务器模式的 AI 在服务端紧跟 ASR 执行，start 时来不及决定。
+   * 只能追加跳过理由，不能反过来把 AI 打开。
+   */
+  disableAi?: boolean
   audioStats?: {
     avgRms: number
     peakRms: number

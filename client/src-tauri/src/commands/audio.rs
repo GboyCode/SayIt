@@ -53,6 +53,16 @@ pub fn save_pcm_as_wav(id: String, pcm_base64: String, sample_rate: Option<u32>)
     Ok(path.to_string_lossy().to_string())
 }
 
+/// 录音文件还在不在。
+///
+/// 单独一个命令而不是复用 `read_audio_file`：后者会把整份 WAV 读出来再 base64
+/// （五分钟录音约 13MB 的字符串），只为判断"文件存不存在"的话代价太大 ——
+/// 历史列表里每条记录都要判一次。
+#[tauri::command]
+pub fn audio_file_exists(file_path: String) -> bool {
+    !file_path.is_empty() && PathBuf::from(&file_path).is_file()
+}
+
 #[tauri::command]
 pub fn read_audio_file(file_path: String) -> Result<Option<String>, String> {
     let path = PathBuf::from(&file_path);

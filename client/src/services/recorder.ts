@@ -39,6 +39,11 @@ export function setAiEnabledCache(next: boolean) {
   orchestrator.setAiEnabledCache(next)
 }
 
+/** AI 开关由全局快捷键切换后，在空闲状态用悬浮窗确认结果。 */
+export function showAiEnabledToast(enabled: boolean) {
+  orchestrator.showAiEnabledToast(enabled)
+}
+
 /** 轻量：仅同步当前润色模式到录音器缓存，无 IPC，避免快速切换时卡顿 */
 export function setActivePresetCache(id: string) {
   orchestrator.setActivePresetCache(id)

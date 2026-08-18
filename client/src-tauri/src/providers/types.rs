@@ -76,4 +76,21 @@ pub struct CloudPolishRequest {
     pub ai_config: AiProviderConfig,
     #[serde(default)]
     pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub text_context: Option<TextContext>,
+}
+
+/// Ephemeral editor context. It is accepted only for this one AI request and is never persisted.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TextContext {
+    #[serde(default)]
+    pub source: String,
+    #[serde(default, alias = "textBefore")]
+    pub text_before: String,
+    #[serde(default, alias = "selectedText")]
+    pub selected_text: String,
+    #[serde(default, alias = "textAfter")]
+    pub text_after: String,
+    #[serde(default, alias = "selectionTruncated")]
+    pub selection_truncated: bool,
 }

@@ -1,7 +1,10 @@
 // 供应商注册表 — Tauri commands 入口
 
 use super::types::*;
-use super::{ai_openai_compat, ai_ollama, asr_doubao, asr_doubao_stream, asr_qwen, asr_qwen_omni, asr_mimo, asr_groq};
+use super::{
+    ai_ollama, ai_openai_compat, asr_doubao, asr_doubao_stream, asr_groq, asr_mimo, asr_qwen,
+    asr_qwen_omni,
+};
 use crate::error_protocol;
 
 /// 云端 AI 校对（Tauri command）
@@ -16,6 +19,7 @@ pub async fn cloud_polish(request: CloudPolishRequest) -> Result<AiResult, Strin
                 &request.text,
                 config,
                 request.system_prompt.as_deref(),
+                request.text_context.as_ref(),
             )
             .await
         }
@@ -24,10 +28,14 @@ pub async fn cloud_polish(request: CloudPolishRequest) -> Result<AiResult, Strin
                 &request.text,
                 config,
                 request.system_prompt.as_deref(),
+                request.text_context.as_ref(),
             )
             .await
         }
-        other => Err(error_protocol::encode("connect_failed", format!("Unknown AI provider: {}", other))),
+        other => Err(error_protocol::encode(
+            "connect_failed",
+            format!("Unknown AI provider: {}", other),
+        )),
     }
 }
 
@@ -38,10 +46,11 @@ pub async fn test_ai_connection(config: AiProviderConfig) -> Result<TestResult, 
         "openai_compat" | "deepseek" | "doubao" | "qwen" | "mimo" | "groq" => {
             Ok(ai_openai_compat::test_connection(&config).await)
         }
-        "ollama" => {
-            Ok(ai_ollama::test_connection(&config).await)
-        }
-        other => Err(error_protocol::encode("connect_failed", format!("Unknown AI provider: {}", other))),
+        "ollama" => Ok(ai_ollama::test_connection(&config).await),
+        other => Err(error_protocol::encode(
+            "connect_failed",
+            format!("Unknown AI provider: {}", other),
+        )),
     }
 }
 
@@ -104,7 +113,10 @@ pub async fn cloud_transcribe(request: CloudTranscribeRequest) -> Result<AsrResu
             )
             .await
         }
-        other => Err(error_protocol::encode("connect_failed", format!("ASR provider \"{}\" is not implemented", other))),
+        other => Err(error_protocol::encode(
+            "connect_failed",
+            format!("ASR provider \"{}\" is not implemented", other),
+        )),
     }
 }
 
@@ -118,6 +130,9 @@ pub async fn test_asr_connection(config: AsrProviderConfig) -> Result<TestResult
         "qwen_omni" => Ok(asr_qwen_omni::test_connection(&config).await),
         "mimo" => Ok(asr_mimo::test_connection(&config).await),
         "groq_whisper" => Ok(asr_groq::test_connection(&config).await),
-        other => Err(error_protocol::encode("connect_failed", format!("ASR provider \"{}\" is not implemented", other))),
+        other => Err(error_protocol::encode(
+            "connect_failed",
+            format!("ASR provider \"{}\" is not implemented", other),
+        )),
     }
 }

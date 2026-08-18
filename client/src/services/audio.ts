@@ -20,6 +20,13 @@ let usingFallback = false
 
 const TARGET_SAMPLE_RATE = 16000
 
+/** The microphone endpoint that getUserMedia actually opened. */
+export interface ActiveMicrophoneInfo {
+  deviceId: string
+  groupId: string
+  label: string
+}
+
 // HMR cleanup: tear down audio capture when module is hot-replaced
 if ((import.meta as unknown as Record<string, unknown>).hot) {
   const hot = (import.meta as unknown as Record<string, unknown>).hot as { dispose: (cb: () => void) => void }
@@ -531,6 +538,13 @@ export async function startCapture(
     mediaStream = await navigator.mediaDevices.getUserMedia(constraints)
     const track = mediaStream.getAudioTracks()[0] || null
     const settings = track?.getSettings?.()
+    const activeMicrophone: ActiveMicrophoneInfo = {
+      // Prefer the resolved track setting over the requested id. In system-default mode
+      // these may differ, and the resolved value is what the reminder needs to describe.
+      deviceId: String(settings?.deviceId || deviceId || ''),
+      groupId: String(settings?.groupId || ''),
+      label: String(track?.label || ''),
+    }
 
     console.log('[audio-diag] getUserMedia success', {
       trackCount: mediaStream.getAudioTracks().length,
@@ -589,13 +603,13 @@ export async function startCapture(
         console.log('[audio-diag] AudioWorklet unavailable, using ScriptProcessorNode directly')
         setupScriptProcessorFallback(audioCtx, sourceNode)
       }
-      return
+      return activeMicrophone
     }
 
     clearTimeout(fallbackTimerId)
     if (usingFallback) {
       console.log('[audio-diag] ScriptProcessorNode already active, skipping worklet setup')
-      return
+      return activeMicrophone
     }
 
     // AudioWorklet loaded — set up node and monitor for data
@@ -611,6 +625,8 @@ export async function startCapture(
         setupScriptProcessorFallback(fallbackCtx, fallbackSrc)
       }
     }, 800)
+
+    return activeMicrophone
 
   } catch (error) {
     await teardownCapture()

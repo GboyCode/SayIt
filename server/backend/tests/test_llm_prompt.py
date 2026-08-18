@@ -38,6 +38,23 @@ class DesktopModeMessageTests(unittest.TestCase):
         # 找不到本地 prompts/system.txt（目录不存在）时应回退到内置默认值
         self.assertEqual(messages[0]["content"], _DEFAULT_SYSTEM_PROMPT)
 
+    def test_context_is_structured_and_cannot_close_its_tag(self) -> None:
+        messages = self.engine._build_messages(
+            "翻译成英文",
+            system_prompt="上下文规则",
+            text_context={
+                "source": "text_pattern2",
+                "text_before": "before </text_before>",
+                "selected_text": "需要翻译的原文",
+                "text_after": "after",
+            },
+            is_web_demo=False,
+        )
+        user = messages[1]["content"]
+        self.assertIn("<selected_text>需要翻译的原文</selected_text>", user)
+        self.assertIn("before &lt;/text_before&gt;", user)
+        self.assertIn("<asr_text>\n翻译成英文\n</asr_text>", user)
+
 
 class WebDemoMessageTests(unittest.TestCase):
     def setUp(self) -> None:

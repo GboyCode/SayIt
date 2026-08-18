@@ -10,6 +10,16 @@ import {
   type OverlayWaveTheme,
   type OverlayWidthPreset,
 } from './types'
+import type { MicSourceMode } from './micSourceReminder'
+
+type OverlayVisualState = 'waiting' | 'listening' | 'thinking' | 'fallback' | 'error' | 'toast'
+
+interface MicSourceHint {
+  mode: MicSourceMode
+  label: string
+}
+
+const MIC_SOURCE_HINT_DURATION_MS = 3000
 
 function normalizeTheme(value: unknown): OverlayWaveTheme {
   if (value === 'black-white' || value === 'black-blue' || value === 'black-rainbow') {
@@ -38,6 +48,10 @@ export class OverlayService {
   private streamingText = ''
   /** 本次录音是否开启流式实时显示：为真则从录音一开始就显示气泡（占位），中途不再缩放窗口 */
   private streamingActive = false
+  private currentState: OverlayVisualState = 'waiting'
+  private activeMicSourceHint: MicSourceHint | null = null
+  private micSourceHintHideId: ReturnType<typeof setTimeout> | null = null
+  private micSourceHintGeneration = 0
 
   constructor(private readonly getElapsedSec: () => number) { }
 
@@ -103,6 +117,59 @@ export class OverlayService {
     void bridge.setEscapeActionMode(mode, token).catch(() => { /* 原生钩子不可用时不影响悬浮窗 */ })
   }
 
+  private getMicSourceHintPayload() {
+    return this.activeMicSourceHint
+      ? {
+        micSourceMode: this.activeMicSourceHint.mode,
+        micSourceLabel: this.activeMicSourceHint.label,
+      }
+      : {
+        micSourceMode: null,
+        micSourceLabel: '',
+      }
+  }
+
+  private clearMicSourceHint() {
+    this.micSourceHintGeneration++
+    if (this.micSourceHintHideId) {
+      clearTimeout(this.micSourceHintHideId)
+      this.micSourceHintHideId = null
+    }
+    this.activeMicSourceHint = null
+  }
+
+  /** Briefly confirm the actual input route after a successful microphone open. */
+  showMicSourceHint(hint: MicSourceHint) {
+    this.clearMicSourceHint()
+    this.activeMicSourceHint = hint
+    const generation = this.micSourceHintGeneration
+
+    void bridge.updateOverlay({
+      state: this.currentState,
+      elapsedSec: clampSec(this.getElapsedSec()),
+      ...(this.activeWarning ? { warning: this.activeWarning } : {}),
+      ...(this.streamingActive ? { streaming: true } : {}),
+      ...(this.streamingText ? { streamingText: this.streamingText } : {}),
+      ...this.getMicSourceHintPayload(),
+      ...this.getCommonPayload(),
+    })
+
+    this.micSourceHintHideId = setTimeout(() => {
+      if (generation !== this.micSourceHintGeneration) return
+      this.micSourceHintHideId = null
+      this.activeMicSourceHint = null
+      void bridge.updateOverlay({
+        state: this.currentState,
+        elapsedSec: clampSec(this.getElapsedSec()),
+        ...(this.activeWarning ? { warning: this.activeWarning } : {}),
+        ...(this.streamingActive ? { streaming: true } : {}),
+        ...(this.streamingText ? { streamingText: this.streamingText } : {}),
+        ...this.getMicSourceHintPayload(),
+        ...this.getCommonPayload(),
+      })
+    }, MIC_SOURCE_HINT_DURATION_MS)
+  }
+
   /** 文本即将进入不可逆的系统粘贴阶段；先关闭全局 Esc 取消，避免“已取消”后仍完成粘贴。 */
   async disableEscapeAction(): Promise<void> {
     try {
@@ -111,16 +178,20 @@ export class OverlayService {
   }
 
   showWaiting() {
+    this.currentState = 'waiting'
+    this.clearMicSourceHint()
     this.setEscapeMode('off', 0)
     this.clearFallbackHideTimer()
     void bridge.presentOverlay({
       state: 'waiting',
       elapsedSec: 0,
+      ...this.getMicSourceHintPayload(),
       ...this.getCommonPayload(),
     })
   }
 
   startListeningTicker(token = 0) {
+    this.currentState = 'listening'
     this.stopListeningTicker()
     // 真实录音代次才开启全局 Esc；PTT Lab 等 token=0 的预览绝不吞系统按键。
     this.setEscapeMode(token > 0 ? 'cancel_recording' : 'off', token)
@@ -132,6 +203,7 @@ export class OverlayService {
         ...(this.activeWarning ? { warning: this.activeWarning } : {}),
         ...(this.streamingActive ? { streaming: true } : {}),
         ...(this.streamingText ? { streamingText: this.streamingText } : {}),
+        ...this.getMicSourceHintPayload(),
         ...this.getCommonPayload(),
       })
     }, 33)
@@ -172,16 +244,19 @@ export class OverlayService {
       ...(this.activeWarning ? { warning: this.activeWarning } : {}),
       ...(this.streamingActive ? { streaming: true } : {}),
       ...(this.streamingText ? { streamingText: this.streamingText } : {}),
+      ...this.getMicSourceHintPayload(),
       ...this.getCommonPayload(),
     })
   }
 
   showThinking(elapsedSec: number, token = 0) {
+    this.currentState = 'thinking'
     // PTT Lab 也复用 thinking 动画，但没有真实录音代次；token=0 时只显示，绝不吞全局 Esc。
     this.setEscapeMode(token > 0 ? 'cancel_processing' : 'off', token)
     void bridge.updateOverlay({
       state: 'thinking',
       elapsedSec: clampSec(elapsedSec),
+      ...this.getMicSourceHintPayload(),
       ...this.getCommonPayload(),
     })
   }
@@ -200,6 +275,7 @@ export class OverlayService {
       warning: text,
       warningTone: 'warn',
       elapsedSec: clampSec(this.getElapsedSec()),
+      ...this.getMicSourceHintPayload(),
       ...this.getCommonPayload(),
     })
 
@@ -214,6 +290,7 @@ export class OverlayService {
         warning: '',
         warningTone: 'warn',
         elapsedSec: clampSec(this.getElapsedSec()),
+        ...this.getMicSourceHintPayload(),
         ...this.getCommonPayload(),
       })
     }, 4000)
@@ -227,18 +304,20 @@ export class OverlayService {
       warning: t('overlay.warnLowVolume'),
       warningTone: 'warn',
       elapsedSec: clampSec(this.getElapsedSec()),
+      ...this.getMicSourceHintPayload(),
       ...this.getCommonPayload(),
     })
   }
 
-  /** Show "no signal detected" warning（几乎无信号但未能确认被静音：选错设备/未授权等，琥珀色） */
+  /** Show "no signal detected" warning（持续无输入意味着设备不可用，使用红色高警） */
   showNoSignalWarning() {
     if (this.activeWarning) return
     void bridge.updateOverlay({
       state: 'listening',
       warning: t('overlay.warnNoSignal'),
-      warningTone: 'warn',
+      warningTone: 'error',
       elapsedSec: clampSec(this.getElapsedSec()),
+      ...this.getMicSourceHintPayload(),
       ...this.getCommonPayload(),
     })
   }
@@ -251,6 +330,7 @@ export class OverlayService {
       warning: t('overlay.warnMicMuted'),
       warningTone: 'error',
       elapsedSec: clampSec(this.getElapsedSec()),
+      ...this.getMicSourceHintPayload(),
       ...this.getCommonPayload(),
     })
   }
@@ -263,6 +343,7 @@ export class OverlayService {
       warning: '',
       warningTone: 'warn',
       elapsedSec: clampSec(this.getElapsedSec()),
+      ...this.getMicSourceHintPayload(),
       ...this.getCommonPayload(),
     })
   }
@@ -285,6 +366,8 @@ export class OverlayService {
   }
 
   showFallback(text: string, reason: string, token = 0) {
+    this.currentState = 'fallback'
+    this.clearMicSourceHint()
     console.log('[OverlayService] showFallback called, text:', text.slice(0, 30), 'reason:', reason)
     // token=0 的 PTT Lab 卡片没有 Orchestrator 代次，不能开启一个无人消费的全局 Esc。
     this.setEscapeMode(token > 0 ? 'dismiss_fallback' : 'off', token)
@@ -309,6 +392,7 @@ export class OverlayService {
   }
 
   hide() {
+    this.clearMicSourceHint()
     this.clearFallbackHideTimer()
     this.setEscapeMode('off', 0)
     void bridge.hideOverlay()
@@ -316,6 +400,8 @@ export class OverlayService {
 
   /** 快捷键切换润色模式后，用悬浮窗短暂提示当前模式名，约 1.6s 后自动隐藏。 */
   showPresetSwitched(name: string) {
+    this.currentState = 'toast'
+    this.clearMicSourceHint()
     this.setEscapeMode('off', 0)
     void bridge.presentOverlay({
       state: 'toast',
@@ -325,6 +411,21 @@ export class OverlayService {
     })
     this.clearFallbackHideTimer()
     this.fallbackHideId = setTimeout(() => this.hide(), 1600)
+  }
+
+  /** 全局快捷键切换 AI 整理后的轻量确认，不打断正在录音的状态。 */
+  showAiCleanupToggled(enabled: boolean) {
+    this.currentState = 'toast'
+    this.clearMicSourceHint()
+    this.setEscapeMode('off', 0)
+    void bridge.presentOverlay({
+      state: 'toast',
+      toastText: t(enabled ? 'overlay.toastAiCleanupOn' : 'overlay.toastAiCleanupOff'),
+      toastTone: 'info',
+      ...this.getCommonPayload(),
+    })
+    this.clearFallbackHideTimer()
+    this.fallbackHideId = setTimeout(() => this.hide(), 1400)
   }
 
   /**
@@ -337,6 +438,8 @@ export class OverlayService {
    * 新增一个调用点而漏掉。
    */
   showNoSpeech(diagnostic?: Record<string, unknown>) {
+    this.currentState = 'toast'
+    this.clearMicSourceHint()
     addRuntimeEvent('warn', 'recorder', 'Showing no-speech warning', diagnostic ?? {})
     this.setEscapeMode('off', 0)
     void bridge.presentOverlay({
@@ -351,6 +454,8 @@ export class OverlayService {
 
   /** 用户主动取消处理后的短提示。 */
   showCanceled() {
+    this.currentState = 'toast'
+    this.clearMicSourceHint()
     this.setEscapeMode('off', 0)
     void bridge.presentOverlay({
       state: 'toast',
@@ -364,6 +469,8 @@ export class OverlayService {
 
   /** 显示错误信息，几秒后自动隐藏 */
   showError(message: string) {
+    this.currentState = 'error'
+    this.clearMicSourceHint()
     this.setEscapeMode('off', 0)
     void bridge.presentOverlay({
       state: 'error',

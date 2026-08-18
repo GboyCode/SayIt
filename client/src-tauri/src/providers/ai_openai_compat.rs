@@ -3,7 +3,7 @@
 
 use super::diag;
 use super::prompt::wrap_user_text;
-use super::types::{AiProviderConfig, AiResult, TestResult};
+use super::types::{AiProviderConfig, AiResult, TestResult, TextContext};
 use std::time::Instant;
 
 const SCOPE: &str = "ai/openai-compat";
@@ -55,6 +55,7 @@ pub async fn polish(
     text: &str,
     config: &AiProviderConfig,
     system_prompt: Option<&str>,
+    text_context: Option<&TextContext>,
 ) -> Result<AiResult, String> {
     if text.trim().is_empty() {
         return Ok(AiResult {
@@ -67,7 +68,7 @@ pub async fn polish(
     let url = format!("{}/chat/completions", base_url);
 
     let sys_prompt = system_prompt.unwrap_or("你是语音转文本的校对助手。");
-    let user_content = wrap_user_text(text);
+    let user_content = wrap_user_text(text, text_context);
 
     let mut body = serde_json::json!({
         "model": config.model,
@@ -134,10 +135,13 @@ pub async fn polish(
         ));
     }
 
-    let body_text = resp
-        .text()
-        .await
-        .map_err(|e| diag::fail(SCOPE, "read_body", format!("Failed to read response: {}", e)))?;
+    let body_text = resp.text().await.map_err(|e| {
+        diag::fail(
+            SCOPE,
+            "read_body",
+            format!("Failed to read response: {}", e),
+        )
+    })?;
     let data: serde_json::Value = serde_json::from_str(&body_text).map_err(|e| {
         diag::fail(
             SCOPE,
@@ -187,7 +191,11 @@ pub async fn polish(
     }
 
     Ok(AiResult {
-        text: if cleaned.is_empty() { text.to_string() } else { cleaned },
+        text: if cleaned.is_empty() {
+            text.to_string()
+        } else {
+            cleaned
+        },
         elapsed_ms,
     })
 }
@@ -250,7 +258,10 @@ pub async fn test_connection(config: &AiProviderConfig) -> TestResult {
             let reply = strip_thinking(&raw_reply);
             let detail = format!(
                 "Elapsed: {}ms\nModel: {}\nSent: system=\"{}\" user=\"{}\"\nReply: {}",
-                elapsed_ms, config.model, system_prompt, user_prompt,
+                elapsed_ms,
+                config.model,
+                system_prompt,
+                user_prompt,
                 if reply.is_empty() { "(empty)" } else { &reply }
             );
             TestResult {
@@ -303,15 +314,24 @@ fn describe_reqwest_error(e: &reqwest::Error) -> String {
         // 尝试区分 DNS / TLS / 连接拒绝
         let lower = raw.to_lowercase();
         if lower.contains("dns") || lower.contains("resolve") || lower.contains("getaddrinfo") {
-            return format!("DNS lookup failed; the host may not exist or the network may be unavailable: {}", raw);
+            return format!(
+                "DNS lookup failed; the host may not exist or the network may be unavailable: {}",
+                raw
+            );
         }
-        if lower.contains("ssl") || lower.contains("tls") || lower.contains("certificate")
-            || lower.contains("handshake") || lower.contains("schannel")
+        if lower.contains("ssl")
+            || lower.contains("tls")
+            || lower.contains("certificate")
+            || lower.contains("handshake")
+            || lower.contains("schannel")
         {
             return format!("TLS/SSL handshake failed; check the certificate: {}", raw);
         }
         if lower.contains("refused") {
-            return format!("Connection refused; the service may not be running: {}", raw);
+            return format!(
+                "Connection refused; the service may not be running: {}",
+                raw
+            );
         }
         return format!("Could not connect to the server: {}", raw);
     }
@@ -325,9 +345,7 @@ fn normalize_base_url(url: &str) -> String {
         .rsplit('/')
         .next()
         .and_then(|segment| segment.strip_prefix('v'))
-        .is_some_and(|version| {
-            !version.is_empty() && version.chars().all(|c| c.is_ascii_digit())
-        });
+        .is_some_and(|version| !version.is_empty() && version.chars().all(|c| c.is_ascii_digit()));
 
     // 已经以 /v1、/v3、/v4 等版本路径结尾时直接使用
     if has_version_suffix {
