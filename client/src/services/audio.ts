@@ -299,7 +299,10 @@ function setupScriptProcessorFallback(ctx: AudioContext, src: MediaStreamAudioSo
     const input = event.inputBuffer.getChannelData(0)
     const { pcm, rms } = resampleToInt16(input, ctx.sampleRate)
 
-    if (!firstRmsLogged && rms > 0) {
+    // 刻意不加 `rms > 0` 这个条件（worklet 路径也没有）：rms 一直是 0 恰恰是要抓的现象，
+    // 「有声音才记」等于把最需要的那条证据丢掉 —— 于是日志里「麦克风全程无声」和
+    // 「这条日志我压根没实现」长得一模一样。
+    if (!firstRmsLogged) {
       firstRmsLogged = true
       addRuntimeEvent('info', 'audio', 'First RMS received (ScriptProcessor)', {
         rms: Number(rms.toFixed(6)),
@@ -321,13 +324,13 @@ function setupScriptProcessorFallback(ctx: AudioContext, src: MediaStreamAudioSo
           const value = Math.abs(pcm[i])
           if (value > peak) peak = value
         }
-      addRuntimeEvent('info', 'audio', 'First PCM frame received (ScriptProcessor)', {
+        addRuntimeEvent('info', 'audio', 'First PCM frame received (ScriptProcessor)', {
           samples: pcm.length,
           peak,
           byteLength: pcmBuffer.byteLength,
           sampleRate: TARGET_SAMPLE_RATE,
         })
-      console.log('[audio-diag] first PCM frame (ScriptProcessor)', {
+        console.log('[audio-diag] first PCM frame (ScriptProcessor)', {
           samples: pcm.length,
           byteLength: pcmBuffer.byteLength,
           contextSampleRate: ctx.sampleRate,
@@ -338,7 +341,7 @@ function setupScriptProcessorFallback(ctx: AudioContext, src: MediaStreamAudioSo
       if (totalPCMFrames % 100 === 0) {
         const elapsedSec = (performance.now() - captureStartTime) / 1000
         const pcmDurationSec = (totalPCMBytes / 2) / 16000
-      console.log('[audio-diag] PCM total (ScriptProcessor)', {
+        console.log('[audio-diag] PCM total (ScriptProcessor)', {
           frames: totalPCMFrames,
           totalBytes: totalPCMBytes,
           wallTimeSec: elapsedSec.toFixed(2),
@@ -407,7 +410,7 @@ function setupAudioWorkletNode(ctx: AudioContext, src: MediaStreamAudioSourceNod
     },
   })
 
-    addRuntimeEvent('info', 'audio', 'AudioContext ready', {
+  addRuntimeEvent('info', 'audio', 'AudioContext ready', {
     contextState: ctx.state,
     inputSampleRate: ctx.sampleRate,
     targetSampleRate: TARGET_SAMPLE_RATE,
@@ -555,9 +558,15 @@ export async function startCapture(
       settings,
     })
 
+    // muted / readyState / enabled 必须落盘：它们区分「Chromium 自己知道这路采集被静音了」
+    // 与「Chromium 以为一切正常、实际送来的全是 0」。后者是 WebView2 的已知毛病
+    // （采集静默降级成静音且不派发 mute 事件），只能靠对照这三个值 + 后面的 peakAmplitude 判定。
     addRuntimeEvent('info', 'audio', 'Microphone capture started', {
       requestedDeviceId: deviceId || 'default',
       trackLabel: track?.label || '',
+      trackMuted: track?.muted ?? null,
+      trackEnabled: track?.enabled ?? null,
+      trackReadyState: track?.readyState || null,
       trackSettings: settings || null,
     })
 
@@ -572,6 +581,7 @@ export async function startCapture(
     // 记一条到运行时日志：这是判断"有没有走上高质量重采样"的唯一依据，
     // 排查识别准确度问题时先看这里。
     addRuntimeEvent('info', 'audio', nativeSixteenK ? 'AudioContext is natively 16 kHz; resampling skipped' : 'AudioContext is not 16 kHz; using linear resampling', {
+      contextState: audioCtx.state,
       contextSampleRate: audioCtx.sampleRate,
       targetSampleRate: TARGET_SAMPLE_RATE,
     })
@@ -583,8 +593,8 @@ export async function startCapture(
     const fallbackSrc = sourceNode
     const fallbackTimerId = setTimeout(() => {
       if (!usingFallback && fallbackCtx === audioCtx && fallbackSrc === sourceNode) {
-      console.warn('[audio-diag] AudioWorklet timed out (1.5s); switching to ScriptProcessorNode')
-      addRuntimeEvent('warn', 'audio', 'AudioWorklet timed out; switching to ScriptProcessorNode fallback')
+        console.warn('[audio-diag] AudioWorklet timed out (1.5s); switching to ScriptProcessorNode')
+        addRuntimeEvent('warn', 'audio', 'AudioWorklet timed out; switching to ScriptProcessorNode fallback')
         setupScriptProcessorFallback(fallbackCtx, fallbackSrc)
       }
     }, 1500)
@@ -620,8 +630,8 @@ export async function startCapture(
     workletNode.addEventListener('worklet-data', () => { gotWorkletData = true }, { once: true })
     setTimeout(() => {
       if (!gotWorkletData && !usingFallback && fallbackCtx === audioCtx && fallbackSrc === sourceNode) {
-      console.warn('[audio-diag] AudioWorklet produced no data (800ms); switching to ScriptProcessorNode')
-      addRuntimeEvent('warn', 'audio', 'AudioWorklet was silent; switching to ScriptProcessorNode fallback')
+        console.warn('[audio-diag] AudioWorklet produced no data (800ms); switching to ScriptProcessorNode')
+        addRuntimeEvent('warn', 'audio', 'AudioWorklet was silent; switching to ScriptProcessorNode fallback')
         setupScriptProcessorFallback(fallbackCtx, fallbackSrc)
       }
     }, 800)
@@ -651,6 +661,9 @@ export async function stopCapture() {
     actualSampleRate,
     targetSampleRate: TARGET_SAMPLE_RATE,
     usingFallback,
+    // 「一帧 PCM 都没到过」需要一条肯定式证据。只靠「日志里没有 First PCM frame received」
+    // 来推，读日志的人无法区分它与「这条日志没被镜像」。
+    receivedPcm: firstPCMFrameLogged,
   })
 
   await teardownCapture()

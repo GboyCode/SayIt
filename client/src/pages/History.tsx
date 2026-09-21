@@ -1,6 +1,6 @@
 import * as bridge from '@/services/bridge'
 import { cn } from '@/lib/utils'
-import { resolveAsrDisplayModel, isQwenOmniProvider, resolveQwenOmniModel } from '@/lib/asrModels'
+import { buildAsrExtra, resolveAsrDisplayModel, isQwenOmniProvider } from '@/lib/asrModels'
 import { uint8ArrayToBase64 } from '@/lib/encoding'
 import { getWorkMode } from '@/services/transcription'
 import { polishWithClientAi } from '@/services/transcription/clientAiPolish'
@@ -220,7 +220,7 @@ async function reprocessViaCloudApi(
   const isQwenOmni = isQwenOmniProvider(asrProvider)
   const asrApiKey = await getSetting('cloudAsr.apiKey', '') as string
   const asrAppId = await getSetting('cloudAsr.appId', '') as string
-  const qwenOmniModel = resolveQwenOmniModel(asrProvider)
+  const asrModel = await getSetting('cloudAsr.model', '') as string
 
   let omniInstructions: string | undefined
   if (isQwenOmni) {
@@ -228,11 +228,19 @@ async function reprocessViaCloudApi(
     omniInstructions = savedPrompt || undefined
   }
 
+  const baseUrl = await getSetting('cloudAsr.baseUrl', '') as string
+  const protocol = await getSetting('cloudAsr.protocol', 'auto') as string
+  const extra = buildAsrExtra(asrProvider, {
+    model: asrModel,
+    instructions: omniInstructions,
+    baseUrl,
+    protocol,
+  })
   const asrConfig: Record<string, unknown> = {
     provider: isQwenOmni ? 'qwen_omni' : asrProvider,
     api_key: asrApiKey,
     app_id: asrAppId,
-    ...(isQwenOmni && { extra: { model: qwenOmniModel, instructions: omniInstructions } }),
+    ...(extra && { extra }),
   }
 
   const asrStart = performance.now()
@@ -272,7 +280,7 @@ async function reprocessViaCloudApi(
     asrMs,
     llmMs,
     durationSec,
-    ...(isQwenOmni && { asrEngine: 'qwen_omni', asrModel: qwenOmniModel }),
+    ...(isQwenOmni && { asrEngine: 'qwen_omni', asrModel: extra?.model }),
   }
 }
 
@@ -337,10 +345,13 @@ async function buildReprocessMetadata(
 }> {
   if (workMode === 'cloud_api') {
     const asrProviderKey = await getSetting('cloudAsr.provider', '') as string
+    // 选定的模型要一起带上：只按 provider 推的话，用户明明选了 whisper-large-v3，
+    // 历史记录里却会写成该服务的默认模型
+    const asrSelectedModel = await getSetting('cloudAsr.model', '') as string
     const aiProvider = await getSetting('cloudAi.provider', '') as string
     const aiModel = await getSetting('cloudAi.model', '') as string
     return {
-      asrProvider: resolveAsrDisplayModel(asrProviderKey),
+      asrProvider: resolveAsrDisplayModel(asrProviderKey, asrSelectedModel),
       aiProvider: aiProvider || undefined,
       aiModel: aiModel || undefined,
     }

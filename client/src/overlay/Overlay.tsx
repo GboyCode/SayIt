@@ -6,7 +6,19 @@ import { useT } from '@/i18n/useT'
 import { addRuntimeEvent } from '../services/debugLog'
 import { formatRecordingTimer } from '../services/recorder/types'
 
-type OverlayState = 'waiting' | 'listening' | 'thinking' | 'fallback' | 'error' | 'toast'
+/**
+ * `blank` 什么都不渲染，只在**隐藏窗口之前**用一下。
+ *
+ * 为什么需要它：隐藏悬浮窗只是 `overlay.hide()`，WebView 不销毁、这个组件也不卸载，
+ * 所以合成器里留着的最后一帧就是上一条提示。下次 present 时原生窗口先显示出来、
+ * 新内容要等 IPC + setState + 重绘才到，那一瞬间用户看到的是**上一次的文案**
+ * （用户报的就是这个：切换润色模式后再按开关 AI 整理，悬浮窗先闪一下旧提示）。
+ *
+ * 于是隐藏时先发一帧 blank —— 那一刻窗口还看得见，重绘是确定会发生的（窗口一旦隐藏
+ * 就没这个保证了，rAF 会被节流）。留在合成器里的最后一帧因此是空的，下次显示无从可闪。
+ * 视觉上没有代价：blank 连胶囊底色都不画，看起来就是"提示消失了"，本来隐藏就是这个样子。
+ */
+type OverlayState = 'blank' | 'waiting' | 'listening' | 'thinking' | 'fallback' | 'error' | 'toast'
 type RecordingVisualPhase = 'preparing' | 'listening'
 type OverlayWaveTheme = 'black-white' | 'black-blue' | 'black-rainbow'
 
@@ -80,7 +92,11 @@ function getThinkingColor(theme: OverlayWaveTheme): string {
 
 export default function Overlay() {
   const t = useT()
-  const [state, setState] = useState<OverlayState>('waiting')
+  // 初始 blank 而不是 waiting：这个页面会被**预热**（提前建好 WebView 并保持隐藏），
+  // 首个状态事件到达之前它就已经画过一帧了。默认 waiting 的话那一帧是"准备中"胶囊，
+  // 于是第一次真正显示悬浮窗时会先闪一下它 —— 和隐藏后残留旧提示是同一个毛病。
+  // 没有状态就什么都不画，才是诚实的。
+  const [state, setState] = useState<OverlayState>('blank')
   const [recordingVisualPhase, setRecordingVisualPhase] = useState<RecordingVisualPhase>('preparing')
   const [bars, setBars] = useState<number[]>(IDLE_BARS)
   const [elapsedSec, setElapsedSec] = useState(0)
@@ -359,7 +375,10 @@ export default function Overlay() {
       ref={rootRef}
       className="pointer-events-none flex h-full items-end justify-center pb-4"
     >
-      {state === 'fallback' ? (
+      {/* blank：一个子节点都不要（连胶囊底色都不画）。见 OverlayState 上的注释 ——
+          它的整个用途就是让"隐藏前留在合成器里的那一帧"是空的。
+          ⚠️ 别顺手给它补个占位元素，那就白做了。 */}
+      {state === 'blank' ? null : state === 'fallback' ? (
         <div
           data-overlay-content
           className="pointer-events-auto flex w-full max-w-[520px] flex-col rounded-xl border px-4 py-4"

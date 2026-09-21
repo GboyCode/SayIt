@@ -40,6 +40,12 @@ const OVERLAY_ROOT_PADDING_BOTTOM: f64 = 16.0;
 /// 可能另外用 Ctrl+滚轮缩放过共享的 EBWebView profile）。
 const OVERLAY_CSS_ZOOM_MIN: f64 = 0.5;
 const OVERLAY_CSS_ZOOM_MAX: f64 = 4.0;
+/// 发出 blank 之后等多久才真正 hide 窗口（见 `hide_overlay` 里的长注释）。
+///
+/// 只需要够 webview 出一帧：60Hz 下一帧 16.7ms，80ms 给足了 setState + 重绘 + 合成。
+/// 用户看不出差别 —— blank 连胶囊底色都不画，"提示消失"这件事在发 blank 那一刻就完成了，
+/// 窗口晚 80ms 消失没有任何视觉痕迹。
+const HIDE_AFTER_BLANK_MS: u64 = 80;
 const ACK_FIRST_TIMEOUT_MS: u64 = 1_200;
 const ACK_SECOND_TIMEOUT_MS: u64 = 700;
 const RECOVERY_ACK_TIMEOUT_MS: u64 = 2_000;
@@ -241,6 +247,9 @@ impl WindowState {
     /// 兼容旧调用点；新代码应使用 present_overlay，将显示和状态更新合成一次操作。
     pub fn show_overlay(&self, app: &AppHandle) -> u64 {
         let data = self.latest_overlay_payload.lock().unwrap().clone()
+            // 最近一次状态可能是 hide 时写进去的 blank（它专门用来清掉残留帧，
+            // 见 hide_overlay）。照它重放会显示一个空窗口，所以当没有状态处理。
+            .filter(|payload| payload.get("state").and_then(Value::as_str) != Some("blank"))
             .unwrap_or_else(|| json!({ "state": "waiting", "elapsedSec": 0 }));
         self.present_overlay(app, data)
     }
@@ -259,13 +268,30 @@ impl WindowState {
         };
 
         if let Some(overlay) = app.get_webview_window("overlay") {
+            // 点击穿透立刻恢复，不等下面那段延迟 —— 否则 fallback 卡片这 80ms 里还会挡鼠标。
             set_overlay_interactivity(&overlay, false);
-            if let Err(error) = overlay.hide() {
-                write_log_line(&format!(
-                    "[overlay-diag] hide FAILED prev_layout={:?} hide_err={:?}",
-                    prev_layout, error,
-                ));
-            }
+
+            // ── 先把内容清空，再隐藏窗口 ──
+            //
+            // 隐藏只是 hide()，WebView 不销毁、Overlay 组件也不卸载，合成器里留着的最后
+            // 一帧就是上一条提示。下次 present 时窗口先显示、新内容要等 IPC + setState +
+            // 重绘才到，于是先闪一下**上一次**的文案（用户报的原话：切换润色模式后再按
+            // 开关 AI 整理，悬浮窗会先显示上一次的提示内容）。
+            //
+            // 关键是**趁窗口还看得见的时候**重绘成空：窗口一旦 hide，document 变
+            // hidden，rAF 被节流，还能不能出一帧就不好说了。所以顺序必须是
+            // 「emit blank → 等一小会儿让它画出来 → hide」。
+            //
+            // 刻意不用 render-ack 把 hide 卡住（虽然那样更精确）：ack 走双层 rAF，
+            // 一旦某次没回来，窗口就永远留在屏幕上 —— 那比闪一下旧内容糟得多。
+            // 固定延迟的失败模式只是"这次没来得及画完，退回原来的表现"，不会更坏。
+            *self.latest_overlay_payload.lock().unwrap() = Some(json!({ "state": "blank" }));
+            self.emit_latest(app, false);
+            write_log_line(&format!(
+                "[overlay-health] blank before hide prev_layout={:?} delay_ms={}",
+                prev_layout, HIDE_AFTER_BLANK_MS,
+            ));
+            spawn_deferred_hide(app.clone(), prev_layout);
         }
     }
 
@@ -856,6 +882,32 @@ fn spawn_topmost_keeper(app: AppHandle, show_id: u64) {
                     return;
                 }
                 reassert_overlay_topmost(&app);
+            }
+        });
+}
+
+/// 真正执行 `overlay.hide()`，延后 `HIDE_AFTER_BLANK_MS` 给 webview 一帧时间画成空白。
+///
+/// 中途若有新的 present 开始（`active_show_id` 不再是 0），就**放弃这次隐藏** ——
+/// 那时窗口已经带着新内容显示出来了，再 hide 会把它吞掉。
+fn spawn_deferred_hide(app: AppHandle, prev_layout: OverlayLayout) {
+    let _ = thread::Builder::new()
+        .name("overlay-deferred-hide".to_string())
+        .spawn(move || {
+            thread::sleep(Duration::from_millis(HIDE_AFTER_BLANK_MS));
+            let state = app.state::<WindowState>();
+            if state.active_show_id.load(Ordering::SeqCst) != 0 {
+                write_log_line(
+                    "[overlay-health] deferred hide skipped — a new present already started",
+                );
+                return;
+            }
+            let Some(overlay) = app.get_webview_window("overlay") else { return; };
+            if let Err(error) = overlay.hide() {
+                write_log_line(&format!(
+                    "[overlay-diag] hide FAILED prev_layout={:?} hide_err={:?}",
+                    prev_layout, error,
+                ));
             }
         });
 }

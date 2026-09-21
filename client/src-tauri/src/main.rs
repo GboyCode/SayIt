@@ -268,9 +268,18 @@ fn main() {
         log::info!("Custom models dir from DB: {}", custom_dir);
     }
 
-    // 注册 ggml 计算后端（GGUF 本地 ASR 用）。dynamic-backends 构建下不先注册就
-    // 加载模型会直接失败，所以必须在任何模型加载之前跑。
-    models::gguf_asr::init_backends();
+    // ⚠️ 这里**故意不注册** ggml 计算后端。注册动作已下沉到 gguf_asr 的懒路径
+    // （ensure_loaded / describe_devices），别再把 init_backends() 加回启动路径。
+    //
+    // 为什么：注册会 dlopen exe 旁边所有 ggml 模块，其中 ggml-vulkan.dll 一被载入就
+    // 立刻 vk::createInstance() 建出真实的 Vulkan 上下文。放在这里意味着**云 API 和
+    // 服务器模式的用户也要付这笔钱**：实测白占约 36 MB 共享显存、让进程出现在任务
+    // 管理器的 GPU 进程列表里（连 engtype_compute 都登记上），还同步阻塞启动 80~520 ms
+    // —— 而这些模式一个模型都不会加载，收益是零。用户反馈"即便使用云 API 模式也持续
+    // 占用 GPU"就是这条。
+    //
+    // 另外 transcribe-cpp 的 init_backends 上游标注为 idempotent 但 NOT retryable，
+    // 进程内也没有反注册路径，所以一旦注册就撤不回来 —— 更不该无条件先做。
 
     // 回收上一代 sherpa-onnx 时期的模型权重（新引擎读不了，只白占几百 MB ~ 1 GB）。
     // 放后台线程，不让删除卡住启动。
@@ -670,6 +679,16 @@ fn main() {
             providers::asr_qwen_audio_stream::qwen_audio_stream_send,
             providers::asr_qwen_audio_stream::qwen_audio_stream_finish,
             providers::asr_qwen_audio_stream::qwen_audio_stream_close,
+            // OpenAI realtime transcription (gpt-live-transcribe)
+            providers::asr_openai_realtime::openai_live_open,
+            providers::asr_openai_realtime::openai_live_send,
+            providers::asr_openai_realtime::openai_live_finish,
+            providers::asr_openai_realtime::openai_live_close,
+            // Gemini Live API transcription (gemini-3.5-transcribe-live)
+            providers::asr_gemini_live::gemini_live_open,
+            providers::asr_gemini_live::gemini_live_send,
+            providers::asr_gemini_live::gemini_live_finish,
+            providers::asr_gemini_live::gemini_live_close,
             // Models (local model management)
             models::registry::list_available_models,
             models::registry::list_downloaded_models,

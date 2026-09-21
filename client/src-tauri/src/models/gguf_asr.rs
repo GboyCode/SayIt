@@ -108,8 +108,17 @@ impl Drop for LoadingGuard {
 static INIT: std::sync::Once = std::sync::Once::new();
 
 /// 注册计算后端 + 把 ggml/native 的日志接到 log facade。
-/// 必须在第一次加载模型之前调用（dynamic-backends 构建下不注册就加载会直接报
-/// TRANSCRIBE_ERR_BACKEND）。
+///
+/// **懒调用，绝不放回启动路径。** 这一步会 dlopen exe 旁边所有 ggml 模块，其中
+/// `ggml-vulkan.dll`（70 MB）一被载入就立刻 `vk::createInstance()` 建出真实的 Vulkan
+/// 上下文：实测白占约 36 MB 共享显存、让进程带着 `engtype_compute` 出现在任务管理器的
+/// GPU 进程列表里，本身还要 80~520 ms。云 API / 服务器模式一个模型都不加载，付这笔钱
+/// 收益为零（0.1.8 前的实际情况，用户反馈"即便使用云 API 模式也持续占用 GPU"）。
+/// 而且上游标注 idempotent 但 NOT retryable，进程内没有反注册路径 —— 注册了就撤不回来。
+///
+/// 生产调用点只有两个，都在真正需要本地引擎的那一刻：
+/// - `ensure_loaded()` —— 所有模型加载的必经之路（`preload` / `transcribe` 都走它）
+/// - `describe_devices()` —— 本地模式的设置页与用户主动打开的诊断页
 ///
 /// 目前只扫 exe 旁边的模块目录（build.rs 会把 transcribe.dll + ggml-*.dll 放那儿）。
 /// 注意 `init_backends(dir)` 只扫**一个**目录，不是"追加一个目录"：所以将来做
@@ -218,7 +227,15 @@ pub fn process_memory_mb() -> u64 {
 }
 
 /// 列出已注册的计算设备，给诊断页 / 设置页用。
+///
+/// 自己负责注册后端（启动路径上已经不做了），否则拿到的永远是空列表。
+///
+/// 这不会让云 / 服务器模式的用户白付 Vulkan 初始化：本函数只有两个调用点，
+/// `LocalModeSection` 的 GPU 摘要（`VoiceEnginePage` 里由 `workMode === 'local'`
+/// 门住，只在本地模式渲染）和用户主动打开的诊断页。两者都意味着用户正在查看
+/// 本地引擎的硬件信息，这时枚举设备就是他要的结果。
 pub fn describe_devices() -> Vec<GgufDevice> {
+    init_backends();
     transcribe_cpp::devices()
         .into_iter()
         .map(|d| GgufDevice {
@@ -286,6 +303,16 @@ fn resolve_backend(pref: &str) -> Backend {
 /// 加载模型（若 key 未变则复用）。`accelerator` 取 "auto" | "cpu" | "gpu"。
 /// 换加速器要重建：后端是 Model::load_with 时绑定的，之后改不了。
 fn ensure_loaded(model_id: &str, accelerator: &str) -> Result<(), String> {
+    // 后端注册的**唯一生产入口之一**（另一个是 describe_devices）。启动路径上不再注册，
+    // 所以这里必须自己保证前置条件：dynamic-backends 构建下不先注册就 Model::load_with
+    // 会直接报 TRANSCRIBE_ERR_BACKEND，而下面 resolve_backend 里的 backend_available()
+    // 也要靠它才能看到 GPU。
+    //
+    // 放在 CACHE.lock() **之前**：首次注册要 80~520 ms，而 CACHE 锁会被整个
+    // "卸旧 + 加载 + 预热"过程持有（见 STATUS 的说明），不该再往里塞耗时操作。
+    // init_backends 内部是 Once，重复调用无代价，并发调用由 Once 自己串行。
+    init_backends();
+
     let mut cache = CACHE.lock().map_err(|e| format!("Failed to acquire model cache lock: {}", e))?;
 
     if let Some(ref c) = *cache {
@@ -955,6 +982,59 @@ mod tests {
     fn empty_language_list_passes_the_request_through() {
         assert_eq!(resolve_language("zh", &[]).as_deref(), Some("zh"));
         assert!(resolve_language("auto", &[]).is_none());
+    }
+
+    // ── 后端注册必须保持懒加载（源码约束）──
+    //
+    // 为什么用源码扫描而不是行为测试：`init_backends` 是进程级 `Once`，同一个测试
+    // 进程里别的测试可能已经注册过，所以运行时没法观测"启动路径有没有注册"。
+    // 而这条约束一旦破了，症状是"云 API 用户又开始白占显存"——用户能看见，
+    // 测试却全绿。仿照 main.rs 里 `configured_windows_do_not_override_webview2_browser_args`
+    // 的同一套做法。
+
+    /// 去掉行注释，避免注释里出现的函数名被当成真实调用。
+    fn strip_line_comments(source: &str) -> String {
+        source
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// 启动路径绝不能注册计算后端。加回去等于让云 API / 服务器模式的用户重新白付
+    /// 一个 Vulkan 上下文（约 36 MB 共享显存 + 80~520 ms 启动阻塞），而他们一个
+    /// 模型都不会加载。详见 `init_backends` 的文档注释。
+    #[test]
+    fn startup_path_does_not_register_compute_backends() {
+        let main_rs = strip_line_comments(include_str!("../main.rs"));
+        assert!(
+            !main_rs.contains("init_backends"),
+            "main.rs 又在启动路径上注册计算后端了。这会 dlopen ggml-vulkan.dll 并建出\n\
+             Vulkan 上下文，云 API / 服务器模式的用户白付显存与启动时间。\n\
+             注册应当只发生在 gguf_asr 的懒路径（ensure_loaded / describe_devices）。"
+        );
+    }
+
+    /// 反向约束：懒路径必须真的自己注册。少了这一步，本地模式会在
+    /// `Model::load_with` 直接报 TRANSCRIBE_ERR_BACKEND，诊断页的设备列表会空白。
+    #[test]
+    fn lazy_entry_points_register_compute_backends() {
+        let source = strip_line_comments(include_str!("gguf_asr.rs"));
+        for (entry, signature) in [
+            ("ensure_loaded", "fn ensure_loaded(model_id: &str, accelerator: &str)"),
+            ("describe_devices", "pub fn describe_devices()"),
+        ] {
+            let body_start = source
+                .find(signature)
+                .unwrap_or_else(|| panic!("{entry} 的签名变了，请同步更新这条测试"));
+            // 只看函数开头这一小段：注册是前置动作，必须在任何实际工作之前发生。
+            let head = &source[body_start..(body_start + 700).min(source.len())];
+            assert!(
+                head.contains("init_backends()"),
+                "{entry} 没有先调用 init_backends()。启动路径上已经不注册了，\n\
+                 这里少一步就会让本地模式报 TRANSCRIBE_ERR_BACKEND / 设备列表空白。"
+            );
+        }
     }
 
     /// 内嵌的预热音频必须能解析出足够的样本。这条防的是 include_bytes! 的路径

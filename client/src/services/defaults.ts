@@ -69,8 +69,13 @@ export const DEFAULTS: Record<string, unknown> = {
 
   // ── ASR（云 API）──
   // 可选值以 features/settings/asrProviderCatalog.ts 的 ASR_PROVIDERS 为准：
-  // 'doubao_v2' | 'qwen' | 'qwen_audio_stream' | 'qwen_realtime' | 'qwen_omni_35_*' | 'mimo' | 'groq_whisper'
+  // 'doubao_v2' | 'qwen' | 'qwen_audio_stream' | 'qwen_realtime' | 'qwen_omni_35_*'
+  // | 'mimo' | 'groq_whisper' | 'openai_transcribe' | 'openai_live_transcribe'
+  // | 'gemini_transcribe' | 'gemini_live_transcribe' | 'openrouter_transcribe'
   'cloudAsr.provider': 'doubao_v2',
+  // 启用服务选定的模型。只有「同协议多模型」的服务（Groq / OpenAI）用得上，
+  // 空串 = 让后端用它自己的默认。写入前已由 resolveAsrModel 归一，见 asrProfileStore。
+  'cloudAsr.model': '',
   // 运行时读的「本次生效凭据」镜像。豆包按控制台代次算出来后写进这两个键：
   // 新版控制台只有一个 API Key、appId 必为空串（Rust 侧靠它区分两代鉴权头）。
   'cloudAsr.apiKey': '',

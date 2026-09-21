@@ -1,7 +1,7 @@
 import * as bridge from '../bridge'
 import { startCapture, stopCapture } from '../audio'
 import { getProvider, MID_SESSION_DISCONNECT_ERROR, type TranscriptionProvider, type TranscriptionCallbacks, type FinalResult } from '../transcription'
-import { isStreamingDisplayReady } from '@/lib/asrModels'
+import { isStreamingDisplayReady, resolveAsrDisplayModel } from '@/lib/asrModels'
 import {
   addHistory,
   deleteHistory,
@@ -1481,6 +1481,7 @@ export class RecorderOrchestrator {
       runId,
       probeId: probe.probeId,
       editable: probe.editable,
+      gate: probe.gate,
       hwnd: probe.hwnd,
       focusHwnd: probe.focusHwnd,
       pid: probe.pid,
@@ -1516,6 +1517,7 @@ export class RecorderOrchestrator {
         pid: probe.pid,
         process: probe.process,
         verdict: probe.verdict,
+        gate: probe.gate,
         isCurrentAppProcess: probe.isCurrentAppProcess,
         detail: probe.detail,
       })
@@ -1541,6 +1543,10 @@ export class RecorderOrchestrator {
     if (result.ok) {
       addRuntimeEvent('info', 'recorder', 'External text insertion succeeded', {
         strategy: result.strategy,
+        // 成功侧也要留 gate：SendInput 返回成功并不代表文本真的落进了输入框
+        // （UIPI 拦截是静默的），用户报「显示成功但没插进去」时，这一个字段就能
+        // 说明当初是靠哪一层判据放行的，不必再让他复现一次。
+        gate: probe.gate,
         detail: result.detail,
         attempts: result.attempts,
         finalToPasteDoneMs: this.finalReceivedAt > 0 ? Date.now() - this.finalReceivedAt : undefined,
@@ -1560,6 +1566,7 @@ export class RecorderOrchestrator {
     addRuntimeEvent(level, 'recorder', 'External text insertion failed; showing fallback card', {
       strategy: result.strategy,
       reason: result.reason,
+      gate: probe.gate,
       detail: result.detail,
       attempts: result.attempts,
       finalToPasteDoneMs: this.finalReceivedAt > 0 ? Date.now() - this.finalReceivedAt : undefined,
@@ -2161,16 +2168,21 @@ export class RecorderOrchestrator {
     const skipAiForShortSpeech = this.cachedAiMinDurationSec > 0
       && audioDur < this.cachedAiMinDurationSec
 
+    // 提出成局部变量：下面的 'Entered processing' 也要带上它。那条日志会落盘，
+    // 而 'Stop sent' 不会 —— peakAmplitude=0 是「麦克风一个字节都没收到」的铁证，
+    // 必须挂在一条真的进 sayit.log 的日志上，否则等于没记。
+    const audioStats = this.audioStatsTotalFrames > 0 ? {
+      avgRms: Math.round((this.audioStatsRmsSum / this.audioStatsTotalFrames) * 10000) / 10000,
+      peakRms: Math.round(this.audioStatsPeakRms * 10000) / 10000,
+      peakAmplitude: Math.round(this.audioStatsPeakAmplitude * 10000) / 10000,
+      silenceRatio: Math.round((this.audioStatsSilentFrames / this.audioStatsTotalFrames) * 1000) / 1000,
+      totalFrames: this.audioStatsTotalFrames,
+    } : undefined
+
     const stopAccepted = this.provider.stop({
       pttHoldMs,
       disableAi: skipAiForShortSpeech || undefined,
-      audioStats: this.audioStatsTotalFrames > 0 ? {
-        avgRms: Math.round((this.audioStatsRmsSum / this.audioStatsTotalFrames) * 10000) / 10000,
-        peakRms: Math.round(this.audioStatsPeakRms * 10000) / 10000,
-        peakAmplitude: Math.round(this.audioStatsPeakAmplitude * 10000) / 10000,
-        silenceRatio: Math.round((this.audioStatsSilentFrames / this.audioStatsTotalFrames) * 1000) / 1000,
-        totalFrames: this.audioStatsTotalFrames,
-      } : undefined,
+      audioStats,
     })
     addRuntimeEvent('info', 'recorder', 'Stop sent', {
       audioSec: audioDur,
@@ -2208,6 +2220,10 @@ export class RecorderOrchestrator {
     addRuntimeEvent('info', 'recorder', 'Entered processing', {
       audioSec: audioDur,
       timeoutMs: processingTimeoutMs,
+      mode: this.provider.mode,
+      // 这一段音频到底有没有声音，只记统计量、不记内容。读日志的判据：
+      // peakAmplitude=0 且 silenceRatio=1 → 麦克风送来的是纯静音，与 ASR/网络无关。
+      audioStats,
     })
     this.overlayService.showThinking(audioDur, runId)
     let insertionExtensions = 0
@@ -2467,19 +2483,15 @@ export class RecorderOrchestrator {
     }
     if (mode === 'cloud_api') {
       const asrProviderKey = await getSetting('cloudAsr.provider', '') as string
-      // 映射内部 key 到实际模型 ID
-      const ASR_MODEL_ID_MAP: Record<string, string> = {
-        doubao_v2: 'Doubao-Seed-ASR-2.0',
-        qwen: 'qwen3-asr-flash',
-        mimo: 'mimo-v2.5-asr',
-        groq_whisper: 'whisper-large-v3-turbo',
-        qwen_omni_35_plus: 'qwen3.5-omni-plus-realtime',
-        qwen_omni_35_flash: 'qwen3.5-omni-flash-realtime',
-        qwen_omni_flash: 'qwen3-omni-flash-realtime',
-        qwen_omni_turbo: 'qwen-omni-turbo-realtime',
-        qwen_omni_plus: 'qwen3.5-omni-plus-realtime',
-      }
-      const asrProvider = ASR_MODEL_ID_MAP[asrProviderKey] || asrProviderKey || 'cloud'
+      // 选定的模型要一起读：Groq / OpenAI 那几个服务同一个 id 下有多个模型，
+      // 只按 id 推会把历史记录写成该服务的默认模型，而不是这次真正用的那个。
+      //
+      // 映射表以前在这里抄了第三份（lib/asrModels.ts、AsrTestSection 各一份），
+      // 加一个供应商就得改三处、漏一处只会静默显示错的模型名。现在只有一个出处。
+      const asrSelectedModel = await getSetting('cloudAsr.model', '') as string
+      const asrProvider = asrProviderKey
+        ? resolveAsrDisplayModel(asrProviderKey, asrSelectedModel)
+        : 'cloud'
       const aiProvider = finalResult?.aiProvider || await getSetting('cloudAi.provider', '') as string
       const aiModel = finalResult?.aiModel || await getSetting('cloudAi.model', '') as string
       return { asrProvider, aiProvider: aiProvider || undefined, aiModel: aiModel || undefined, ...executionMeta }
