@@ -243,12 +243,18 @@ impl EditableGate {
     }
 }
 
+/// `editability_gate` 的 bool 视图，只给测试用。
+///
+/// 加 `#[cfg(test)]` 是因为生产代码一处都不调它（真正的调用方要的是 gate 本身，
+/// 好把"是哪一层放行的"写进日志），于是 release 构建每次都报一条 dead_code 警告。
+/// 不删掉它是因为测试确实要断言"最终结论是可编辑"这一面 —— 见下面注释说的漂移风险。
+#[cfg(test)]
 pub fn is_likely_editable_pub(ctx: &context::AppContext) -> bool {
     editability_gate(ctx).is_editable()
 }
 
-/// 判据只有这一份实现，`is_likely_editable_pub` 是它的 bool 视图。别再复制一份出来
-/// 只为了拿结论 —— 两份判据迟早漂移，而漂移的症状是「改了一处，另一条路径照旧」。
+/// 判据只有这一份实现。别再复制一份出来只为了拿一个 bool 结论 —— 两份判据迟早漂移，
+/// 而漂移的症状是「改了一处，另一条路径照旧」。需要 bool 就 `.is_editable()`。
 pub fn editability_gate(ctx: &context::AppContext) -> EditableGate {
     let fc = ctx.focus_class.to_lowercase();
     let wc = ctx.window_class.to_lowercase();
