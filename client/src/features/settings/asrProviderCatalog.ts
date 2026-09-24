@@ -278,16 +278,30 @@ export const ASR_PROVIDERS: AsrProviderEntry[] = [
     ],
   },
   /**
-   * 千问一家五个模型，**四种不同协议** —— 这张卡是 AsrModelOption.provider
+   * 千问一家八个模型，**四种不同协议** —— 这张卡是 AsrModelOption.provider
    * 存在的原因。以前它们各占一张卡，界面上千问一家就是五张，用户得先懂协议差异
    * 才知道该点哪张。
    *
    * 模型顺序即推荐顺序，第一个是默认：
-   *   · Audio 3.0 流式放第一 —— 实测**开着实时字幕**时它比豆包更准（豆包最准的
-   *     用法是关掉字幕，一开就掉一档），而且不需要业务空间 ID，填了密钥就能用；
+   *   · Audio 3.1 流式放第一 —— 最新一代，实测与 3.0 同协议、同节奏但延迟略低；
+   *     开着实时字幕时这一族比豆包更准（豆包最准的用法是关掉字幕，一开就掉一档），
+   *     而且不需要业务空间 ID，填了密钥就能用；
+   *   · Audio 3.0 流式留作退路 —— 仍完全可用，给「3.1 上有问题」的人一个落脚点；
    *   · qwen3-asr-flash 是录完一次性出字，多语种均衡；
-   *   · realtime 那个效果不及 Audio 3.0，还要业务空间 ID，所以排在后面；
-   *   · 两个 Omni 是「识别+整理」一体，选它们就不用再配 AI 服务。
+   *   · realtime 那个效果不及 Audio 3.x，还要业务空间 ID，所以排在后面；
+   *   · 四个 Omni 是「识别+整理」一体，选它们就不用再配 AI 服务。3.8 那两个是
+   *     同一代的两条协议（HTTP / realtime WS），不是新旧关系。
+   *
+   * ── 这里**不放**哪些百炼模型，以及为什么（2026-09-23 实测，见 dev-scripts）──
+   *  · `qwen3-omni-flash` / `qwen-omni-turbo`：已从清单里删掉。官网标了「即将下线」，
+   *    而且**实测已经在被缩容** —— 前者读超时，后者直接回
+   *    「Too many requests ... system capacity limits」。百炼的下线机制是先逐步压
+   *    QPM/TPM 再正式下线，所以这两个的表现不是偶发抖动。存量配置的落点见
+   *    RETIRED_MODELS。
+   *  · `qwen-audio-3.1-asr-flash-filetrans` / `-message`：filetrans 只收音频 URL
+   *    （我们发的是 base64，回 `InvalidParameter: url error`）；message 在
+   *    OpenAI 兼容模式下明确 `model_not_supported`，在 duplex WS 上倒是能转写，
+   *    但**一条中间结果都不产出**，做不了实时字幕。
    */
   {
     id: 'qwen',
@@ -296,6 +310,14 @@ export const ASR_PROVIDERS: AsrProviderEntry[] = [
     availability: 'mainland_china',
     get blurb() { return t('asrProvider.qwenPlatformBlurb') },
     models: [
+      {
+        // 与 3.0 走同一份 Rust 实现（asr_qwen_audio_stream.rs），模型名经
+        // extra.model 传下去。实测同协议、同中间结果节奏、同样接受热词字段。
+        id: 'qwen-audio-3.1-asr-flash-streaming',
+        provider: 'qwen_audio_stream',
+        get blurb() { return t('asrProvider.qwenAudio31StreamBlurb') },
+        streaming: true,
+      },
       {
         id: 'qwen-audio-3.0-asr-flash-streaming',
         provider: 'qwen_audio_stream',
@@ -318,14 +340,12 @@ export const ASR_PROVIDERS: AsrProviderEntry[] = [
         /**
          * 最新一代 Omni，**走非实时那条路**（OpenAI 兼容 chat/completions）。
          *
-         * 它是这份清单里唯一没有 `-realtime` 孪生体的 Omni：实测
-         * `GET /compatible-mode/v1/models` 里有 `qwen3.8-omni-flash`、没有
-         * `qwen3.8-omni-flash-realtime`，而直接拿后者连实时端点会被回 "Access denied."
-         * （同一次实测里 `qwen-omni-turbo-realtime` 回的是「容量限流」，两句话不同，
-         * 所以那不是限流误伤）。验证脚本：
-         * `dev-scripts/probe_qwen_omni_realtime_models.py`。
+         * 它和下面那个 `-realtime` 是同一代的两条协议，不是新旧关系：这个走 HTTP、
+         * 地址可改；那个走 realtime WebSocket、地址固定。对 SayIt 的用法（整段发完
+         * 再取文本）两者结果一样，差别在计费口径和能不能换地址。
          *
-         * 所以它的 provider 是 `qwen_chat_audio` 而不是 `qwen_omni`。
+         * 排在 realtime 那个前面：HTTP 那条路能配中转站/业务空间专属域名，
+         * 适用面更广。
          */
         id: 'qwen3.8-omni-flash',
         provider: 'qwen_chat_audio',
@@ -334,6 +354,27 @@ export const ASR_PROVIDERS: AsrProviderEntry[] = [
         // HTTP 协议，地址可改 —— 百炼官方推荐迁到业务空间专属域名
         // （`{WorkspaceId}.cn-beijing.maas.aliyuncs.com`），那就得靠这一栏。
         supportsCustomUrl: true,
+      },
+      {
+        /**
+         * 同一代 Omni 的 realtime 版，走 asr_qwen_omni.rs 那条 WebSocket。
+         *
+         * ⚠️ 它曾经被判成「加不了」，理由是它在我们的代码路径上会被拒
+         * （`Voice 'Chelsie' is not supported`）。那个结论**错在没做对照实验**：
+         * 当时"带 voice"和"不发 response.create"两个变量一起变了，所以分不清是哪个
+         * 起的作用。固定发 `response.create`、只变音色字段重测之后结论很干脆 ——
+         * 加一个 `session.audio.output.voice` 就能用，而且 3.5 两代也接受同一个字段，
+         * 一份会话形状通吃。实测脚本：`dev-scripts/probe_qwen38_omni_voice.py`。
+         *
+         * 所以这里没有任何特殊字段：那个音色字段是 asr_qwen_omni.rs 对所有 Omni
+         * 统一发的，不是给这个模型开的后门。
+         */
+        id: 'qwen3.8-omni-flash-realtime',
+        // 产品名就带 -realtime，所以**不需要** apiModel（别顺手补一个
+        // `qwen3.8-omni-flash-realtime-realtime`）。
+        provider: 'qwen_omni',
+        get blurb() { return t('asrProvider.omni38RealtimeBlurb') },
+        omni: true,
       },
       {
         // 接口模型名带 -realtime 后缀，产品名不带 —— 这层映射以前在
@@ -351,24 +392,10 @@ export const ASR_PROVIDERS: AsrProviderEntry[] = [
         get blurb() { return t('asrProvider.omniFlashBlurb') },
         omni: true,
       },
-      // 上一代 Omni。留着有两个理由：便宜，以及**让存量配置有地方落**——
-      // 早先的 `qwen_omni_flash` / `qwen_omni_turbo` 两个 provider id 就是它们，
-      // 目录里没有对应模型的话那些用户的卡会在迁移时被丢掉。
-      // 三代都走同一份 asr_qwen_omni.rs（ws_url 里模型名是参数），只换名字。
-      {
-        id: 'qwen3-omni-flash',
-        apiModel: 'qwen3-omni-flash-realtime',
-        provider: 'qwen_omni',
-        get blurb() { return t('asrProvider.omniLegacyBlurb') },
-        omni: true,
-      },
-      {
-        id: 'qwen-omni-turbo',
-        apiModel: 'qwen-omni-turbo-realtime',
-        provider: 'qwen_omni',
-        get blurb() { return t('asrProvider.omniLegacyBlurb') },
-        omni: true,
-      },
+      // 上一代 Omni（qwen3-omni-flash / qwen-omni-turbo）曾经排在这里，理由是
+      // 「便宜 + 让存量配置有地方落」。现在删掉了：实测它们的实时端点已经被缩容到
+      // 不可用（超时 / 容量限流），留着等于在下拉里摆两个点了就坏的选项，比没有更糟。
+      // 存量配置改由 RETIRED_MODELS 接到 qwen3.5-omni-flash 上。
     ],
   },
   {
@@ -540,8 +567,11 @@ const LEGACY_PROVIDERS: Record<string, { provider: string; model: string }> = {
   // 上一代 Omni 的三个旧 id。它们对应的模型现在作为选项留在千问卡里，
   // 所以这些配置能落下来而不是被丢弃（早先没有它们，用户的卡直接消失）。
   qwen_omni_plus: { provider: 'qwen', model: 'qwen3.5-omni-plus' },
-  qwen_omni_flash: { provider: 'qwen', model: 'qwen3-omni-flash' },
-  qwen_omni_turbo: { provider: 'qwen', model: 'qwen-omni-turbo' },
+  // 这两个指向的模型已经从目录里删掉（被百炼缩容），所以落到同族还活着的那个。
+  // 目标必须和 RETIRED_MODELS 一致 —— 两张表给出不同答案的话，同一个用户
+  // 走迁移路径和走回落路径会得到不同的模型。
+  qwen_omni_flash: { provider: 'qwen', model: 'qwen3.5-omni-flash' },
+  qwen_omni_turbo: { provider: 'qwen', model: 'qwen3.5-omni-flash' },
   mimo: { provider: 'mimo', model: 'mimo-v2.5-asr' },
   groq_whisper: { provider: 'groq', model: 'whisper-large-v3-turbo' },
   openai_transcribe: { provider: 'openai', model: 'gpt-transcribe' },
@@ -558,6 +588,24 @@ const LEGACY_PROVIDERS: Record<string, { provider: string; model: string }> = {
 }
 
 /**
+ * 已从目录里删掉的模型 → 接替它的那个。
+ *
+ * **为什么不能只靠"回落到卡片默认"。** migrateLegacyProvider 的第 3 种情形本来就会
+ * 把认不出的模型名回落到该卡第一项，数据不会丢。但千问卡的第一项是纯 ASR，而这里
+ * 退役的两个都是 Omni（识别 + 整理一体）—— 回落过去会把用户从「不用配 AI 服务」
+ * 悄悄搬到「必须另配 AI 服务」，而他不会收到任何提示，只会发现整理效果不对了。
+ * 跨语义的替换要么明确指定落点，要么就不该发生。
+ *
+ * 所以这张表只放**同族替代**：退役的 Omni → 还活着的 Omni。找不到同族替代的模型
+ * 不要往这里加，让它走回落，那至少是个诚实的默认值。
+ */
+const RETIRED_MODELS: Record<string, string> = {
+  // 2026-09-23：官网标「即将下线」，且实测实时端点已被缩容（超时 / 容量限流）。
+  'qwen3-omni-flash': 'qwen3.5-omni-flash',
+  'qwen-omni-turbo': 'qwen3.5-omni-flash',
+}
+
+/**
  * 把存量条目的 provider 迁移成（卡片 id, 模型 id）。
  *
  * ── 判据必须是「provider + model 这一对是否自洽」，不能只看其中一个 ──
@@ -566,18 +614,31 @@ const LEGACY_PROVIDERS: Record<string, { provider: string; model: string }> = {
  * `provider='gemini_transcribe'` 配 `model='gemini-3.5-transcribe'` 是完全正常的组合 ——
  * 判成新数据后 `findAsrProvider('gemini_transcribe')` 返回 undefined，整条被丢掉。
  *
- * 四种情形，顺序有讲究：
+ * 五种情形，顺序有讲究：
  *   1. provider 是卡片 id 且 model 属于这张卡 → 新数据，原样；
  *   2. provider 在迁移表里 → 按表迁移，但**用户选过的模型如果新卡也有就保留**
  *      （否则在 Groq 卡上选过 large-v3 的人会被打回 turbo）；
- *   3. provider 是卡片 id 但 model 不认识（新建后没选、或模型下线）→ 回落该卡默认；
- *   4. 都不是 → 丢弃。
+ *   3. provider 是卡片 id 且 model 是刚退役的模型 → 换成 RETIRED_MODELS 指定的替代；
+ *   4. provider 是卡片 id 但 model 不认识（新建后没选、或模型下线）→ 回落该卡默认；
+ *   5. 都不是 → 丢弃。
+ *
+ * 情形 3 必须排在 4 前面，否则退役的 Omni 会先被情形 4 吃掉、落到卡片默认那个
+ * 纯 ASR 模型上 —— 理由见 RETIRED_MODELS。
  */
 function migrateLegacyProvider(
   provider: string,
   model: string,
 ): { provider: string; model: string } | null {
-  const trimmed = model.trim()
+  // 退役模型先换名，**必须在所有分支之前**。
+  //
+  // 踩过的坑：这段原来放在最后那个 `if (direct)` 分支里，而 `qwen` / `doubao` /
+  // `mimo` 这些值**同时**是旧分发 key 和新卡片 id —— 它们会先被下面的
+  // LEGACY_PROVIDERS 拦住并直接返回，于是退役映射对最需要它的那批配置
+  // （千问卡上的 Omni）压根不执行。测试里表现为退役 Omni 落到了 qwen3-asr-flash。
+  //
+  // 换完名之后由 belongsTo 承担「替代确实还在这张卡里」的校验，所以这里不必
+  // 再自己查一遍：替代要是也没了，会照常回落，不会返回一个不存在的模型名。
+  const trimmed = RETIRED_MODELS[model.trim()] ?? model.trim()
   const direct = findAsrProvider(provider)
   const belongsTo = (entry: AsrProviderEntry) =>
     trimmed !== '' && asrModelsOf(entry).some((m) => m.id === trimmed)

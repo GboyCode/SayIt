@@ -4,6 +4,7 @@ pub mod types;
 pub mod prompt;
 pub mod diag;
 pub mod http_client;
+pub mod capabilities;
 pub mod ai_openai_compat;
 pub mod ai_ollama;
 pub mod asr_doubao;

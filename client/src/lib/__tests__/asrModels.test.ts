@@ -28,8 +28,18 @@ describe('resolveQwenOmniModel', () => {
   it('返回正确的模型 ID', () => {
     expect(resolveQwenOmniModel('qwen_omni_35_plus')).toBe('qwen3.5-omni-plus-realtime')
     expect(resolveQwenOmniModel('qwen_omni_35_flash')).toBe('qwen3.5-omni-flash-realtime')
-    expect(resolveQwenOmniModel('qwen_omni_flash')).toBe('qwen3-omni-flash-realtime')
-    expect(resolveQwenOmniModel('qwen_omni_turbo')).toBe('qwen-omni-turbo-realtime')
+  })
+
+  /**
+   * 两个退役运行时键必须仍然解析出**某个还活着的** Omni，不能变成 undefined。
+   *
+   * undefined 会让 buildAsrExtra 不带 model 字段，于是落点交给 Rust 侧的
+   * DEFAULT_MODEL 去定 —— 两处各自演进就会漂，而漂了没人会发现。
+   * 落点也必须和 asrProviderCatalog 的 RETIRED_MODELS 一致。
+   */
+  it('退役的运行时键落到同族还活着的模型', () => {
+    expect(resolveQwenOmniModel('qwen_omni_flash')).toBe('qwen3.5-omni-flash-realtime')
+    expect(resolveQwenOmniModel('qwen_omni_turbo')).toBe('qwen3.5-omni-flash-realtime')
   })
 
   it('非 Omni 返回 undefined', () => {
@@ -137,8 +147,9 @@ describe('buildAsrExtra', () => {
   it('没传模型时，旧 provider id 还能从老表兜底', () => {
     expect(buildAsrExtra('qwen_omni_35_plus'))
       .toEqual({ model: 'qwen3.5-omni-plus-realtime' })
+    // 退役键兜底出来的是替代模型，不是它原来那个（见 QWEN_OMNI_MODEL_MAP 的注释）
     expect(buildAsrExtra('qwen_omni_turbo'))
-      .toEqual({ model: 'qwen-omni-turbo-realtime' })
+      .toEqual({ model: 'qwen3.5-omni-flash-realtime' })
   })
 
   it('自定义端点：地址会带进 extra', () => {

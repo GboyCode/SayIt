@@ -298,8 +298,16 @@ fn main() {
             .as_str()
             .unwrap_or("auto")
             .to_string();
+        // 必须跟着一起读：显卡选择是缓存 key 的一部分，这里传空（自动）而用户设了
+        // 具体某张卡的话，启动预热加载的引擎会在第一次口述时因 key 不符被整个丢掉
+        // 重载一遍 —— 预热白做，用户还要多等一次"卸旧 + 载新 + 预热"。
+        let gpu_device = storage
+            .get("localAsr.gpuDevice", None)
+            .as_str()
+            .unwrap_or("")
+            .to_string();
         std::thread::spawn(move || {
-            match models::gguf_asr::preload(&model_id, &accelerator) {
+            match models::gguf_asr::preload(&model_id, &accelerator, &gpu_device) {
                 Ok(()) => log::info!("Startup local model warm-up completed: {}", model_id),
                 // 模型没下载是正常情况（新装用户），不当错误刷日志
                 Err(e) => log::info!("Startup local model warm-up skipped ({}): {}", model_id, e),
@@ -336,6 +344,7 @@ fn main() {
         .manage(window_state)
         .manage(keyboard_hook)
         .manage(context_detector)
+        .manage(commands::update_notification::UpdateNotificationState::default())
         .setup(move |app| {
             // SayIt's main window and lazy overlay share one WebView2 user-data directory.
             // Per-window browser arguments violate WebView2's environment compatibility
@@ -605,6 +614,9 @@ fn main() {
             commands::system::install_downloaded_update,
             commands::system::download_update,
             commands::system::verify_update_package,
+            commands::update_notification::sync_update_notification,
+            commands::update_notification::get_update_notification,
+            commands::update_notification::fit_update_notification,
             commands::system::append_debug_log,
             commands::system::save_audio_to_downloads,
             commands::system::reveal_file_in_folder,
@@ -631,6 +643,7 @@ fn main() {
             commands::shortcuts::test_shortcut,
             commands::shortcuts::get_ptt_physical_key_states,
             commands::shortcuts::set_escape_action_mode,
+            commands::shortcuts::set_card_hotkeys,
             commands::shortcuts::set_ptt_lab_config,
             commands::shortcuts::begin_shortcut_capture,
             commands::shortcuts::end_shortcut_capture,
@@ -664,6 +677,12 @@ fn main() {
             providers::registry::cloud_transcribe,
             providers::registry::test_ai_connection,
             providers::registry::test_asr_connection,
+            // 「这家 ASR 拿热词做什么」的唯一权威来源。前端不再自己维护一份清单 ——
+            // 那正是 issue #67 的成因（声明和实现分处两侧、无人对账）。
+            providers::capabilities::asr_hotword_capability,
+            // 同上，全部服务一次给全，供「各服务对热词的支持」对照表使用。
+            // 那张表因此是实现的投影，不是第二份手写清单。
+            providers::capabilities::asr_hotword_capability_matrix,
             // Doubao realtime streaming ASR
             providers::asr_doubao_realtime::doubao_stream_open,
             providers::asr_doubao_realtime::doubao_stream_send,
@@ -674,7 +693,7 @@ fn main() {
             providers::asr_qwen_realtime::qwen_stream_send,
             providers::asr_qwen_realtime::qwen_stream_finish,
             providers::asr_qwen_realtime::qwen_stream_close,
-            // Qwen-Audio-3.0 streaming ASR (DashScope duplex protocol)
+            // Qwen-Audio-ASR-Flash streaming, 3.0 and 3.1 (DashScope duplex protocol)
             providers::asr_qwen_audio_stream::qwen_audio_stream_open,
             providers::asr_qwen_audio_stream::qwen_audio_stream_send,
             providers::asr_qwen_audio_stream::qwen_audio_stream_finish,

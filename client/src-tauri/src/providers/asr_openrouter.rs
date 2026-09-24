@@ -169,8 +169,20 @@ pub async fn transcribe(
     audio_pcm_b64: &str,
     sample_rate: u32,
     config: &AsrProviderConfig,
-    _hotwords: &[String],
+    hotwords: &[String],
 ) -> Result<AsrResult, String> {
+    // OpenRouter 这条路没有任何地方能放热词：原生 JSON 的参数表里没有 prompt，
+    // 它也接受的那套 multipart 里 prompt 是「收下后忽略」（见文件头）。
+    // 所以 capabilities.rs 把它记作 ProtocolHasNoSlot —— 和「我们没接」是两件事。
+    // 留痕理由同 asr_groq.rs。
+    if !hotwords.is_empty() {
+        diag::log(
+            SCOPE,
+            "hotwords_ignored",
+            &format!("count={} reason=protocol_has_no_slot", hotwords.len()),
+        );
+    }
+
     if config.api_key.trim().is_empty() {
         return Err(diag::fail_code(
             SCOPE,

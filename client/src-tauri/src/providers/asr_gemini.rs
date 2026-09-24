@@ -57,7 +57,18 @@ const DEFAULT_MODEL: &str = "gemini-3.5-transcribe";
 const TRANSCRIBE_PROMPT: &str = "Transcribe this audio verbatim. Output only the transcript text with natural punctuation. Do not add explanations, prefixes, quotation marks, timestamps, or speaker labels. If the audio contains no intelligible speech, output nothing at all.";
 
 /// 热词条数上限。全部塞进 prompt，给太多会稀释每一个的作用，也会把 prompt 撑长。
+///
+/// ⚠️ 这是**客户端自设**的截断，界面必须说出来。漏说的代价是静默：配了 150 个词
+/// 只发 100 个，而热词页既不显示上限、又够不到 `HOTWORD_SOFT_LIMIT`（200）那条
+/// 通用提醒，用户完全看不到后 50 个被丢掉了。声明处是 `capabilities.rs::client_cap`。
 const HOTWORD_LIMIT: usize = 100;
+
+/// 给 `capabilities.rs` 的测试用，让那边的说明值和这里的请求参数钉在一起。
+/// 只在测试里存在：说明和请求参数刻意各留一份，理由见 capabilities.rs。
+#[cfg(test)]
+pub fn hotword_limit_for_docs() -> usize {
+    HOTWORD_LIMIT
+}
 
 /// 将 16kHz 单声道 16-bit PCM 封装为 WAV 容器。
 ///

@@ -154,7 +154,7 @@ describe('topUpProfiles', () => {
     const { profiles } = topUpProfiles([], { doubao: creds(), qwen: creds() })
     const byId = new Map(profiles.map((p) => [p.provider, p]))
     expect(byId.get('doubao')!.model).toBe('Doubao-Seed-ASR-2.0')
-    expect(byId.get('qwen')!.model).toBe('qwen-audio-3.0-asr-flash-streaming')
+    expect(byId.get('qwen')!.model).toBe('qwen-audio-3.1-asr-flash-streaming')
     expect(profiles.every((p) => p.model !== '')).toBe(true)
   })
 })

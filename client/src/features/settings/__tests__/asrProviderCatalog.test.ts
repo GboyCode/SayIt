@@ -21,6 +21,7 @@ import {
   resolveActiveAsrProfile,
   resolveAsrApiModel,
   resolveAsrModel,
+  resolveAsrModelOption,
   resolveAsrRuntimeProvider,
   type AsrModelOption,
   type AsrProfile,
@@ -216,8 +217,8 @@ describe('ASR_PROVIDERS 结构性不变量', () => {
 
   /**
    * 只有 qwen3-asr-flash-realtime 需要业务空间 ID。
-   * qwen-audio-3.0-asr-flash-streaming 用通用域名就能跑（实测），照抄
-   * needsWorkspaceId 会让用户以为不填就用不了 —— 这条钉住这个区别。
+   * Qwen-Audio-ASR-Flash-Streaming 的 3.1 与 3.0 都用通用域名就能跑（实测），
+   * 照抄 needsWorkspaceId 会让用户以为不填就用不了 —— 这条钉住这个区别。
    */
   it('只有 qwen_realtime 那个模型需要业务空间 ID', () => {
     const needing = ASR_PROVIDERS.flatMap((p) => asrModelsOf(p))
@@ -227,39 +228,66 @@ describe('ASR_PROVIDERS 结构性不变量', () => {
   })
 
   /**
-   * 走 realtime 那条路的 Omni：接口模型名带 -realtime 后缀，产品名不带 ——
-   * 这层映射不能丢。
+   * 走 realtime 那条路的 Omni：**发出去的模型名必须带 `-realtime`**。
    *
-   * qwen3.8-omni-flash **不在这一组**：它没有 -realtime 孪生体（实测
-   * `GET /compatible-mode/v1/models` 里只有裸名，拿 `-realtime` 去连会被回
-   * "Access denied."），所以它走非实时的 chat/completions。下一条单独钉它。
+   * 断言的是 resolveAsrApiModel 的结果，不是「每个都得有 apiModel」——
+   * 后者曾经成立（那时产品名都不带后缀，靠 apiModel 补），但
+   * qwen3.8-omni-flash-realtime 的产品名本身就带，给它配 apiModel 只会得到
+   * `...-realtime-realtime`。把断言钉在「实际发什么」上，两种情形都覆盖，
+   * 也不会因为下次加了个本来就带后缀的模型而红。
    */
-  it('走 realtime 的 Omni，接口名与产品名分开', () => {
+  it('走 realtime 的 Omni，发出去的模型名都带 -realtime', () => {
     const realtimeOmni = asrModelsOf(findAsrProvider('qwen')!)
       .filter((m) => m.omni && m.provider === 'qwen_omni')
     expect(realtimeOmni.map((m) => m.id)).toEqual([
-      'qwen3.5-omni-plus', 'qwen3.5-omni-flash', 'qwen3-omni-flash', 'qwen-omni-turbo',
+      'qwen3.8-omni-flash-realtime', 'qwen3.5-omni-plus', 'qwen3.5-omni-flash',
     ])
     for (const model of realtimeOmni) {
-      expect(model.apiModel).toBe(`${model.id}-realtime`)
+      const sent = resolveAsrApiModel(profile({ provider: 'qwen', model: model.id }))
+      expect(sent).toMatch(/-realtime$/)
+      // 后缀只能有一份
+      expect(sent.endsWith('-realtime-realtime')).toBe(false)
     }
   })
 
   /**
-   * qwen3.8-omni-flash 必须走 chat/completions，而且**不能**带 apiModel。
+   * 3.8 那两条是**同一代的两条协议**，不是新旧关系。这条钉住它们各走各的实现。
    *
-   * 给它配一个 `-realtime` 的 apiModel 是最容易犯的错（另外四个 Omni 都那样），
-   * 而那个模型名在服务端不存在 —— 用户选了它只会得到 "Access denied."。
+   * ⚠️ 这里的结论被推翻过两次，别按旧理由改回去：
+   *  1. 最早认为「服务端没有 qwen3.8-omni-flash-realtime」——
+   *     2026-09-23 复测它存在了；
+   *  2. 接着认为「它在我们的代码路径上过不去」（`response.create` 时报
+   *     `Voice 'Chelsie' is not supported`）—— 这个现象是真的，但**结论错了**：
+   *     当时的对照实验里"带 voice"和"不发 response.create"两个变量一起变了。
+   *     固定发 response.create、只变音色字段重测后，加一个
+   *     `session.audio.output.voice` 就能用（3.5 两代也接受同一个字段）。
+   *     那个字段现在由 asr_qwen_omni.rs 对所有 Omni 统一发送。
    */
-  it('qwen3.8-omni-flash 走非实时那条路，不带 -realtime 后缀', () => {
-    const model = asrModelsOf(findAsrProvider('qwen')!)
-      .find((m) => m.id === 'qwen3.8-omni-flash')
-    expect(model).toBeTruthy()
-    expect(model!.provider).toBe('qwen_chat_audio')
-    expect(model!.apiModel).toBeUndefined()
-    expect(model!.omni).toBe(true)
+  it('3.8 的两个 Omni 各走各的协议', () => {
+    const models = asrModelsOf(findAsrProvider('qwen')!)
+
+    const http = models.find((m) => m.id === 'qwen3.8-omni-flash')
+    expect(http).toBeTruthy()
+    expect(http!.provider).toBe('qwen_chat_audio')
+    expect(http!.apiModel).toBeUndefined()
+    expect(http!.omni).toBe(true)
     // 它没有实时字幕能力，别顺手标上 streaming
-    expect(model!.streaming).toBeUndefined()
+    expect(http!.streaming).toBeUndefined()
+    // HTTP 那条路才允许改地址
+    expect(http!.supportsCustomUrl).toBe(true)
+
+    const ws = models.find((m) => m.id === 'qwen3.8-omni-flash-realtime')
+    expect(ws).toBeTruthy()
+    expect(ws!.provider).toBe('qwen_omni')
+    // 产品名已经带 -realtime，补 apiModel 会变成 -realtime-realtime
+    expect(ws!.apiModel).toBeUndefined()
+    expect(ws!.omni).toBe(true)
+    expect(ws!.streaming).toBeUndefined()
+    // realtime WebSocket 改地址没有意义，而且那几份实现压根不读 extra.baseUrl
+    expect(ws!.supportsCustomUrl).toBeUndefined()
+    expect(asrEndpointUrl(profile({
+      provider: 'qwen', model: 'qwen3.8-omni-flash-realtime', apiUrl: 'https://evil.example/v1',
+    }))).toBe('')
   })
 
   /**
@@ -513,20 +541,70 @@ describe('parseAsrProfiles 容错', () => {
   /**
    * 上一代 Omni 的旧 id 也要能落下来。
    *
-   * 它们对应的模型现在作为选项留在千问卡里（同一份 asr_qwen_omni.rs 实现），
-   * 所以不再丢弃 —— 早先目录里没有它们，这些用户的卡直接消失了。
+   * 它们指向的模型本身已经从目录里删掉（被百炼缩容），但这些卡**不能**丢，也不能
+   * 落到卡片默认那个纯 ASR 模型上 —— 那会把用户从「不用配 AI 服务」悄悄搬到
+   * 「必须另配 AI 服务」。所以两个都落到同族还活着的 qwen3.5-omni-flash。
    */
-  it('上一代 Omni 的旧 provider 也能迁移', () => {
+  it('上一代 Omni 的旧 provider 迁到同族还活着的模型', () => {
     const out = parseAsrProfiles([
       { id: 'a', provider: 'qwen_omni_turbo', apiKey: 'k' },
       { id: 'b', provider: 'qwen_omni_flash', apiKey: 'k' },
       { id: 'c', provider: 'qwen_omni_plus', apiKey: 'k' },
     ])
     expect(out.map((p) => [p.provider, p.model])).toEqual([
-      ['qwen', 'qwen-omni-turbo'],
-      ['qwen', 'qwen3-omni-flash'],
+      ['qwen', 'qwen3.5-omni-flash'],
+      ['qwen', 'qwen3.5-omni-flash'],
       ['qwen', 'qwen3.5-omni-plus'],
     ])
+    // 迁完必须还是 Omni（识别+整理一体），否则这条迁移就没有意义
+    for (const profile of out) {
+      expect(resolveAsrModelOption(profile)!.omni).toBe(true)
+    }
+  })
+
+  /**
+   * 已经是「新数据形态」的退役模型也要接住。
+   *
+   * 这是上一条覆盖不到的另一半：`provider` 已经迁成卡片 id `qwen`、`model` 里存着
+   * 退役的模型名。这种条目走的是 migrateLegacyProvider 的回落分支，而回落到卡片
+   * 默认会得到一个**纯 ASR** 模型 —— Omni 用户的整理能力会无声消失。
+   */
+  it('新数据形态里的退役 Omni 也落到同族替代', () => {
+    const out = parseAsrProfiles([
+      { id: 'a', provider: 'qwen', model: 'qwen3-omni-flash', apiKey: 'k' },
+      { id: 'b', provider: 'qwen', model: 'qwen-omni-turbo', apiKey: 'k' },
+    ])
+    expect(out.map((p) => p.model)).toEqual([
+      'qwen3.5-omni-flash', 'qwen3.5-omni-flash',
+    ])
+    for (const profile of out) {
+      expect(resolveAsrModelOption(profile)!.omni).toBe(true)
+    }
+  })
+
+  /**
+   * 认不出的模型名不丢条目，但**落点取决于 provider 值走的是哪条分支**。
+   *
+   * `qwen` 同时是旧分发 key 和卡片 id，所以它先命中 LEGACY_PROVIDERS，落到那张表
+   * 指定的 qwen3-asr-flash，而不是卡片第一项（3.1 流式）。这不是 bug：对存量数据
+   * 来说「provider 是 qwen」本来就等于「用 qwen3-asr-flash 那个模型」。
+   *
+   * 这条钉在这里是因为它反过来解释了 RETIRED_MODELS 为什么必须在所有分支之前
+   * 执行 —— 放在后面就会被这条 LEGACY 分支抢先返回。
+   */
+  it('认不出的模型名不丢条目，落到 LEGACY 表指定的那个', () => {
+    const out = parseAsrProfiles([
+      { id: 'a', provider: 'qwen', model: 'qwen-something-that-never-existed', apiKey: 'k' },
+    ])
+    expect(out.map((p) => p.model)).toEqual(['qwen3-asr-flash'])
+  })
+
+  /** 纯卡片 id（不在 LEGACY 表里）配认不出的模型名，才走「回落到卡片默认」 */
+  it('不在迁移表里的卡片 id 才回落到卡片默认', () => {
+    const out = parseAsrProfiles([
+      { id: 'a', provider: 'openrouter', model: 'nope/does-not-exist', apiKey: 'k' },
+    ])
+    expect(out.map((p) => p.model)).toEqual(['openai/gpt-transcribe'])
   })
 
   /** 真正认不出来的不进列表：provider 既不是卡片 id 也不在迁移表里 */

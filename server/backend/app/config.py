@@ -78,6 +78,12 @@ class LLMProfile:
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
     openai_timeout: int = 15
+    # None → 请求体整体不带 temperature 字段。推理模型只接受该参数的默认值，显式发
+    # 0.2 会被 400 拒收，所以不能靠"换个数字"适配，必须能配成不发送。默认仍是 0.2，
+    # 保证既有 Azure / OpenAI 配置行为不变。
+    openai_temperature: float | None = 0.2
+    # 空串 → 不发送该字段。取 none/low/medium/high，档位越低延迟越短。
+    openai_reasoning_effort: str = ""
 
     groq_base_url: str = "https://api.groq.com/openai"
     groq_api_key: str = ""
@@ -270,6 +276,46 @@ def _env_name(prefix: str, name: str) -> str:
     return f"{prefix}_{name}" if prefix else name
 
 
+def _opt_temperature(env_name: str, section: dict[str, Any], default: float | None) -> float | None:
+    """temperature 三态解析：未配置 → 沿用默认；显式 null/none → 不发送该字段；数字 → 用该值。
+
+    推理模型只接受 temperature 的默认值，发 0.2 会被拒 400，所以必须有"整体不发送"这一态。
+
+    空环境变量按"未设置"处理，与 _env_str / _env_int 一致 —— docker-compose 的
+    environment 列表常把未赋值的键传成空串，若把空串当成"不发送"，会静默改掉 Azure
+    那套配置的行为。解析失败也回落默认值而不抛异常：load_config() 在 main.py 是模块
+    导入期执行的，这里抛一次 ValueError 等于整个后端起不来。
+    """
+    raw = os.getenv(env_name)
+    if raw is not None and raw.strip():
+        token = raw.strip().lower()
+        if token in ("none", "null"):
+            return None
+        try:
+            return float(token)
+        except ValueError:
+            return default
+    if "temperature" not in section:
+        return default
+    value = section.get("temperature")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _opt_reasoning_effort(env_name: str, section: dict[str, Any], default: str) -> str:
+    """reasoning_effort：空串表示不发送该字段。
+
+    不做取值白名单 —— 网关可能新增档位，写死清单会挡住新值。写错的代价可控：会被
+    服务端 400 拒，而 400 的响应体现在会进日志（见 llm.py::_raise_for_status）。
+    """
+    raw = _env_str(env_name, str(section.get("reasoning_effort") or default))
+    return raw.strip().lower()
+
+
 def _load_llm_profile(
     section: dict[str, Any],
     prompt_dir: str,
@@ -300,6 +346,12 @@ def _load_llm_profile(
         openai_api_key=_env_str(_env_name(env_prefix, "OPENAI_API_KEY"), base.openai_api_key),
         openai_model=_env_str(_env_name(env_prefix, "OPENAI_MODEL"), str(openai.get("model") or base.openai_model)),
         openai_timeout=int(openai.get("timeout_sec") or base.openai_timeout),
+        openai_temperature=_opt_temperature(
+            _env_name(env_prefix, "OPENAI_TEMPERATURE"), openai, base.openai_temperature
+        ),
+        openai_reasoning_effort=_opt_reasoning_effort(
+            _env_name(env_prefix, "OPENAI_REASONING_EFFORT"), openai, base.openai_reasoning_effort
+        ),
         groq_base_url=_env_str(
             _env_name(env_prefix, "GROQ_BASE_URL"),
             str(groq.get("base_url") or base.groq_base_url),
@@ -404,6 +456,12 @@ def load_config(config_path: str | None = None, env_path: str | None = None) -> 
                 openai_api_key=_env_str(_env_name(env_prefix, "OPENAI_API_KEY"), base.openai_api_key),
                 openai_model=_env_str(_env_name(env_prefix, "OPENAI_MODEL"), str(openai.get("model") or base.openai_model)),
                 openai_timeout=int(openai.get("timeout_sec") or base.openai_timeout),
+                openai_temperature=_opt_temperature(
+                    _env_name(env_prefix, "OPENAI_TEMPERATURE"), openai, base.openai_temperature
+                ),
+                openai_reasoning_effort=_opt_reasoning_effort(
+                    _env_name(env_prefix, "OPENAI_REASONING_EFFORT"), openai, base.openai_reasoning_effort
+                ),
                 groq_base_url=_env_str(
                     _env_name(env_prefix, "GROQ_BASE_URL"),
                     str(groq.get("base_url") or base.groq_base_url),

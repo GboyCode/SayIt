@@ -29,11 +29,17 @@ interface GgufDevice {
   kind: string
   name: string
   memory_mb: number
+  id: string
+  index: number
+  is_gpu: boolean
 }
 
 interface GgufDiagnostics {
   devices: GgufDevice[]
   current_backend: string | null
+  /** 实际绑定的设备描述。多显卡机器上"选了哪张"和"真的用了哪张"可能不同，
+   *  诊断报告里必须是这个。 */
+  current_device: string | null
   /** 正在加载中的模型 id。非 null 时 current_backend 一定是 null。 */
   loading_model: string | null
   native_version: string
@@ -175,9 +181,12 @@ export default function DiagnosticsPage() {
           label: t('diagnostics.health.localEngine'),
           status: 'ok',
           detail: t('diagnostics.localEngineDetail', {
+            // 多显卡机器上光有 "vulkan" 答不了"用的哪张卡"，把实际绑定的设备一起写上
             backend: d.loading_model
               ? t('diagnostics.loadingModel', { model: d.loading_model })
-              : d.current_backend ?? t('diagnostics.modelUnloaded'),
+              : d.current_backend
+                ? d.current_device ? `${d.current_backend} · ${d.current_device}` : d.current_backend
+                : t('diagnostics.modelUnloaded'),
             memory: d.process_memory_mb,
             version: d.native_version,
           }),

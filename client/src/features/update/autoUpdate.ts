@@ -5,7 +5,7 @@
  *
  * · **不再自动安装。** 旧实现是"发现新版 → 下载 → 3 秒后 app.exit(0) 装掉"，
  *   用户正在按住说话时会被一个关不掉的全屏遮罩糊住、然后应用自己退出。
- *   现在下载完只是把包记进 pending，安装时机交给用户（侧栏「关于」图标变绿）
+ *   现在下载完只是把包记进 pending，安装时机交给用户（桌面提醒卡片 / 关于页）
  *   或退出路径（Rust 的 install_pending_update_on_exit）。
  *
  * · **周期检查是必需的，不是加分项。** SayIt 常驻托盘 + 开机自启，很多用户几周不重启。
@@ -15,7 +15,7 @@
  *   已下载的包必须记到设置里（pendingUpdate），重启后靠 verify_update_package 复用，
  *   否则每次开机都会把整包重下一遍。
  *
- * 全局单例状态：关于页、左下角图标都订阅同一份，共用同一把并发锁，
+ * 全局单例状态：关于页、左下角图标、桌面提醒都订阅同一份，共用同一把并发锁，
  * 不会出现启动自动检查与用户手动点击各下载一遍的情况。
  */
 
@@ -25,6 +25,8 @@ import { getSetting, setSetting } from '@/services/store'
 import * as bridge from '@/services/bridge'
 import { addRuntimeEvent } from '@/services/debugLog'
 import { getOfficialUpdateBaseUrl, getUpdateBaseUrl, isOfficialUpdateChannel } from '@/services/runtimeConfig'
+import { getState as getRecorderState } from '@/services/recorder'
+import { t } from '@/i18n'
 
 /** 已下载待安装的包。持久化到设置里，重启后仍然知道装过什么。 */
 export interface PendingUpdate {
@@ -73,6 +75,8 @@ export interface AutoUpdateState {
   /** 已下载待安装的包。与 phase 正交：后台正在做别的事时它照样成立。 */
   pending?: PendingUpdate | null
   error?: string | null
+  /** 安装失败独立于后台检查/下载错误，卡片只展示用户主动安装的结果。 */
+  installError?: string | null
   /** 下载进度百分比（0-100），来自 Rust 的 update-download-progress 事件 */
   downloadPercent?: number
 }
@@ -117,12 +121,12 @@ export function hasPendingUpdate(state: AutoUpdateState = currentState): boolean
 async function savePending(pending: PendingUpdate): Promise<void> {
   // Rust 的退出兜底安装直接读这一条设置，所以它必须先落盘、再进内存状态。
   await setSetting(PENDING_UPDATE_KEY, pending)
-  setState({ pending, downloadPercent: 100 })
+  setState({ pending, downloadPercent: 100, installError: null })
 }
 
 async function clearPending(): Promise<void> {
   await setSetting(PENDING_UPDATE_KEY, null).catch(() => { })
-  setState({ pending: null })
+  setState({ pending: null, installError: null })
 }
 
 /**
@@ -191,6 +195,7 @@ async function ensureDownloaded(info: VersionInfo): Promise<void> {
 
 /** 检查一次，发现新版本就在后台下载。所有触发路径最终都走这里。 */
 async function runCheckAndDownload(): Promise<void> {
+  if (currentState.phase === 'installing') return
   if (inFlight) { await inFlight; return }
 
   const current = readCurrentVersion()
@@ -308,19 +313,22 @@ export async function checkForUpdateNow(): Promise<VersionInfo | null> {
 
 /**
  * 用户主动安装：应用会立刻关闭、静默安装、再自动打开。
- * 调用方负责先向用户说清这件事（左下角图标点开的确认框）。
+ * 调用方通过卡片或关于页的安装按钮说明重启行为；录音和转写期间禁止安装。
  */
 export async function installPendingUpdate(): Promise<void> {
   const pending = currentState.pending
-  if (!pending) return
-  setState({ phase: 'installing', error: null })
+  if (!pending || currentState.phase === 'installing') return
+  if (getRecorderState() !== 'idle') {
+    setState({ installError: t('update.finishRecording'), error: t('update.finishRecording') })
+    return
+  }
+  setState({ phase: 'installing', error: null, installError: null })
   try {
     // relaunch=true：这是用户当下主动要求的更新，装完把应用重新拉起来。
-    // 退出路径上的兜底安装传 false（在 Rust 侧），否则表现成"这软件关不掉"。
     await bridge.installDownloadedUpdate(pending.filePath, true)
   } catch (err) {
     // 装不起来就回 idle：pending 还在，用户可以再点一次，退出时也仍会兜底
-    setState({ phase: 'idle', error: String(err) })
+    setState({ phase: 'idle', error: String(err), installError: String(err) })
     addRuntimeEvent('error', 'update', 'failed to launch the installer', { error: String(err) })
   }
 }

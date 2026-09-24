@@ -10,3 +10,4 @@ pub mod system;
 pub mod tray;
 pub mod webdav;
 pub mod window;
+pub mod update_notification;

@@ -313,10 +313,28 @@ pub async fn transcribe(
     audio_pcm_b64: &str,
     sample_rate: u32,
     config: &AsrProviderConfig,
-    _hotwords: &[String],
+    hotwords: &[String],
 ) -> Result<AsrResult, String> {
     let endpoint = endpoint_for(&config.provider);
     let scope = endpoint.scope;
+
+    // 这条路不把热词发给服务端 —— `prompt` 是它唯一能放词表的位置，而我们拿它做了
+    // 中文标点引导（见 PUNCTUATION_PROMPT，缺了它中文短句一个标点都没有）。
+    //
+    // 留这行日志的理由：热词被忽略时转写照样成功，用户只觉得"识别得不太准"，
+    // 而在这行存在之前**日志里一个字都查不到**。issue #67 是 FunASR 上游维护者
+    // 读源码发现的，不是从日志里看出来的 —— 那说明这个缺口对我们自己也是不可见的。
+    // 能力声明在 providers/capabilities.rs，这里只负责留痕。
+    if !hotwords.is_empty() {
+        diag::log(
+            scope,
+            "hotwords_ignored",
+            &format!(
+                "count={} reason=prompt_field_used_for_punctuation",
+                hotwords.len()
+            ),
+        );
+    }
     let pcm = base64::Engine::decode(
         &base64::engine::general_purpose::STANDARD,
         audio_pcm_b64,

@@ -58,6 +58,11 @@ llm:
       base_url: "https://api.openai.com"
       model: "gpt-4o-mini"
       timeout_sec: 15
+      # temperature: null              # null = omit the field entirely. Reasoning models
+      #                                # reject an explicit value and only accept their
+      #                                # default, so omitting is the only way to adapt.
+      # reasoning_effort: "none"       # none / low / medium / high. Omit to let the model
+      #                                # decide. Lower effort = lower latency.
     groq:
       base_url: "https://api.groq.com/openai"
       model: "qwen/qwen3-32b"

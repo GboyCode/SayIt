@@ -76,6 +76,16 @@ class LLMEngine:
         timeout_map = {"azure": profile.azure_timeout, "openai": profile.openai_timeout, "groq": profile.groq_timeout, "ollama": profile.ollama_timeout}
         timeout = timeout_map.get(provider, 15)
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=8.0))
+        if provider == "openai":
+            # 启动摘要只写 provider / model，看不出 temperature 到底发没发。改成可省略之后，
+            # "配置生效了"和"还在跑旧默认值"在外部行为上没有区别，所以把实际会发出去的
+            # 载荷开关直接落一行日志，作为部署后的验证判据。
+            logger.info(
+                "LLM openai payload config: base_url=%s model=%s temperature=%s reasoning_effort=%s",
+                profile.openai_base_url, profile.openai_model,
+                "omitted" if profile.openai_temperature is None else profile.openai_temperature,
+                profile.openai_reasoning_effort or "omitted",
+            )
 
     async def close(self):
         await self._client.aclose()
@@ -215,15 +225,43 @@ class LLMEngine:
             base = base[:-3]
         return f"{base}/v1/chat/completions"
 
+    @staticmethod
+    def _raise_for_status(resp: httpx.Response) -> None:
+        """非 2xx 时先把响应体记进日志，再抛。
+
+        httpx 的 raise_for_status 只带状态码和 URL，而"哪个字段不被支持"只写在响应体里；
+        polish() 又会把异常吞成"原文返回"。不记 body 的话，载荷不兼容（如推理模型拒收
+        temperature）和鉴权失败在日志里长得一模一样，只剩一句 400。
+        """
+        if resp.is_success:
+            return
+        logger.warning(
+            "LLM HTTP %s from %s: %s",
+            resp.status_code, resp.request.url, resp.text.replace("\n", " ")[:300],
+        )
+        resp.raise_for_status()
+
+    def _openai_payload(self, messages: list[dict]) -> dict:
+        """OpenAI 兼容载荷。
+
+        temperature 支持整体省略：推理模型只接受该参数的默认值，显式发 0.2 会被 400 拒收，
+        所以适配手段是"不发这个字段"，而不是换一个数值。
+        """
+        payload: dict = {"model": self._cfg.openai_model, "messages": messages}
+        if self._cfg.openai_temperature is not None:
+            payload["temperature"] = self._cfg.openai_temperature
+        if self._cfg.openai_reasoning_effort:
+            payload["reasoning_effort"] = self._cfg.openai_reasoning_effort
+        return payload
+
     async def _call_openai(self, messages: list[dict]) -> str:
         url = self._chat_url(self._cfg.openai_base_url)
-        payload = {"model": self._cfg.openai_model, "temperature": 0.2, "messages": messages}
         resp = await self._client.post(
-            url, json=payload,
+            url, json=self._openai_payload(messages),
             headers={"Authorization": f"Bearer {self._cfg.openai_api_key}"},
             timeout=self._cfg.openai_timeout,
         )
-        resp.raise_for_status()
+        self._raise_for_status(resp)
         return self._extract_text(resp.json())
 
     async def _call_groq(self, messages: list[dict]) -> str:

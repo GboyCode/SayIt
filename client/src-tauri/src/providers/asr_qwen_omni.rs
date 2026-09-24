@@ -9,8 +9,20 @@ use futures_util::{FutureExt, SinkExt, StreamExt};
 use std::time::Instant;
 use tokio_tungstenite::tungstenite;
 
-/// 默认模型
-const DEFAULT_MODEL: &str = "qwen3-omni-flash-realtime";
+/// `extra.model` 缺失时用哪个。
+///
+/// 2026-09-23 从 `qwen3-omni-flash-realtime` 换过来：那个模型已被阿里公告下线并开始
+/// 缩容，实测连它的实时端点直接读超时。回落值指向一个点了就坏的模型，比报错更难查
+/// —— 用户看到的是「一直转圈然后什么都没有」，而日志里只有一个超时。
+const DEFAULT_MODEL: &str = "qwen3.5-omni-flash-realtime";
+
+/// `session.audio.output.voice` 发什么。
+///
+/// 我们只要文本，这个值永远不会被合成出来 —— 它存在的唯一原因是 3.8 会在
+/// `response.create` 那一步校验音色。取 Tina 是因为官方文档说它是 3.8 的默认音色，
+/// 而且实测 3.5 两个模型也接受它。详见 start_session 里 session.update 那段注释。
+const OUTPUT_VOICE: &str = "Tina";
+
 const SCOPE: &str = "qwen/omni";
 
 fn ws_url(model: &str) -> String {
@@ -289,13 +301,29 @@ pub async fn transcribe(
     wait_for_event(&mut ws, "session.created", SCOPE).await?;
 
     // 发送 session.update — 仅输出文本，禁用 VAD（Manual 模式）
+    //
+    // ⚠️ `audio.output.voice` 看着是多余的：我们 `modalities` 只要 text，压根不要
+    // 合成语音。**但它是 qwen3.8-omni-flash-realtime 能用的前提，别当冗余清掉。**
+    //
+    // 实测（2026-09-23，dev-scripts/probe_qwen38_omni_voice.py）：不带这个字段时，
+    // 3.8 在 `response.create` 那一步回 `<400> InternalError.Algo.InvalidParameter:
+    // Voice 'Chelsie' is not supported.` —— 服务端拿了一个 3.5 时代的默认音色去校验，
+    // 即使这一轮不会产出音频。3.8 把默认音色换成了 Tina，并把字段挪到
+    // `session.audio.output.voice`（官方文档称它优先于兼容字段 `session.voice`）。
+    //
+    // 为什么不按模型分支：实测 3.5 plus/flash 带上这个字段同样正常，所以**一份会话
+    // 形状通吃三代**。按模型拆两套 session 会多出一条只在某一代上跑过的代码路径。
+    //
+    // 排查提示：错误信息只提音色、不提模型，容易被当成「账号没开通音色」或
+    // 「模型不可用」。真正的判据是 `response.create` 之后立刻来一个 error 事件。
     let session_update = serde_json::json!({
         "type": "session.update",
         "session": {
             "modalities": ["text"],
             "instructions": instructions,
             "input_audio_format": "pcm",
-            "turn_detection": null
+            "turn_detection": null,
+            "audio": { "output": { "voice": OUTPUT_VOICE } }
         }
     });
     ws.send(tungstenite::Message::Text(session_update.to_string().into()))
@@ -337,7 +365,7 @@ pub async fn transcribe(
         // ── 边发边读。**不能只发不收。** ──
         //
         // 这份实现原来是「把全部音频发完，再开始读 socket」，而仓库里另外五个流式
-        // provider（豆包 / Gemini Live / OpenAI realtime / 千问 audio30 / 千问 realtime）
+        // provider（豆包 / Gemini Live / OpenAI realtime / 千问 audio3x / 千问 realtime）
         // 都是 split 之后并发读的。只发不读有两个后果：
         //   ① tungstenite 只在**读到** Ping 时才排一个 Pong，一路不读就等于不回心跳；
         //   ② 服务端在发送期间报的 error 事件我们全错过。随后连接被关、下一次 send

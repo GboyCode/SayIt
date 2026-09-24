@@ -17,6 +17,24 @@ const OVERLAY_DEFAULT_BASE_WIDTH: f64 = 360.0;
 const OVERLAY_BASE_HEIGHT: f64 = 64.0;
 const OVERLAY_FALLBACK_WIDTH: f64 = 520.0;
 const OVERLAY_FALLBACK_HEIGHT: f64 = 224.0;
+/// 识别失败卡片：比结果卡矮，因为它没有文本预览区，只有标题 + 原因 + 可能一行恢复提示。
+/// **必须是可交互布局**（见 is_interactive）——它上面有关闭按钮，而非交互布局是点击
+/// 穿透的，按钮会点不到。
+///
+/// 150 → 176：原来那个值是按「原因只占一行」算的，而供应商的错误文案根本不止一行 ——
+/// 「账户余额不足，本次请求未能发出。请在供应商后台充值后重试…」在 520px 宽的 text-xs
+/// 下就是两行，实测内容高 97（日志 `render ack OK ... content=520x97.33`）。再补上恢复
+/// 提示就是 126，而 150 的窗口只能装 134，余量 4px；文案再长一点标题就被 overflow:hidden
+/// 从顶部裁掉。176 覆盖「原因三行 + 恢复提示」（146）并留 14px 余量。
+/// 520 → 480：三行小字的卡片占 520 显得空，但 440 又太紧 —— 余额不足那条文案（28 字）
+/// 会折出「试。」这样只剩一个字加句号的末行。480 让它一行放完。
+///
+/// **必须与 Overlay.tsx 失败卡的 max-w 一致** —— 卡片比窗口窄时，多出来的透明边照样吞掉
+/// 下面程序的点击（这是 is_interactive 布局）；比窗口宽则被 overflow:hidden 裁掉。
+///
+/// 最长的那条错误文案（err.provider.forbidden，64 字）在 480 下折两行，高度 126，容量内。
+const OVERLAY_FAILURE_WIDTH: f64 = 480.0;
+const OVERLAY_FAILURE_HEIGHT: f64 = 176.0;
 // 流式实时显示：录音气泡 + 波形条堆叠，需要更宽更高的窗口
 const OVERLAY_STREAMING_WIDTH: f64 = 480.0;
 const OVERLAY_STREAMING_HEIGHT: f64 = 200.0;
@@ -67,15 +85,20 @@ enum OverlayLayout {
     Base,
     BaseWithMicHint,
     Fallback,
+    /// 识别失败卡片：带关闭按钮，因此同样需要交互。
+    Failure,
     /// 流式实时显示：气泡 + 波形，窗口更大且非交互
     Streaming,
     StreamingWithMicHint,
 }
 
 impl OverlayLayout {
-    /// 该布局是否为可交互（可点击）状态——目前只有兜底卡片需要交互。
+    /// 该布局是否为可交互（可点击）状态——只有带按钮的卡片需要。
+    ///
+    /// ⚠️ 非交互布局会 `set_ignore_cursor_events(true)`，窗口整体点击穿透。
+    /// 新增任何"有按钮的"状态都必须在这里返回 true，否则按钮在界面上看得见、点不到。
     fn is_interactive(&self) -> bool {
-        matches!(self, OverlayLayout::Fallback)
+        matches!(self, OverlayLayout::Fallback | OverlayLayout::Failure)
     }
 
     /// 该布局期望的设计尺寸（宽, 高），单位是 CSS px。
@@ -90,6 +113,7 @@ impl OverlayLayout {
                 OVERLAY_MIC_HINT_HEIGHT,
             ),
             OverlayLayout::Fallback => (OVERLAY_FALLBACK_WIDTH, OVERLAY_FALLBACK_HEIGHT),
+            OverlayLayout::Failure => (OVERLAY_FAILURE_WIDTH, OVERLAY_FAILURE_HEIGHT),
             OverlayLayout::Streaming => (OVERLAY_STREAMING_WIDTH, OVERLAY_STREAMING_HEIGHT),
             OverlayLayout::StreamingWithMicHint => (
                 OVERLAY_STREAMING_WIDTH,
@@ -302,12 +326,29 @@ impl WindowState {
         if let Some(overlay) = app.get_webview_window("overlay") {
             let layout = self.overlay_layout.lock().unwrap().clone();
             // 仅在布局真正变化时才重设原生窗口几何，避免每帧 set_position/set_size 抖动。
-            let changed = self.last_applied_layout.lock().unwrap().as_ref() != Some(&layout);
+            let previous = self.last_applied_layout.lock().unwrap().clone();
+            let changed = previous.as_ref() != Some(&layout);
             if changed {
-                let is_fallback = layout == OverlayLayout::Fallback;
+                // 录音期间唯一会改窗口几何的地方，必须留痕：这条路径以前一行日志都不写，
+                // 于是「悬浮窗闪」这类几何抖动在 sayit.log 里完全无迹可寻，只能靠音量警告
+                // 的时间戳反推。一次录音正常只有 1~2 行；同一对 from→to 反复出现就是抖动。
+                write_log_line(&format!(
+                    "[overlay-layout] {:?} -> {:?} state={} streaming={} mic_hint={}",
+                    previous,
+                    layout,
+                    data.get("state").and_then(Value::as_str).unwrap_or("unknown"),
+                    data.get("streaming").and_then(Value::as_bool).unwrap_or(false),
+                    data.get("micSourceLabel")
+                        .and_then(Value::as_str)
+                        .map(|s| !s.trim().is_empty())
+                        .unwrap_or(false),
+                ));
+                // 卡片类布局可能是从"已隐藏"直接切过来的（比如处理中报错 → 失败卡），
+                // 这时窗口还没显示，光改几何是看不见的。
+                let is_card = layout.is_interactive();
                 self.apply_native_layout(app, &overlay, &layout);
                 set_overlay_interactivity(&overlay, layout.is_interactive());
-                if is_fallback {
+                if is_card {
                     let _ = overlay.show();
                 }
             }
@@ -563,6 +604,8 @@ impl WindowState {
             .unwrap_or(false);
         let candidate_layout = if state == Some("fallback") {
             OverlayLayout::Fallback
+        } else if state == Some("failure") {
+            OverlayLayout::Failure
         } else if state == Some("listening") && streaming_on && mic_hint_on {
             OverlayLayout::StreamingWithMicHint
         } else if state == Some("listening") && streaming_on {
@@ -586,6 +629,13 @@ impl WindowState {
                     | (OverlayLayout::StreamingWithMicHint, OverlayLayout::Streaming)
                     | (OverlayLayout::StreamingWithMicHint, OverlayLayout::BaseWithMicHint)
                     | (OverlayLayout::StreamingWithMicHint, OverlayLayout::Base)
+                    // Streaming 这两支是 2026-09 补的。前端曾有五个警告方法各自手写
+                    // payload、都漏了 `streaming` 字段，于是低音量警告每 5 秒把布局判成
+                    // Base，窗口收缩一帧再被下一次心跳撑回去——开着实时字幕不说话时
+                    // 悬浮窗"一闪一闪"。前端已收口到 listeningPayload()，这里是兜底：
+                    // 哪怕将来又有新出口漏带字段，窗口也不该在可见期间缩回去。
+                    | (OverlayLayout::Streaming, OverlayLayout::Base)
+                    | (OverlayLayout::Streaming, OverlayLayout::BaseWithMicHint)
             );
 
         // 提示文字 3 秒后会隐藏，无语音/错误也会把内容换成短 toast，但只要悬浮窗
@@ -1100,8 +1150,8 @@ fn set_overlay_interactivity(overlay: &tauri::WebviewWindow, interactive: bool) 
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_overlay_failure, overlay_bounds_in_work_area, OverlayLayout, OVERLAY_BASE_HEIGHT,
-        OVERLAY_DEFAULT_BASE_WIDTH, OVERLAY_ROOT_PADDING_BOTTOM,
+        classify_overlay_failure, overlay_bounds_in_work_area, OverlayLayout, WindowState,
+        OVERLAY_BASE_HEIGHT, OVERLAY_DEFAULT_BASE_WIDTH, OVERLAY_ROOT_PADDING_BOTTOM,
     };
     use serde_json::json;
 
@@ -1172,6 +1222,14 @@ mod tests {
             ("base", OverlayLayout::Base, required_css_height()),
             ("mic_hint", OverlayLayout::BaseWithMicHint, required_css_height() + 8.0 + 30.0),
             ("fallback", OverlayLayout::Fallback, OVERLAY_ROOT_PADDING_BOTTOM + 149.0),
+            // 失败卡：py-4(32) + 标题 20 + 原因**最多三行** 60 + 恢复提示 20
+            //        + 两处间距 12 + 边框 2 ≈ 146
+            //
+            // ⚠️ 这里原来按「原因只有一行」算成 110，是错的：供应商的错误文案
+            // （「账户余额不足，本次请求未能发出…」）在 520px 宽下就占两行，实测内容高 97，
+            // 加上恢复提示 126 —— 旧窗口 150 只能装 134，余量 4px。断言写松了，
+            // 于是这条自检在真实最坏情况下照样全绿。
+            ("failure", OverlayLayout::Failure, OVERLAY_ROOT_PADDING_BOTTOM + 146.0),
             ("streaming", OverlayLayout::Streaming, required_css_height() + 8.0 + 110.0),
             (
                 "streaming_mic_hint",
@@ -1227,6 +1285,125 @@ mod tests {
         assert!(y >= 0, "y={}", y);
         assert!(x as i64 + width as i64 <= 2560, "right={}", x as i64 + width as i64);
         assert!(y as i64 + height as i64 <= 1318, "bottom={}", y as i64 + height as i64);
+    }
+
+    /// 依次喂入 payload，返回每一步之后的布局。只驱动 apply_payload_layout，
+    /// 不碰窗口，所以不需要 AppHandle。
+    fn layouts_after(payloads: &[serde_json::Value]) -> Vec<OverlayLayout> {
+        let state = WindowState::new();
+        payloads
+            .iter()
+            .map(|payload| {
+                state.apply_payload_layout(payload);
+                state.overlay_layout.lock().unwrap().clone()
+            })
+            .collect()
+    }
+
+    /// 只有带按钮的卡片布局才接收鼠标点击，其余一律穿透。
+    ///
+    /// 用 match 而不是数组：新增布局变体时这里会**编译失败**，强制作者表态"这个布局
+    /// 有没有按钮"。漏设的症状极难查 —— 按钮在界面上画得好好的，就是点不到，
+    /// 因为整个窗口被 set_ignore_cursor_events(true) 穿透了。
+    #[test]
+    fn only_card_layouts_receive_mouse_clicks() {
+        let expected = |layout: &OverlayLayout| match layout {
+            OverlayLayout::Fallback | OverlayLayout::Failure => true,
+            OverlayLayout::Base
+            | OverlayLayout::BaseWithMicHint
+            | OverlayLayout::Streaming
+            | OverlayLayout::StreamingWithMicHint => false,
+        };
+        for layout in [
+            OverlayLayout::Base,
+            OverlayLayout::BaseWithMicHint,
+            OverlayLayout::Fallback,
+            OverlayLayout::Failure,
+            OverlayLayout::Streaming,
+            OverlayLayout::StreamingWithMicHint,
+        ] {
+            assert_eq!(
+                layout.is_interactive(),
+                expected(&layout),
+                "interactivity drifted for {:?}",
+                layout,
+            );
+        }
+    }
+
+    /// 失败卡必须拿到自己的布局，且不能被"可见期间别收缩"那条兜底挡住。
+    ///
+    /// 场景是真实的：录音中掉线会先显示输入源提示条（BaseWithMicHint），随后才失败。
+    /// 如果 failure 落进 keep_expanded_bounds 的配对里，窗口会停在提示条的尺寸上，
+    /// 卡片被 overflow:hidden 裁掉一大半。
+    #[test]
+    fn failure_state_gets_its_own_layout_even_after_a_mic_hint() {
+        let layouts = layouts_after(&[
+            json!({ "state": "listening", "micSourceLabel": "Blackwire 5220" }),
+            json!({ "state": "failure", "failureTitle": "recognition failed" }),
+        ]);
+        assert_eq!(
+            layouts,
+            vec![OverlayLayout::BaseWithMicHint, OverlayLayout::Failure],
+        );
+    }
+
+    #[test]
+    fn streaming_flag_expands_the_window_while_listening() {
+        assert_eq!(
+            layouts_after(&[json!({ "state": "listening", "streaming": true })]),
+            vec![OverlayLayout::Streaming],
+        );
+    }
+
+    /// 回归钉（2026-09「开着实时字幕不说话时悬浮窗一闪一闪」）：
+    ///
+    /// 低音量警告每 5 秒发一次 listening 更新，那几个 payload 曾漏带 `streaming`。
+    /// 布局一旦被判回 Base，窗口就从 480×200 收缩、下一帧心跳再撑回去 —— 而 webview 里
+    /// 的 DOM 完全没动，气泡被 overflow:hidden 裁掉一帧，看起来就是闪。
+    ///
+    /// 前端已收口到 listeningPayload()，这条钉的是原生侧的兜底：可见期间**任何**缺字段的
+    /// listening 更新都不许让窗口缩回去。
+    #[test]
+    fn listening_update_without_streaming_flag_must_not_shrink_the_window() {
+        let layouts = layouts_after(&[
+            json!({ "state": "listening", "streaming": true }),
+            // 这就是当年那份 payload：只有警告文案，没有 streaming
+            json!({ "state": "listening", "warning": "volume is low", "warningTone": "warn" }),
+            json!({ "state": "listening", "streaming": true }),
+        ]);
+        assert_eq!(
+            layouts,
+            vec![
+                OverlayLayout::Streaming,
+                OverlayLayout::Streaming,
+                OverlayLayout::Streaming,
+            ],
+        );
+    }
+
+    /// 同一条兜底也要覆盖「输入源提示还在显示」的那一支，否则提示条一出现就又漏一个组合。
+    #[test]
+    fn streaming_window_survives_a_mic_hint_only_update() {
+        let layouts = layouts_after(&[
+            json!({ "state": "listening", "streaming": true }),
+            json!({ "state": "listening", "micSourceLabel": "Blackwire 5220" }),
+        ]);
+        assert_eq!(
+            layouts,
+            vec![OverlayLayout::Streaming, OverlayLayout::Streaming],
+        );
+    }
+
+    /// 兜底不能兜过头：新一轮显示从 waiting 开始，那时必须真的回到基础尺寸，
+    /// 否则上一轮的大窗口会一直留着。
+    #[test]
+    fn a_new_waiting_phase_resets_to_the_base_layout() {
+        let layouts = layouts_after(&[
+            json!({ "state": "listening", "streaming": true }),
+            json!({ "state": "waiting", "elapsedSec": 0 }),
+        ]);
+        assert_eq!(layouts, vec![OverlayLayout::Streaming, OverlayLayout::Base]);
     }
 
     fn native_window() -> serde_json::Value {

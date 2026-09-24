@@ -49,6 +49,21 @@ const WEBSOCKET_KEY_EVENT = /(Connection closed|Connection timed out|Failed to s
 const AUDIO_KEY_EVENT = /(Microphone capture started|AudioContext|First PCM frame received|First RMS received|ScriptProcessorNode fallback activated|Capture stop summary)/i
 const INSERTION_EVENT = /(Paste decision|External text insertion|fallback|Target is SayIt|Target is not editable)/i
 
+/**
+ * AI 整理链路的固定事件名。**按事件名放行，不按英文文案正则**。
+ *
+ * 上面几条走正则是历史包袱：日志能不能落盘取决于有没有人改动英文文案，改一个词
+ * 就静默失去一条诊断线索。这两条是"没有它就查不出为什么没整理"的关键事件，
+ * 用不随文案变化的稳定名字，并且只放行这两个 —— 不放行整个 'ai' 来源，
+ * 也不借用已有的 'backend'（借了以后就分不清是后端还是 AI 的事）。
+ *
+ * 量：正常跳过每次录音 1 条；真的调了自配 AI 是 2 条。
+ */
+export const AI_LOG_SOURCE = 'ai'
+export const AI_EVENT_REQUEST = 'ai.request'
+export const AI_EVENT_OUTCOME = 'ai.outcome'
+const AI_KEY_EVENTS = new Set<string>([AI_EVENT_REQUEST, AI_EVENT_OUTCOME])
+
 let totalAudioBytes = 0
 
 function shouldMirrorPayload(payload: unknown): boolean {
@@ -66,6 +81,7 @@ function shouldMirrorPayload(payload: unknown): boolean {
     return source === 'recorder' && RECORDER_KEY_EVENT.test(message)
       || source === 'websocket' && WEBSOCKET_KEY_EVENT.test(message)
       || source === 'audio' && AUDIO_KEY_EVENT.test(message)
+      || source === AI_LOG_SOURCE && AI_KEY_EVENTS.has(message)
       || source === 'backend'
       // update 全放行：整条更新链路是用户**看不见**的（后台检查、后台下载、退出时安装），
       // 出问题时日志是唯一线索。量也极小：启动一次 + 每 6 小时一次。
@@ -84,6 +100,9 @@ function shouldMirrorPayload(payload: unknown): boolean {
 function shouldKeepRuntimeEvent(event: RuntimeEvent): boolean {
   if (event.level === 'error' || event.level === 'warn') return true
   if (event.source === 'backend') return true
+  // 必须和 shouldMirrorPayload 同步放行：两套判据分开写过一次，结果出现"内存里有、
+  // 日志里没有"，而排查用的是日志。
+  if (event.source === AI_LOG_SOURCE) return AI_KEY_EVENTS.has(event.message)
   // 见 shouldMirrorPayload 里的同名分支：更新链路用户看不见，诊断只能靠日志
   if (event.source === 'update') return true
   if (event.source === 'websocket') {

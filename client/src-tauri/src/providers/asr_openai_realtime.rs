@@ -61,7 +61,15 @@ const DELAY: &str = "low";
 /// 热词条数上限。keywords 是提示不是强制，给太多反而会稀释每一个的作用；
 /// 文档要求每条单行、且不含 `<` `>` 与换行，违反会让整个 session.update 被拒 ——
 /// 那会让识别**完全不可用**，所以这里过滤掉而不是原样上送。
+///
+/// ⚠️ 这是**客户端自设**的，不是服务端限制（见 capabilities.rs 的 client_cap）。
 const KEYWORD_LIMIT: usize = 100;
+
+/// 给 `capabilities.rs` 的测试用，理由同 asr_qwen_audio_stream::hotword_limit_for_docs。
+#[cfg(test)]
+pub fn keyword_limit_for_docs() -> usize {
+    KEYWORD_LIMIT
+}
 
 type WsStream = tokio_tungstenite::WebSocketStream<
     tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,

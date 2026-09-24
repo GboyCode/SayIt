@@ -38,10 +38,9 @@ const AS_CHAT: &str = "openai_chat_audio";
 /// 缓存不该跨进程留着。命中率在一次会话里已经够用。
 static PROTOCOL_CACHE: Mutex<Option<HashMap<String, &'static str>>> = Mutex::new(None);
 
-fn cache_key(config: &AsrProviderConfig) -> String {
+fn cache_key_from_extra(extra: &serde_json::Value) -> String {
     let field = |name: &str| {
-        config
-            .extra
+        extra
             .get(name)
             .and_then(|v| v.as_str())
             .unwrap_or("")
@@ -49,6 +48,22 @@ fn cache_key(config: &AsrProviderConfig) -> String {
             .to_string()
     };
     format!("{}|{}", field("baseUrl"), field("model"))
+}
+
+fn cache_key(config: &AsrProviderConfig) -> String {
+    cache_key_from_extra(&config.extra)
+}
+
+/// 这份配置上次探到的是哪种协议，没探过返回 None。
+///
+/// 给 `capabilities.rs` 用：auto 档的热词能力取决于协议，探测之前只能回答"未确定"，
+/// 探过之后就该给准话。只改 `labelled()` 里测试成功的那句提示是不够的 ——
+/// 真正的转写也会探测并写缓存（见下面 transcribe 里的 remember_protocol），
+/// 用户可能根本没点过「测试连接」就直接开始口述了。
+///
+/// 缓存键含地址和模型，所以**换了配置自然不命中**，会退回"未确定"而不是给出旧答案。
+pub fn detected_protocol(extra: &serde_json::Value) -> Option<&'static str> {
+    cached_protocol(&cache_key_from_extra(extra))
 }
 
 fn cached_protocol(key: &str) -> Option<&'static str> {
@@ -223,7 +238,16 @@ fn labelled(provider: &str, mut result: TestResult) -> TestResult {
         } else {
             "/audio/transcriptions"
         };
-        result.message = format!("{} [{}]", result.message, name);
+        // 顺带说明热词 —— 这两条协议的答案相反（chat 能把词表追加到 instruction，
+        // transcriptions 的 prompt 被标点引导占用了），而用户看到「连接成功」时
+        // 最容易顺带以为热词也生效了。issue #67 的原话是「避免连接成功后仍让用户
+        // 误以为热词已生效」。能力判定在 capabilities.rs，这里只是把它说出来。
+        let hotwords = if provider == AS_CHAT {
+            "hotwords: sent as context"
+        } else {
+            "hotwords: not sent on this protocol"
+        };
+        result.message = format!("{} [{} · {}]", result.message, name, hotwords);
     }
     result
 }
