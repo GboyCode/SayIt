@@ -12,6 +12,7 @@ import type { AppPromptRule } from '@/services/personalization/types'
 import { useT } from '@/i18n/useT'
 import { appPromptRuleDisplayName, promptPresetDisplayName } from '@/i18n/displayNames'
 import { InfoTip } from '@/components/ui/info-tip'
+import { IS_MAC } from '@/lib/platform'
 
 /**
  * 「检测当前应用」的倒计时秒数。
@@ -29,7 +30,7 @@ const DETECT_COUNTDOWN_SEC = 5
  */
 function formatMatcher(rule: AppPromptRule, t: ReturnType<typeof useT>) {
   if (rule.matcher.processNames.length > 0) {
-    return t('appPrompt.matcherProcess', { value: rule.matcher.processNames.join(', ') })
+    return t(IS_MAC ? 'appPrompt.matcherProcessMac' : 'appPrompt.matcherProcess', { value: rule.matcher.processNames.join(', ') })
   }
   const parts: string[] = []
   if (rule.matcher.windowTitleIncludes?.length) {
@@ -85,7 +86,6 @@ export default function AppPromptRulesSection({
   const [deletingId, setDeletingId] = useState<string | null>(null)
   /** 上一轮的已存值，用来分辨"外部真改了内容"和"只是开关或顺序变了" */
   const savedSnapshot = useRef<Record<string, AppPromptRule>>({})
-  const expansionInitialized = useRef(false)
 
   const canSort = rules.length > 1
   const ruleSortable = useSortable({ onMove: (from, to) => void onMoveRule(from, to) })
@@ -107,14 +107,6 @@ export default function AppPromptRulesSection({
       return nextDrafts
     })
     savedSnapshot.current = Object.fromEntries(rules.map((rule) => [rule.id, rule]))
-
-    // 展开状态只在首次载入时按"已启用"推一次。以前每次 rules 变化都重算，
-    // 而现在开关即时落库、拖动也会改 rules —— 那样每动一下都会把用户手动
-    // 折叠/展开的状态弹回去。
-    if (!expansionInitialized.current && rules.length > 0) {
-      expansionInitialized.current = true
-      setExpandedRules(new Set(rules.filter((rule) => rule.enabled).map((rule) => rule.id)))
-    }
   }, [rules])
 
   const presetOptions = [
@@ -139,17 +131,13 @@ export default function AppPromptRulesSection({
   /**
    * 启用/停用即时落库（不需要再点"保存规则"）—— 开关是个状态类控件，
    * 按下去却要另外点保存才算数，用户会以为已经生效了。
-   * 顺手同步展开状态：刚启用的规则通常要接着看一眼它的配置。
+   *
+   * 展开状态只由用户点标题行决定：载入时一律折叠，启用/停用也不碰它。
+   * 以前「已启用就展开、刚启用就展开」，规则一多，页面一进来就是一长串展开的配置，
+   * 用户明确要求改掉（2026-10）。别加回去。
    */
   const handleToggle = (rule: AppPromptRule) => {
-    const enabled = !rule.enabled
-    setExpandedRules((current) => {
-      const next = new Set(current)
-      if (enabled) next.add(rule.id)
-      else next.delete(rule.id)
-      return next
-    })
-    void onToggleRule(rule.id, enabled)
+    void onToggleRule(rule.id, !rule.enabled)
   }
 
   const toggleExpanded = (ruleId: string) => {
@@ -177,12 +165,13 @@ export default function AppPromptRulesSection({
     setCountdown(0)
     try {
       const ctx = await bridge.getActiveAppContext()
-      const raw = String((ctx?.processName as string) || '').trim()
+      // mac 上可执行文件名不可靠（VS Code 叫 Electron），优先用 Bundle ID
+      const raw = String(((IS_MAC ? ctx?.bundleId || ctx?.processName : ctx?.processName) as string) || '').trim()
       if (!raw) {
         setDetectHint({ kind: 'missing' })
         return
       }
-      if (raw.toLowerCase() === 'sayit.exe') {
+      if (raw.toLowerCase() === 'sayit.exe' || raw.toLowerCase() === 'com.sayit.app') {
         setDetectHint({ kind: 'sayit' })
         return
       }
@@ -234,7 +223,7 @@ export default function AppPromptRulesSection({
               <InfoTip
                 content={(
                   <div className="space-y-2">
-                    <p>{t('appPrompt.desc')}</p>
+                    <p>{t(IS_MAC ? 'appPrompt.descMac' : 'appPrompt.desc')}</p>
                     <p>{t('appPrompt.orderHint')}</p>
                   </div>
                 )}
@@ -273,12 +262,12 @@ export default function AppPromptRulesSection({
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-foreground">{t('appPrompt.processName')}</label>
+                  <label className="text-xs font-medium text-foreground">{t(IS_MAC ? 'appPrompt.processNameMac' : 'appPrompt.processName')}</label>
                   <div className="flex gap-2">
                     <input
                       value={newRule.processName}
                       onChange={(event) => setNewRule({ ...newRule, processName: event.target.value })}
-                      placeholder={t('appPrompt.processPlaceholder')}
+                      placeholder={t(IS_MAC ? 'appPrompt.processPlaceholderMac' : 'appPrompt.processPlaceholder')}
                       className="w-0 flex-1 rounded-md border border-input-border bg-input-bg px-3 py-1.5 text-sm"
                     />
                     <Button
@@ -305,8 +294,10 @@ export default function AppPromptRulesSection({
                     : detectHint
                       ? t(detectHint.kind === 'sayit'
                         ? 'appPrompt.detectSayIt'
-                        : detectHint.kind === 'missing' ? 'appPrompt.detectMissing' : 'appPrompt.detectFailed')
-                      : t('appPrompt.detectHint', { seconds: DETECT_COUNTDOWN_SEC })}
+                        : detectHint.kind === 'missing'
+                          ? (IS_MAC ? 'appPrompt.detectMissingMac' : 'appPrompt.detectMissing')
+                          : (IS_MAC ? 'appPrompt.detectFailedMac' : 'appPrompt.detectFailed'))
+                      : t(IS_MAC ? 'appPrompt.detectHintMac' : 'appPrompt.detectHint', { seconds: DETECT_COUNTDOWN_SEC })}
               </p>
 
               <div className="space-y-1.5">
@@ -399,7 +390,7 @@ export default function AppPromptRulesSection({
                     <div className="space-y-3">
                       {!rule.builtin && (
                         <div className="space-y-1.5">
-                          <label className="text-xs font-medium text-foreground">{t('appPrompt.processName')}</label>
+                          <label className="text-xs font-medium text-foreground">{t(IS_MAC ? 'appPrompt.processNameMac' : 'appPrompt.processName')}</label>
                           <input
                             value={(draft.matcher.processNames || []).join(', ')}
                             onChange={(event) => updateDraft(rule.id, {
@@ -408,7 +399,7 @@ export default function AppPromptRulesSection({
                                 processNames: event.target.value.split(/[,\uFF0C\s]+/).map((s) => s.trim()).filter(Boolean),
                               },
                             })}
-                            placeholder={t('appPrompt.processPlaceholder')}
+                            placeholder={t(IS_MAC ? 'appPrompt.processPlaceholderMac' : 'appPrompt.processPlaceholder')}
                             className="w-full rounded-md border border-input-border bg-input-bg px-3 py-1.5 text-sm"
                           />
                         </div>

@@ -4,6 +4,12 @@ import { addRuntimeEvent } from '../debugLog'
 import { getSetting } from '../store'
 import { clampSec } from '../timeModel'
 import {
+  DEFAULT_CUSTOM_WAVE,
+  normalizeCustomWave,
+  normalizeWaveTheme,
+  type CustomWaveColors,
+} from '@/lib/overlayWaveColors'
+import {
   formatRecordingLimit,
   OVERLAY_WIDTH_PRESETS,
   type OverlayCommonPayload,
@@ -29,6 +35,9 @@ type OverlayVisualState =
  * 自动消失，所以正常生命周期只能靠这里续。
  */
 const CARD_KEEPALIVE_INTERVAL_MS = 8000
+
+/** listening 补位定时器的间隔与阈值。取值原因见 startListeningTicker。 */
+const LISTENING_TICKER_IDLE_MS = 250
 
 /**
  * 失败卡的可见时长。
@@ -61,13 +70,6 @@ interface MicSourceHint {
 
 const MIC_SOURCE_HINT_DURATION_MS = 3000
 
-function normalizeTheme(value: unknown): OverlayWaveTheme {
-  if (value === 'black-white' || value === 'black-blue' || value === 'black-rainbow') {
-    return value
-  }
-  return 'black-blue'
-}
-
 function normalizeWidthPreset(value: unknown): OverlayWidthPreset {
   if (value === 'short' || value === 'medium' || value === 'long') return value
   return 'long'
@@ -75,6 +77,7 @@ function normalizeWidthPreset(value: unknown): OverlayWidthPreset {
 
 export class OverlayService {
   private theme: OverlayWaveTheme = 'black-rainbow'
+  private customWave: CustomWaveColors = DEFAULT_CUSTOM_WAVE
   private showDuration = true
   private readySoundEnabled = true
   private widthPreset: OverlayWidthPreset = 'medium'
@@ -121,7 +124,8 @@ export class OverlayService {
   constructor(private readonly getElapsedSec: () => number) { }
 
   async refreshSettings() {
-    this.theme = normalizeTheme(await getSetting('overlayWaveTheme', 'black-rainbow'))
+    this.theme = normalizeWaveTheme(await getSetting('overlayWaveTheme', 'black-rainbow'), 'black-blue')
+    this.customWave = normalizeCustomWave(await getSetting('overlayWaveCustom', DEFAULT_CUSTOM_WAVE))
     this.showDuration = Boolean(await getSetting('overlayShowDuration', true))
     this.readySoundEnabled = Boolean(await getSetting('readySoundEnabled', true))
     this.widthPreset = normalizeWidthPreset(await getSetting('overlayWidth', 'medium'))
@@ -178,6 +182,7 @@ export class OverlayService {
     const cfg = OVERLAY_WIDTH_PRESETS[this.widthPreset]
     return {
       theme: this.theme,
+      customWave: this.customWave,
       showDuration: this.showDuration,
       baseWidth: cfg.windowWidth,
       barCount: cfg.barCount,
@@ -312,14 +317,19 @@ export class OverlayService {
     // 人为保留 waiting。PCM 随后仍通过 pushListeningBars 驱动真实波形。
     this.pushListeningBars(undefined, true)
     // 有 PCM 时波形那一路（pushListeningBars）已经按 33ms 带着计时和流式文本在发了，
-    // 这里只在 33ms 内没人发过时补位（采集卡住、还没收到第一帧）。原来两路各自 33ms，
+    // 这里只在很久没人发过时补位（采集卡住、还没收到第一帧）。原来两路各自 33ms，
     // 合起来每秒约 60 次 IPC 和 60 次悬浮窗重渲染，画面却只需要 30 帧。
+    //
+    // 补位阈值必须明显大于波形那一路的 33ms 节流：两者共用 lastFrameAt，阈值若也是 33ms，
+    // 这个 33ms 的定时器每轮都刚好过线、先把名额拿走，而它发的帧不带 bars，
+    // 波形帧全被节流丢掉（0.2.3 悬浮窗波形掉帧，issue #90）。
+    // 补位只为推进秒表（一秒才变一次），250ms 足够；间隔同步放大，免得每秒空转 30 次。
     this.tickerId = setInterval(() => {
       const now = Date.now()
-      if (now - this.lastFrameAt < 33) return
+      if (now - this.lastFrameAt < LISTENING_TICKER_IDLE_MS) return
       this.lastFrameAt = now
       void bridge.updateOverlay(this.listeningPayload())
-    }, 33)
+    }, LISTENING_TICKER_IDLE_MS)
   }
 
   /** 设置本次录音是否开启流式实时显示（录音开始时调用）。开启后气泡从一开始就显示占位。 */
