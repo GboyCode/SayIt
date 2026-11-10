@@ -363,12 +363,17 @@ export class OverlayService {
     void bridge.updateOverlay(this.listeningPayload({ bars }))
   }
 
-  showThinking(elapsedSec: number, token = 0) {
+  /**
+   * @param options.ai 这次处理会走 AI 整理（按本次的 aiPolicy.allowCall，不按开关：
+   *   开关开着但录音短于门槛时并不整理，那时显示「AI 整理中」就是假的）。
+   */
+  showThinking(elapsedSec: number, token = 0, options: { ai?: boolean } = {}) {
     this.currentState = 'thinking'
     // PTT Lab 也复用 thinking 动画，但没有真实录音代次；token=0 时只显示，绝不吞全局 Esc。
     this.enterTransientState(token > 0 ? 'cancel_processing' : 'off', token)
     void bridge.updateOverlay({
       state: 'thinking',
+      ...(options.ai && { thinkingAi: true }),
       elapsedSec: clampSec(elapsedSec),
       ...this.getMicSourceHintPayload(),
       ...this.getCommonPayload(),
@@ -405,11 +410,13 @@ export class OverlayService {
     }))
   }
 
-  /** Show "no signal detected" warning（持续无输入意味着设备不可用，使用红色高警） */
-  showNoSignalWarning() {
+  /** Show "no signal detected" warning（持续无输入意味着设备不可用，使用红色高警）。
+   *  打开的是虚拟声卡时直接说出来：「未检测到声音」会把人引去查麦克风线和静音键，
+   *  而真正要做的是换设备。 */
+  showNoSignalWarning(options: { virtualMic?: boolean } = {}) {
     if (this.activeWarning) return
     void bridge.updateOverlay(this.listeningPayload({
-      warning: t('overlay.warnNoSignal'),
+      warning: t(options.virtualMic ? 'overlay.warnNoSignalVirtual' : 'overlay.warnNoSignal'),
       warningTone: 'error',
     }))
   }

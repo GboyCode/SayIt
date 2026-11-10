@@ -1,5 +1,6 @@
 import * as bridge from '../bridge'
-import { startCapture, stopCapture } from '../audio'
+import { matchRealEndpoint, startCapture, stopCapture, type ActiveMicrophoneInfo } from '../audio'
+import { isVirtualLabel, rememberWorkingMic, resolveMicPlan, type CaptureEndpoint, type MicPlan } from '../micRouting'
 import { getProvider, MID_SESSION_DISCONNECT_ERROR, type TranscriptionProvider, type TranscriptionCallbacks, type FinalResult } from '../transcription'
 import { resolveAiPolicy, serverShouldPolish, type AiConfigSnapshot } from '../transcription/aiPolicy'
 import { getRuntimeServerAiSource } from '../transcription/serverAiSource'
@@ -18,6 +19,7 @@ import { setActivePresetKnown } from '../../stores/activePreset'
 import { addRuntimeEvent } from '../debugLog'
 import {
   BUILTIN_SET_ACTIVE_KEY,
+  BUILTIN_SET_EXTRA_WORDS_KEY,
   BUILTIN_SET_WORDS_KEY,
   CUSTOM_THEME_ACTIVE_KEY,
   CUSTOM_THEMES_KEY,
@@ -64,10 +66,11 @@ import {
 } from './helpers'
 import { t } from '@/i18n'
 import { describeProviderError } from '@/lib/errorMessages'
-import { describeMicSource, micSourceChanged } from './micSourceReminder'
+import { cleanActiveMicLabel, describeMicSource, micSourceChanged } from './micSourceReminder'
 import {
   CONTEXT_SELECTION_EDIT_PROMPT,
   CONTEXT_SELECTION_EDIT_PROMPT_SETTING_KEY,
+  describeTextContextForLog,
   normalizeContextSelectionEditPrompt,
   resolveContextAwareOutput,
   usableTextContext,
@@ -202,6 +205,8 @@ export class RecorderOrchestrator {
   private settings: RecordingSettings = defaultRecordingSettings()
   /** Last successfully opened input route in this app process. Kept in memory on purpose. */
   private lastMicSourceIdentity: string | null = null
+  /** 本次录音实际打开的麦克风：真实名字 + 是否虚拟设备（null = 判断不了）。每次开录重置。 */
+  private activeMic: { label: string; isVirtual: boolean | null } | null = null
   /** 标记本次录音是否已施加系统静音，用于配对恢复。 */
   private systemMuteApplied = false
   /** 延迟静音定时器（等提示音播完再静音）。 */
@@ -223,6 +228,12 @@ export class RecorderOrchestrator {
     getActiveRunId: () => this.activeRunId,
     getSelectedMicId: () => this.settings.micId,
     cancelForMutedMic: (runId) => { void this.cancelRecording(runId, { showCanceled: false, reason: 'mic_muted_timeout' }) },
+    isActiveMicVirtual: () => this.activeMic?.isVirtual === true,
+    // 只记真实麦克风：系统默认被换成虚拟声卡时，靠这条记录挑回用户平时用的那个。
+    onVoiceDetected: () => {
+      const mic = this.activeMic
+      if (mic && mic.isVirtual === false && mic.label) void rememberWorkingMic(mic.label)
+    },
   })
   /** 拿目标窗口、判断能不能写、粘贴、给结果分类。状态怎么变仍由编排器决定。 */
   private readonly insertion = new InsertionController(new PasteService())
@@ -232,6 +243,15 @@ export class RecorderOrchestrator {
 
   setStateListener(cb: (s: RecorderState) => void) {
     this.onStateChange = cb
+  }
+
+  /** 把 getUserMedia 实际打开的设备落到真实名字上，并对照原生端点清单判断它是不是虚拟设备。 */
+  private describeActiveMic(
+    active: ActiveMicrophoneInfo,
+    endpoints: CaptureEndpoint[],
+  ): { label: string; isVirtual: boolean | null } {
+    const label = matchRealEndpoint(active, active.devices ?? [])?.label || cleanActiveMicLabel(active.label ?? '')
+    return { label, isVirtual: endpoints.length > 0 ? isVirtualLabel(label, endpoints) : null }
   }
 
   getState() {
@@ -728,8 +748,9 @@ export class RecorderOrchestrator {
         getSetting(BUILTIN_SET_ACTIVE_KEY, {}),
         getSetting(CUSTOM_THEMES_KEY, []),
         getSetting(CUSTOM_THEME_ACTIVE_KEY, {}),
-      ]).then(([rawSetWords, rawSetActive, rawCustomThemes, rawCustomThemeActive]) => {
-        const setWords = normalizeBuiltinSetWords(rawSetWords as Record<string, unknown>)
+        getSetting(BUILTIN_SET_EXTRA_WORDS_KEY, {}),
+      ]).then(([rawSetWords, rawSetActive, rawCustomThemes, rawCustomThemeActive, rawSetExtraWords]) => {
+        const setWords = normalizeBuiltinSetWords(rawSetWords, rawSetExtraWords)
         const setActive = normalizeBuiltinSetActive(rawSetActive as Record<string, unknown>)
         const themes = normalizeCustomThemes(rawCustomThemes)
         const themeActive = normalizeCustomThemeActive(rawCustomThemeActive as Record<string, unknown>, themes)
@@ -1466,6 +1487,7 @@ export class RecorderOrchestrator {
       preserveExistingOnFailure: true,
     })
     let activeAppContext: ActiveAppContext | null = null
+    let recordingContextFailed = false
     try {
       // AI is the only consumer of editor text. If cleanup is off, do not read the text even when
       // the preference remains enabled, so the privacy boundary matches actual behavior.
@@ -1484,8 +1506,18 @@ export class RecorderOrchestrator {
     } catch {
       activeAppContext = null
       this.run.cachedProbeResult = null
+      recordingContextFailed = true
     }
     const textContext = usableTextContext(activeAppContext?.textContext)
+    // 必须在下面 delete 之前算：选区太长的判据就在原始的 textContext 上
+    const textContextLog = describeTextContextForLog({
+      featureOn: this.settings.contextAwareWriting,
+      aiOn: this.settings.aiEnabled,
+      captureFailed: recordingContextFailed,
+      diag: activeAppContext?.textContextDiag,
+      raw: activeAppContext?.textContext,
+      usable: textContext,
+    })
     if (activeAppContext) {
       if (textContext) activeAppContext.textContext = textContext
       else delete activeAppContext.textContext
@@ -1511,13 +1543,9 @@ export class RecorderOrchestrator {
         ),
         summary: `${this.run.currentPromptResolution.summary} | Text context: ${textContext.selectedText ? 'selection' : 'caret'}`,
       }
-      addRuntimeEvent('info', 'recorder', 'Text context captured', {
-        source: textContext.source,
-        beforeLen: textContext.textBefore.length,
-        selectedLen: textContext.selectedText.length,
-        afterLen: textContext.textAfter.length,
-      })
     }
+    // 原来这里另发一条 'Text context captured'，但它不在落盘白名单里，sayit.log 里从来看不到；
+    // 而且只在读到时才有。现在读没读到都并进下面那条一定落盘的 'Recording started'。
 
     addRuntimeEvent('info', 'recorder', 'Recording started', {
       micId: this.settings.micId || 'default',
@@ -1532,6 +1560,8 @@ export class RecorderOrchestrator {
         promptRuleId: this.run.currentPromptResolution.matchedRule?.id,
         summary: this.run.currentPromptResolution.summary,
       },
+      // 只有原因码和字数，见 describeTextContextForLog。查「上下文感知没生效」grep 这个字段。
+      ...(textContextLog && { textContext: textContextLog }),
     })
     addRuntimeEvent('info', 'personalization', 'Prompt routing resolved', {
       appContext: this.summarizeAppContext(activeAppContext || null),
@@ -1627,39 +1657,63 @@ export class RecorderOrchestrator {
 
     try {
 
-      // 并行执行 WebSocket 连接和麦克风采集，减少等待时间
-      const [, captureResult, selectionAiConfig] = await Promise.all([
-        this.provider.connect(this.buildProviderCallbacks()),
-        startCapture(
-          this.settings.micId || undefined,
-          (buffer) => {
-            if (!this.isRunCurrent(runId)) return
-            if (this.run.audioSentSamples === 0) {
-              console.log('[ptt-diag] first onData buffer', {
-                byteLength: buffer.byteLength,
-                samples: buffer.byteLength / 2,
-              })
-            }
-            this.run.recordedChunks.push(buffer.slice(0))
-            this.provider.sendAudio(buffer)
-          },
-          undefined,
-          (pcmFrame) => {
-            if (!this.isRunCurrent(runId)) return
-            this.run.audioSentSamples += pcmFrame.length
-            const bars = computeBarsFromPCM(pcmFrame, this.overlayWaveState, {
-              barCount: this.overlayService.getBarCount(),
-              minHeight: 3,
-              maxHeight: 18,
+      const openCapture = (deviceId: string) => startCapture(
+        deviceId || undefined,
+        (buffer) => {
+          if (!this.isRunCurrent(runId)) return
+          if (this.run.audioSentSamples === 0) {
+            console.log('[ptt-diag] first onData buffer', {
+              byteLength: buffer.byteLength,
+              samples: buffer.byteLength / 2,
             })
-            this.overlayService.pushListeningBars(bars)
+          }
+          this.run.recordedChunks.push(buffer.slice(0))
+          this.provider.sendAudio(buffer)
+        },
+        undefined,
+        (pcmFrame) => {
+          if (!this.isRunCurrent(runId)) return
+          this.run.audioSentSamples += pcmFrame.length
+          const bars = computeBarsFromPCM(pcmFrame, this.overlayWaveState, {
+            barCount: this.overlayService.getBarCount(),
+            minHeight: 3,
+            maxHeight: 18,
+          })
+          this.overlayService.pushListeningBars(bars)
 
-            this.micLevel.onFrame(pcmFrame)
-          },
-          this.settings.noiseSuppression,
-        ),
+          this.micLevel.onFrame(pcmFrame)
+        },
+        this.settings.noiseSuppression,
+      )
+
+      // 先决定打开哪个麦克风（系统默认被换成虚拟声卡时改用真实麦克风，见 micRouting.ts），
+      // 再开流。整段和 WebSocket 连接并行，不拖慢启动。
+      this.activeMic = null
+      const captureTask = (async () => {
+        const { plan, endpoints } = await resolveMicPlan(this.settings.micId)
+        let finalPlan: MicPlan = plan
+        let result = await openCapture(plan.deviceId)
+        // 开流前网页侧的设备名是空的（没有持久麦克风权限时会这样），对不上号。
+        // 现在流开着，名字拿得到了，再判一次；要换就重开一次流，此时还没发 start，丢不了音频。
+        if (plan.reason === 'unmapped' && this.isRunCurrent(runId)) {
+          const retry = await resolveMicPlan('', { endpoints, webDevices: result.devices })
+          finalPlan = retry.plan
+          if (retry.plan.reason === 'virtual_avoided') {
+            // 虚拟声卡那一小段（约百毫秒的全 0）不必清掉：服务端和本地存档拿到的是同一份
+            result = await openCapture(retry.plan.deviceId)
+          }
+        }
+        return { result, plan: finalPlan, endpoints }
+      })()
+
+      // 并行执行 WebSocket 连接和麦克风采集，减少等待时间
+      const [, captureTaskResult, selectionAiConfig] = await Promise.all([
+        this.provider.connect(this.buildProviderCallbacks()),
+        captureTask,
         selectionAiConfigPromise,
       ])
+      const { result: captureResult, plan: micPlan, endpoints: micEndpoints } = captureTaskResult
+      if (this.isRunCurrent(runId)) this.activeMic = this.describeActiveMic(captureResult, micEndpoints)
       resolveCaptureReady!()
       if (!this.isRunCurrent(runId)) {
         await stopCapture().catch(() => { })
@@ -1700,15 +1754,33 @@ export class RecorderOrchestrator {
       // 实时读取供应商/WorkspaceId（避免切换供应商后缓存过期，导致非实时模型也弹气泡）。
       void this.applyStreamingActive()
       this.overlayService.startListeningTicker(runId)
+      if (micPlan.reason !== 'default' && micPlan.reason !== 'explicit') {
+        addRuntimeEvent(micPlan.reason === 'virtual_avoided' ? 'info' : 'warn', 'recorder',
+          micPlan.reason === 'virtual_avoided'
+            ? 'System default microphone is a virtual device; using a real microphone instead'
+            : 'System default microphone is a virtual device; no real microphone to switch to', {
+          reason: micPlan.reason,
+          avoided: micPlan.avoidedName,
+          chosen: micPlan.chosenName,
+          endpointCount: micEndpoints.length,
+        })
+      }
       const micSource = describeMicSource(
         captureResult,
         this.settings.micId,
         t('mic.title'),
         captureResult.devices,
       )
-      if (micSourceChanged(this.lastMicSourceIdentity, micSource.identity)) {
-        this.lastMicSourceIdentity = micSource.identity
-        this.overlayService.showMicSourceHint({ mode: micSource.mode, label: micSource.label })
+      const avoidedVirtual = micPlan.reason === 'virtual_avoided'
+      // 跳过了虚拟声卡要说出来，否则用户会奇怪"系统默认明明是 A，怎么录的是 B"。
+      // identity 带上这个标记，同一个麦克风「直接用」和「跳过虚拟声卡后用」各提示一次。
+      const micSourceIdentity = avoidedVirtual ? `${micSource.identity}:avoided-virtual` : micSource.identity
+      const micSourceLabel = avoidedVirtual
+        ? t('mic.avoidedVirtualHint', { device: micSource.label })
+        : micSource.label
+      if (micSourceChanged(this.lastMicSourceIdentity, micSourceIdentity)) {
+        this.lastMicSourceIdentity = micSourceIdentity
+        this.overlayService.showMicSourceHint({ mode: micSource.mode, label: micSourceLabel })
         // rawLabel 与 endpointCount 是判断"这行字为什么显示成这样"的唯一依据：
         // 显示名是由系统给的原始名 + 同一时刻有几个端点共同决定的，缺了这两个
         // 就只能靠猜（audio.ts 里的 trackLabel 只有原始名，没有快照规模）。
@@ -1910,7 +1982,7 @@ export class RecorderOrchestrator {
       // peakAmplitude=0 且 silenceRatio=1 → 麦克风送来的是纯静音，与 ASR/网络无关。
       audioStats,
     })
-    this.overlayService.showThinking(audioDur, runId)
+    this.overlayService.showThinking(audioDur, runId, { ai: aiPolicy.allowCall })
     let insertionExtensions = 0
     const onProcessingTimeout = () => {
       if (this.state !== 'processing' || !this.isRunCurrent(runId)) return

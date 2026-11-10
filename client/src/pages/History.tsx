@@ -18,6 +18,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { Download, Search, Check, FolderOpen } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tooltip } from '@/components/ui/tooltip'
+import { useSlidingIndicator } from '@/components/ui/useSlidingIndicator'
 import HistoryRecordList from '@/components/history/HistoryRecordList'
 import { exportHistory } from '@/services/exports'
 import {
@@ -36,6 +37,7 @@ import { buildHotwordInjectionPart } from '@/services/personalization/promptRout
 import {
   BUILTIN_SET_WORDS_KEY,
   BUILTIN_SET_ACTIVE_KEY,
+  BUILTIN_SET_EXTRA_WORDS_KEY,
   CUSTOM_THEMES_KEY,
   CUSTOM_THEME_ACTIVE_KEY,
   composeHotwords,
@@ -424,6 +426,8 @@ export default function History() {
   const [keyword, setKeyword] = useState('')
   const [debouncedKeyword, setDebouncedKeyword] = useState('')
   const [favoriteOnly, setFavoriteOnly] = useState(false)
+  const filterGroupRef = useRef<HTMLDivElement>(null)
+  const filterIndicatorRef = useSlidingIndicator(filterGroupRef, favoriteOnly, { activeSelector: '[aria-pressed="true"]' })
   const [visibleCount, setVisibleCount] = useState(HISTORY_PAGE_SIZE)
   const [totalCount, setTotalCount] = useState(0)
   const [exportResult, setExportResult] = useState<{ filePath: string | null; canceled: boolean } | null>(null)
@@ -539,13 +543,14 @@ export default function History() {
     // 加载热词
     let hotwords: string[] = []
     try {
-      const [rawSetWords, rawSetActive, rawCustomThemes, rawCustomThemeActive] = await Promise.all([
+      const [rawSetWords, rawSetActive, rawCustomThemes, rawCustomThemeActive, rawSetExtraWords] = await Promise.all([
         getSetting(BUILTIN_SET_WORDS_KEY, {}),
         getSetting(BUILTIN_SET_ACTIVE_KEY, {}),
         getSetting(CUSTOM_THEMES_KEY, []),
         getSetting(CUSTOM_THEME_ACTIVE_KEY, {}),
+        getSetting(BUILTIN_SET_EXTRA_WORDS_KEY, {}),
       ])
-      const setWords = normalizeBuiltinSetWords(rawSetWords as Record<string, unknown>)
+      const setWords = normalizeBuiltinSetWords(rawSetWords, rawSetExtraWords)
       const setActive = normalizeBuiltinSetActive(rawSetActive as Record<string, unknown>)
       const themes = normalizeCustomThemes(rawCustomThemes)
       const themeActive = normalizeCustomThemeActive(rawCustomThemeActive as Record<string, unknown>, themes)
@@ -608,21 +613,25 @@ export default function History() {
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-4">
           <h1 className="text-2xl font-bold">{t('history.title')}</h1>
-          <div className="flex gap-1 rounded-lg border border-border p-0.5">
+          {/* 选中底色是滑块（useSlidingIndicator），按钮自己不画；aria-pressed 同时给读屏和滑块定位用。 */}
+          <div ref={filterGroupRef} className="relative flex gap-1 rounded-lg border border-border p-0.5">
+            <span ref={filterIndicatorRef} aria-hidden className="sliding-indicator rounded-md bg-accent" />
             <button
               type="button"
+              aria-pressed={!favoriteOnly}
               onClick={() => setFavoriteOnly(false)}
               className={cn(
-                'rounded-md px-3 py-1 text-xs transition-colors',
-                !favoriteOnly ? 'bg-accent font-medium text-foreground' : 'text-muted-foreground hover:text-foreground',
+                'relative rounded-md px-3 py-1 text-xs transition-colors',
+                !favoriteOnly ? 'font-medium text-foreground' : 'text-muted-foreground hover:text-foreground',
               )}
             >{t('history.filterAll')}</button>
             <button
               type="button"
+              aria-pressed={favoriteOnly}
               onClick={() => setFavoriteOnly(true)}
               className={cn(
-                'rounded-md px-3 py-1 text-xs transition-colors',
-                favoriteOnly ? 'bg-accent font-medium text-foreground' : 'text-muted-foreground hover:text-foreground',
+                'relative rounded-md px-3 py-1 text-xs transition-colors',
+                favoriteOnly ? 'font-medium text-foreground' : 'text-muted-foreground hover:text-foreground',
               )}
             >{t('history.filterFavorites')}</button>
           </div>
