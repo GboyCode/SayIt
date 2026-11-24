@@ -5,7 +5,13 @@
 //   · 其余 → 录完再发一次 HTTP（cloud_transcribe）。
 // 流式建连失败会自动回落到后者 —— 音频始终在 pcmBuffers 里留着完整一份。
 
-import { buildAsrExtra, isQwenOmniProvider, isStreamingDisplayReady, resolveQwenOmniModel } from '@/lib/asrModels'
+import {
+  buildAsrExtra,
+  isIntegratedAsrProvider,
+  isQwenOmniProvider,
+  isStreamingDisplayReady,
+  resolveQwenOmniModel,
+} from '@/lib/asrModels'
 import { uint8ArrayToBase64 } from '@/lib/encoding'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
@@ -72,6 +78,7 @@ interface StreamCommandSet {
  *   · qwen_audio_stream       → DashScope duplex run-task（/api-ws/v1/inference）
  *   · openai_live_transcribe  → OpenAI Realtime 转写会话（/v1/realtime?intent=transcription）
  *   · gemini_live_transcribe  → Gemini Live API（BidiGenerateContent）
+ *   · xai_stt                 → xAI 流式 STT（wss://api.x.ai/v1/stt，二进制 PCM 帧）
  *
  * 这里只记住本次会话用的是哪一组，收尾时才不会去 finish 一条没开的会话。
  *
@@ -115,6 +122,13 @@ const STREAM_COMMANDS: Record<string, StreamCommandSet> = {
     send: 'gemini_live_send',
     finish: 'gemini_live_finish',
     close: 'gemini_live_close',
+    needsModel: true,
+  },
+  xai_stt: {
+    open: 'xai_live_open',
+    send: 'xai_live_send',
+    finish: 'xai_live_finish',
+    close: 'xai_live_close',
     needsModel: true,
   },
 }
@@ -499,7 +513,10 @@ export class CloudAPIProvider implements TranscriptionProvider {
       // 读取 ASR 配置
       const asrProvider = await getSetting('cloudAsr.provider', 'doubao') as string
       if (!this.isRunCurrent(runId)) return
+      // 两个判据各管各的：isQwenOmni 只负责换算成 realtime 那条实现（qwen_omni），
+      // 「按不按 Omni 处理」看 integratedAsr —— HTTP 的 qwen3.8-omni-flash 不以 qwen_omni 开头
       const isQwenOmni = isQwenOmniProvider(asrProvider)
+      const integratedAsr = isIntegratedAsrProvider(asrProvider)
 
       let asrText = ''
       let asrMs = 0
@@ -555,7 +572,7 @@ export class CloudAPIProvider implements TranscriptionProvider {
         if (!this.isRunCurrent(runId)) return
 
         let omniInstructions: string | undefined
-        if (isQwenOmni) {
+        if (integratedAsr) {
           const savedPrompt = await getSetting('cloudAsr.omniSystemPrompt', '') as string
           if (!this.isRunCurrent(runId)) return
           omniInstructions = savedPrompt || undefined
@@ -583,6 +600,8 @@ export class CloudAPIProvider implements TranscriptionProvider {
           provider: asrProvider,
           model: extra?.model ?? '(provider default)',
           durationSec,
+          // 只记长度。0 = 没填 System Prompt，Rust 侧会用默认的转写指令
+          ...(integratedAsr && { omniPromptChars: omniInstructions?.length ?? 0 }),
         })
         const asrResult = await cloudTranscribeRaw<AsrResult>(merged, {
           sample_rate: 16000,
@@ -609,9 +628,9 @@ export class CloudAPIProvider implements TranscriptionProvider {
       // 发送 ASR 中间结果
       this.callbacks.onASR?.({ text: asrText, asrMs, durationSec })
 
-      // 与其它模式共用同一份判据。isQwenOmni 走 integrated_asr 路由：它表达的是
+      // 与其它模式共用同一份判据。Omni 一类走 integrated_asr 路由：它表达的是
       // "识别引擎自带整理，没有另外调独立 AI"，而不是"用户的预设已经执行过"。
-      const policy = policyFromSnapshot(startOpts.aiConfig, 'cloud_api', durationSec, isQwenOmni)
+      const policy = policyFromSnapshot(startOpts.aiConfig, 'cloud_api', durationSec, integratedAsr)
       const outcomeContext: AiOutcomeContext = {
         operationId: startOpts.operationId || `cloud-${runId}`,
         trigger: startOpts.source === 'history_reprocess' ? 'history_reprocess' : 'live',
@@ -632,7 +651,7 @@ export class CloudAPIProvider implements TranscriptionProvider {
         return
       }
 
-      // AI 校对（Qwen Omni 已内置 AI，由 policy 判成不允许调用，这里走同一条返回）
+      // AI 校对（Omni 一类已内置整理，由 policy 判成不允许调用，这里走同一条返回）
       const polish = policy.route === 'integrated_asr'
         ? (() => {
           const outcome = resolveAndLogAiOutcome(outcomeContext, policy)

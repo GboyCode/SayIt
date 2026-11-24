@@ -41,7 +41,8 @@ export const AI_PROVIDERS: AiProvider[] = [
     value: 'deepseek',
     label: 'DeepSeek',
     defaultUrl: 'https://api.deepseek.com',
-    defaultModels: ['deepseek-v4-flash'],
+    // 2026-09 起官方名字是 deepseek-flash（V4.1 Flash），旧名见 DEEPSEEK_RETIRED_MODELS
+    defaultModels: ['deepseek-flash'],
     consoleUrl: 'https://platform.deepseek.com/api_keys',
   },
   {
@@ -207,6 +208,47 @@ export function blankProfile(providerValue = preferredAiProviderValue()): AiProf
     apiKey: '',
     model: meta.defaultModels[0] ?? '',
   }
+}
+
+/**
+ * 编辑框里换供应商时，密钥该变成什么。
+ *
+ * **密钥跟着地址走。** 原来的规则是「密钥框不空就绝不动」，为的是不覆盖用户自己粘的密钥。
+ * 但「新建」会自动带上当前启用那家的地址和密钥：当前用的是智谱，新建出来就装着智谱的密钥，
+ * 改选 DeepSeek 后地址和模型都换了，密钥却留着智谱那把 —— 测试只会报「密钥被拒绝」，
+ * 用户还会把它当成 DeepSeek 的密钥复制到别处（2026-11 实测，0.1.8 起就这样）。
+ *
+ * 所以：
+ *  - 密钥框空着 → 带上新供应商配过的那把（原来的行为）；
+ *  - 地址换到了另一台服务器上，且密钥是上一家配置里存着的那把 → 换成新供应商配过的那把，
+ *    新供应商没配过就清空。上一家的密钥在新服务器上不可能有效，清空至少会提示「缺密钥」；
+ *  - 其余一律不动：密钥是用户自己粘的（哪份配置里都没有），或者地址没换
+ *    （比如「OpenAI 兼容」填的就是 api.deepseek.com，换成 DeepSeek 卡后还是同一把能用的密钥）。
+ *
+ * `toUrl` 要传换完供应商之后的地址，`toSavedKey` 是新供应商最近一份配置的密钥（没有就是空串）。
+ */
+export function keyAfterProviderSwitch(input: {
+  key: string
+  fromProvider: string
+  fromUrl: string
+  toUrl: string
+  toSavedKey: string
+  profiles: AiProfile[]
+}): string {
+  const key = input.key.trim()
+  if (!key) return input.toSavedKey
+  const hostOf = (url: string): string => {
+    try {
+      return new URL(url.trim()).host.toLowerCase()
+    } catch {
+      return url.trim().toLowerCase()
+    }
+  }
+  if (hostOf(input.fromUrl) === hostOf(input.toUrl)) return input.key
+  const savedUnderPrevious = input.profiles.some(
+    (p) => p.provider === input.fromProvider && p.apiKey.trim() === key,
+  )
+  return savedUnderPrevious ? input.toSavedKey : input.key
 }
 
 /**
@@ -514,4 +556,94 @@ export function migrateLegacyProfiles(
     ?? profiles[0]
 
   return { profiles, activeId: matched?.id ?? '' }
+}
+
+// ── 已下线的模型名 ────────────────────────────────────────────────────────
+
+/**
+ * DeepSeek 已下线的模型名 → 接替它的那个。
+ *
+ * 2026-09-10 起 DeepSeek 只列 `deepseek-flash`（V4.1 Flash）和 `deepseek-v4-pro` 两个名字，
+ * 旧名「暂时路由」到 deepseek-flash；`deepseek-chat` / `deepseek-reasoner` 更早，
+ * 2026-04-24 就公告 7 月 24 日停用。2026-11 实测这几个旧名都还能调，响应里的 model
+ * 字段都是 deepseek-flash；但哪天真停了，按旧默认配过 DeepSeek 的用户 AI 整理会直接报错。
+ *
+ * `deepseek-reasoner` 也换成 deepseek-flash，行为不变：我们对 DeepSeek 一律发
+ * `thinking.type=disabled`，实测 reasoner 收到它同样不思考。
+ */
+const DEEPSEEK_RETIRED_MODELS: Record<string, string> = {
+  'deepseek-v4-flash': 'deepseek-flash',
+  'deepseek-v4-flash-vision-exp': 'deepseek-flash',
+  'deepseek-chat': 'deepseek-flash',
+  'deepseek-reasoner': 'deepseek-flash',
+}
+
+/**
+ * 这条服务的模型名该换成什么（不用换就原样返回）。
+ *
+ * 只认 **DeepSeek 官方地址**，DeepSeek 卡和「OpenAI 兼容」卡都算。中转站、聚合网关上的
+ * 模型名是对方定的，它们未必认 deepseek-flash，照改只会把一份能用的配置改坏。
+ * DeepSeek 卡地址空着时按官方地址算（保存时会补上默认值）。
+ */
+export function upgradeRetiredAiModel(provider: string, apiUrl: string, model: string): string {
+  if (provider !== 'deepseek' && provider !== 'openai_compat') return model
+  const url = apiUrl.trim() || (provider === 'deepseek' ? findProvider('deepseek').defaultUrl : '')
+  let hostname = ''
+  try {
+    hostname = new URL(url).hostname.toLowerCase()
+  } catch {
+    return model
+  }
+  if (hostname !== 'api.deepseek.com') return model
+  return DEEPSEEK_RETIRED_MODELS[model.trim().toLowerCase()] ?? model
+}
+
+/**
+ * 把一组服务里已下线的模型名换掉。
+ *
+ * 换名会造出重复项：老版本的候选列表常常同时有 deepseek-chat 和 deepseek-v4-flash，
+ * 换完都是 deepseek-flash、地址密钥也一样，列表里就多出两行一模一样的服务。
+ * 所以**换名造出来的**重复项只留一条（`keepId` 那条优先，通常是启用中的那条），
+ * 被并掉的 id → 留下的 id 交回给调用方，由它改写指向旧 id 的引用。
+ * 换名之前就重复的不动：那是用户自己建的。
+ */
+export function upgradeRetiredAiModels(
+  profiles: AiProfile[],
+  keepId = '',
+): { profiles: AiProfile[]; changed: boolean; mergedInto: Record<string, string> } {
+  const renamed = new Set<string>()
+  const upgraded = profiles.map((p) => {
+    const model = upgradeRetiredAiModel(p.provider, p.apiUrl, p.model)
+    if (model === p.model) return p
+    renamed.add(p.id)
+    return { ...p, model }
+  })
+  if (renamed.size === 0) return { profiles, changed: false, mergedInto: {} }
+
+  const sameService = (a: AiProfile, b: AiProfile) =>
+    a.provider === b.provider
+    && a.apiUrl.trim() === b.apiUrl.trim()
+    && a.apiKey.trim() === b.apiKey.trim()
+    && a.model === b.model
+  const mergedInto: Record<string, string> = {}
+  const out: AiProfile[] = []
+  for (const p of upgraded) {
+    const at = out.findIndex((q) => sameService(q, p) && (renamed.has(p.id) || renamed.has(q.id)))
+    if (at < 0) {
+      out.push(p)
+    } else if (p.id === keepId) {
+      // 留启用中的那条，占先来那条的位置，列表顺序不变
+      mergedInto[out[at].id] = p.id
+      out[at] = p
+    } else {
+      mergedInto[p.id] = out[at].id
+    }
+  }
+  // 先并进 A、A 又被 keepId 顶掉的，要一路追到最后留下的那条
+  for (const id of Object.keys(mergedInto)) {
+    let target = mergedInto[id]
+    while (mergedInto[target]) target = mergedInto[target]
+    mergedInto[id] = target
+  }
+  return { profiles: out, changed: true, mergedInto }
 }

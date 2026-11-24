@@ -7,7 +7,7 @@ use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::commands::system::write_log_line;
-use crate::context::{capture_foreground_monitor, MonitorBounds};
+use crate::context::{capture_cursor_monitor, capture_foreground_monitor, MonitorBounds};
 
 const OVERLAY_DEFAULT_BASE_WIDTH: f64 = 360.0;
 // 64 而不是刚好够用的 56：内容是底边锚定的（根节点 items-end + pb-4），加高只是在胶囊
@@ -35,6 +35,12 @@ const OVERLAY_FALLBACK_HEIGHT: f64 = 224.0;
 /// 最长的那条错误文案（err.provider.forbidden，64 字）在 480 下折两行，高度 126，容量内。
 const OVERLAY_FAILURE_WIDTH: f64 = 480.0;
 const OVERLAY_FAILURE_HEIGHT: f64 = 176.0;
+/// 「随便问」的答案卡：问题一行 + 可滚动的答案区 + 来源列表，比结果卡大得多。
+/// **必须与 Overlay.tsx 答案卡的 max-w 和各区块的 max-h 一起改**：内容是底边锚定的，
+/// 装不下的部分从顶部被 overflow:hidden 裁掉（标题和关闭按钮先没）。
+/// 高度预算见 every_layout_fits_its_content_under_os_text_scale 里 answer 那一行。
+const OVERLAY_ANSWER_WIDTH: f64 = 560.0;
+const OVERLAY_ANSWER_HEIGHT: f64 = 530.0;
 // 流式实时显示：录音气泡 + 波形条堆叠，需要更宽更高的窗口
 const OVERLAY_STREAMING_WIDTH: f64 = 480.0;
 const OVERLAY_STREAMING_HEIGHT: f64 = 200.0;
@@ -87,6 +93,8 @@ enum OverlayLayout {
     Fallback,
     /// 识别失败卡片：带关闭按钮，因此同样需要交互。
     Failure,
+    /// 「随便问」答案卡：复制、关闭按钮和来源链接都要能点，也要能滚动答案。
+    Answer,
     /// 流式实时显示：气泡 + 波形，窗口更大且非交互
     Streaming,
     StreamingWithMicHint,
@@ -98,7 +106,7 @@ impl OverlayLayout {
     /// ⚠️ 非交互布局会 `set_ignore_cursor_events(true)`，窗口整体点击穿透。
     /// 新增任何"有按钮的"状态都必须在这里返回 true，否则按钮在界面上看得见、点不到。
     fn is_interactive(&self) -> bool {
-        matches!(self, OverlayLayout::Fallback | OverlayLayout::Failure)
+        matches!(self, OverlayLayout::Fallback | OverlayLayout::Failure | OverlayLayout::Answer)
     }
 
     /// 该布局期望的设计尺寸（宽, 高），单位是 CSS px。
@@ -114,6 +122,7 @@ impl OverlayLayout {
             ),
             OverlayLayout::Fallback => (OVERLAY_FALLBACK_WIDTH, OVERLAY_FALLBACK_HEIGHT),
             OverlayLayout::Failure => (OVERLAY_FAILURE_WIDTH, OVERLAY_FAILURE_HEIGHT),
+            OverlayLayout::Answer => (OVERLAY_ANSWER_WIDTH, OVERLAY_ANSWER_HEIGHT),
             OverlayLayout::Streaming => (OVERLAY_STREAMING_WIDTH, OVERLAY_STREAMING_HEIGHT),
             OverlayLayout::StreamingWithMicHint => (
                 OVERLAY_STREAMING_WIDTH,
@@ -574,7 +583,9 @@ impl WindowState {
     }
 
     fn capture_overlay_monitor(&self) {
-        let monitor = capture_foreground_monitor();
+        // 指针优先：显示期间也按指针跟随（follow_cursor_monitor），开头若按前台窗口放，
+        // 指针在另一块屏时悬浮窗会先出现在这边、0.4 秒后再跳过去。
+        let monitor = capture_cursor_monitor().or_else(capture_foreground_monitor);
         if let Some(value) = &monitor {
             write_log_line(&format!(
                 "[overlay-position] target_monitor source={} work=({},{},{},{})",
@@ -582,6 +593,48 @@ impl WindowState {
             ));
         }
         *self.overlay_monitor.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = monitor;
+    }
+
+    /// 悬浮窗显示期间指针换到另一块显示器，就把悬浮窗挪过去。
+    ///
+    /// 卡片类布局（兜底卡、失败卡、随便问的答案卡）不跟：用户要把指针移过去点它，
+    /// 或者一边看答案一边去另一块屏干活，卡片跟着跑反而够不着、看不到。
+    fn follow_cursor_monitor(&self, app: &AppHandle, show_id: u64) {
+        let Some(cursor) = capture_cursor_monitor() else { return; };
+        let same_monitor = self
+            .overlay_monitor
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .is_some_and(|current| same_work_area(current, &cursor));
+        if same_monitor {
+            return;
+        }
+
+        let _lifecycle_guard = self.overlay_lifecycle.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !self.is_showing(show_id) {
+            return;
+        }
+        let layout = self.overlay_layout.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        if layout.is_interactive() {
+            return;
+        }
+        let Some(overlay) = app.get_webview_window("overlay") else { return; };
+
+        write_log_line(&format!(
+            "[overlay-position] follow cursor show_id={} layout={:?} work=({},{},{},{})",
+            show_id, layout, cursor.left, cursor.top, cursor.right, cursor.bottom,
+        ));
+        *self.overlay_monitor.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(cursor);
+        // 设两遍：跨到缩放不同的显示器时，第一遍 set_position 会触发 WM_DPICHANGED，
+        // 窗口按系统建议的矩形被改过一次尺寸/位置；第二遍在新缩放下把它摆回底部居中。
+        // 两遍算出的是同一个矩形，同缩放的屏之间第二遍是空操作。
+        self.apply_native_layout(app, &overlay, &layout);
+        let error = self.apply_native_layout(app, &overlay, &layout);
+        if let Some(error) = error {
+            write_log_line(&format!("[overlay-position] follow cursor FAILED error={}", error));
+        }
+        reassert_overlay_topmost(app);
     }
 
     fn apply_payload_layout(&self, data: &Value) {
@@ -600,15 +653,21 @@ impl WindowState {
                 .and_then(Value::as_str)
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false);
-        let mic_hint_on = data
-            .get("micSourceLabel")
-            .and_then(Value::as_str)
-            .map(|s| !s.trim().is_empty())
-            .unwrap_or(false);
+        // 胶囊上方那条提示：输入源（开录 3 秒）或模式（翻译 / 随便问，整次录音）有一个就要留出高度。
+        // 两者在 Overlay.tsx 里画在同一行，所以高度还是一行的 OVERLAY_MIC_HINT_HEIGHT。
+        let non_empty = |key: &str| {
+            data.get(key)
+                .and_then(Value::as_str)
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false)
+        };
+        let mic_hint_on = non_empty("micSourceLabel") || non_empty("modeLabel");
         let candidate_layout = if state == Some("fallback") {
             OverlayLayout::Fallback
         } else if state == Some("failure") {
             OverlayLayout::Failure
+        } else if state == Some("answer") {
+            OverlayLayout::Answer
         } else if state == Some("listening") && streaming_on && mic_hint_on {
             OverlayLayout::StreamingWithMicHint
         } else if state == Some("listening") && streaming_on {
@@ -1102,6 +1161,8 @@ fn spawn_topmost_keeper(app: AppHandle, show_id: u64) {
                 if !state.is_showing(show_id) {
                     return;
                 }
+                // 跟随指针换屏也放在这个 400ms 循环里，省一条线程。mac 上取不到指针，直接返回。
+                state.follow_cursor_monitor(&app, show_id);
                 reassert_overlay_topmost(&app);
             }
         });
@@ -1338,10 +1399,25 @@ mod reload_limit_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_overlay_failure, overlay_bounds_in_work_area, OverlayLayout, WindowState,
-        OVERLAY_BASE_HEIGHT, OVERLAY_DEFAULT_BASE_WIDTH, OVERLAY_ROOT_PADDING_BOTTOM,
+        classify_overlay_failure, overlay_bounds_in_work_area, same_work_area, OverlayLayout,
+        WindowState, OVERLAY_BASE_HEIGHT, OVERLAY_DEFAULT_BASE_WIDTH, OVERLAY_ROOT_PADDING_BOTTOM,
     };
+    use crate::context::MonitorBounds;
     use serde_json::json;
+
+    /// 开头按前台窗口取、之后按指针取，同一块屏不能被当成换屏（否则每 0.4 秒挪一次窗）；
+    /// 换了屏必须认出来。
+    #[test]
+    fn same_monitor_ignores_capture_source() {
+        let bounds = |left, top, right, bottom, source: &str| MonitorBounds {
+            left, top, right, bottom, source: source.to_string(),
+        };
+        let main_fg = bounds(0, 0, 3840, 2088, "foreground_window");
+        let main_cursor = bounds(0, 0, 3840, 2088, "cursor");
+        let side_cursor = bounds(3840, 182, 6400, 1574, "cursor");
+        assert!(same_work_area(&main_fg, &main_cursor));
+        assert!(!same_work_area(&main_cursor, &side_cursor));
+    }
 
     /// 2560x1440 @150%，任务栏占掉底部 122px —— 报「胶囊顶部被裁」那台机器的实际布局。
     const WORK: (i64, i64, i64, i64) = (0, 0, 2560, 1318);
@@ -1418,6 +1494,10 @@ mod tests {
             // 加上恢复提示 126 —— 旧窗口 150 只能装 134，余量 4px。断言写松了，
             // 于是这条自检在真实最坏情况下照样全绿。
             ("failure", OverlayLayout::Failure, OVERLAY_ROOT_PADDING_BOTTOM + 146.0),
+            // 答案卡全部区块撑满时：py-4(32) + 边框 2 + 标题行 32 + 问题行 mt-2 8 + 20
+            //   + 答案区 mt-3 12 + py-3 24 + max-h 270 + 来源区 mt-3 12 + max-h 64
+            //   + 说明行 mt-2 8 + 16 = 500
+            ("answer", OverlayLayout::Answer, OVERLAY_ROOT_PADDING_BOTTOM + 500.0),
             ("streaming", OverlayLayout::Streaming, required_css_height() + 8.0 + 110.0),
             (
                 "streaming_mic_hint",
@@ -1518,7 +1598,7 @@ mod tests {
     #[test]
     fn only_card_layouts_receive_mouse_clicks() {
         let expected = |layout: &OverlayLayout| match layout {
-            OverlayLayout::Fallback | OverlayLayout::Failure => true,
+            OverlayLayout::Fallback | OverlayLayout::Failure | OverlayLayout::Answer => true,
             OverlayLayout::Base
             | OverlayLayout::BaseWithMicHint
             | OverlayLayout::Streaming
@@ -1529,6 +1609,7 @@ mod tests {
             OverlayLayout::BaseWithMicHint,
             OverlayLayout::Fallback,
             OverlayLayout::Failure,
+            OverlayLayout::Answer,
             OverlayLayout::Streaming,
             OverlayLayout::StreamingWithMicHint,
         ] {
@@ -1555,6 +1636,22 @@ mod tests {
         assert_eq!(
             layouts,
             vec![OverlayLayout::BaseWithMicHint, OverlayLayout::Failure],
+        );
+    }
+
+    /// 翻译 / 随便问的模式提示整次录音都在胶囊上方，没有输入源提示时也要留出那一行。
+    #[test]
+    fn mode_label_reserves_the_hint_row_while_listening_and_thinking() {
+        assert_eq!(
+            layouts_after(&[
+                json!({ "state": "listening", "modeLabel": "Translate to Japanese" }),
+                json!({ "state": "thinking", "modeLabel": "Translate to Japanese" }),
+            ]),
+            vec![OverlayLayout::BaseWithMicHint, OverlayLayout::BaseWithMicHint],
+        );
+        assert_eq!(
+            layouts_after(&[json!({ "state": "listening", "modeLabel": "" })]),
+            vec![OverlayLayout::Base],
         );
     }
 
@@ -1832,7 +1929,13 @@ fn visible_area_for_frame(
     areas.iter().find(|area| close(area.frame, frame)).map(|area| area.visible)
 }
 
-/// 在录音开始时的前台窗口所在显示器底部居中放置。
+/// 两次取到的是不是同一块显示器。只比工作区矩形，不比 source：
+/// 开头按前台窗口取、之后按指针取，同一块屏的 source 不同但不该触发挪窗。
+fn same_work_area(a: &MonitorBounds, b: &MonitorBounds) -> bool {
+    a.left == b.left && a.top == b.top && a.right == b.right && a.bottom == b.bottom
+}
+
+/// 在指针（取不到时退回前台窗口）所在显示器底部居中放置。
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 fn calc_monitor_overlay_bounds(
     app: &AppHandle,

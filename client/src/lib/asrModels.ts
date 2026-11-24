@@ -16,7 +16,12 @@ const QWEN_OMNI_MODEL_MAP: Record<string, string> = {
   qwen_omni_turbo: 'qwen3.5-omni-flash-realtime',
 }
 
-/** 判断是否为 Qwen Omni 系列模型 */
+/**
+ * 是不是走 realtime WebSocket 的那几个 Qwen Omni（含 `qwen_omni_35_plus` 这类旧运行时键）。
+ *
+ * 只用来把运行时键换算成 Rust 侧的 `qwen_omni`、从老表反查模型名。
+ * 「这次要不要按 Omni 处理」不归它管，见 isIntegratedAsrProvider。
+ */
 export function isQwenOmniProvider(provider: string): boolean {
   return provider.startsWith('qwen_omni')
 }
@@ -24,6 +29,28 @@ export function isQwenOmniProvider(provider: string): boolean {
 /** 根据供应商 key 解析 Qwen Omni 模型 ID，非 Omni 返回 undefined */
 export function resolveQwenOmniModel(provider: string): string | undefined {
   return QWEN_OMNI_MODEL_MAP[provider]
+}
+
+/**
+ * 识别与整理一步完成（Omni 一类）的运行时 key。
+ *
+ * 目录里的 `omni` 只决定界面上有没有 System Prompt 框，运行时只认这张表。
+ * 两边一致由 asrProviderCatalog.test.ts 钉住，和 STREAMING_CAPABLE 同一个套路。
+ */
+const INTEGRATED_ASR_PROVIDERS = new Set(['qwen_omni', 'qwen_chat_audio'])
+
+/**
+ * 这次识别要不要按 Omni 处理：System Prompt 发下去，AI 策略走 integrated_asr
+ * （不再另调客户端 AI）。录音、历史重跑、识别测试三处都用它。
+ *
+ * ⚠️ 别拿 isQwenOmniProvider 代替。HTTP 那个 qwen3.8-omni-flash 的运行时 key 是
+ * `qwen_chat_audio`，不以 qwen_omni 开头，以前就是这么漏的：真录音时 System Prompt
+ * 发不出去，模型只做转写，之后又被客户端 AI 整理一遍。设置页的测试按钮看的是目录标记，
+ * 所以测出来一切正常。
+ */
+export function isIntegratedAsrProvider(provider: string): boolean {
+  // 旧运行时键（qwen_omni_35_plus 这类）不在表里，由前缀兜住
+  return INTEGRATED_ASR_PROVIDERS.has(provider) || isQwenOmniProvider(provider)
 }
 
 /** ASR 供应商 key → 显示用的**默认**模型 ID（用户可能选了同平台的另一个） */
@@ -36,12 +63,14 @@ const ASR_DISPLAY_MODEL_MAP: Record<string, string> = {
   // 那条路才是准的 —— 这也正是 resolveAsrDisplayModel 要收 selectedModel 的原因。
   qwen_audio_stream: 'qwen-audio-3.1-asr-flash-streaming',
   mimo: 'mimo-v2.5-asr',
+  deepseek_asr: 'deepseek-asr',
   groq_whisper: 'whisper-large-v3-turbo',
   openai_transcribe: 'gpt-transcribe',
   openai_live_transcribe: 'gpt-live-transcribe',
   gemini_transcribe: 'gemini-3.5-transcribe',
   gemini_live_transcribe: 'gemini-3.5-transcribe-live',
   openrouter_transcribe: 'openai/gpt-transcribe',
+  xai_stt: 'grok-voice-transcribe-2.0',
   ...QWEN_OMNI_MODEL_MAP,
 }
 
@@ -128,6 +157,7 @@ const STREAMING_CAPABLE = new Set([
   'qwen_audio_stream',
   'openai_live_transcribe',
   'gemini_live_transcribe',
+  'xai_stt',
 ])
 
 export function isStreamingDisplayCapable(provider: string): boolean {
@@ -145,7 +175,7 @@ export function isStreamingDisplayCapable(provider: string): boolean {
  *   **都不需要 WorkspaceId** —— 通用域名 dashscope.aliyuncs.com 实测可用，
  *   别照抄下面那条的前置条件（见 providers/asr_qwen_audio_stream.rs 文件头的实测记录）。
  * - qwen_realtime（qwen3-asr-flash-realtime）：走地域专属实时端点，必须提供北京业务空间 WorkspaceId 才可用。
- * - openai_live_transcribe / gemini_live_transcribe：填了密钥就能用，没有额外前置条件。
+ * - openai_live_transcribe / gemini_live_transcribe / xai_stt：填了密钥就能用，没有额外前置条件。
  * - qwen（qwen3-asr-flash）：非实时模型，不支持实时字幕。
  */
 export function isStreamingDisplayReady(provider: string, qwenWorkspaceId?: string): boolean {

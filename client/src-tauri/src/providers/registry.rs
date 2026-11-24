@@ -2,9 +2,10 @@
 
 use super::types::*;
 use super::{
-    ai_ollama, ai_openai_compat, asr_doubao, asr_doubao_stream, asr_gemini, asr_gemini_live,
-    asr_groq, asr_mimo, asr_openai_chat_audio, asr_openai_compat, asr_openai_realtime,
-    asr_openrouter, asr_qwen, asr_qwen_audio_stream, asr_qwen_omni, asr_qwen_realtime,
+    ai_ask, ai_ollama, ai_openai_compat, asr_deepseek, asr_doubao, asr_doubao_stream, asr_gemini,
+    asr_gemini_live, asr_groq, asr_mimo, asr_openai_chat_audio, asr_openai_compat,
+    asr_openai_realtime, asr_openrouter, asr_qwen, asr_qwen_audio_stream, asr_qwen_omni,
+    asr_qwen_realtime, asr_xai,
 };
 use crate::error_protocol;
 
@@ -42,6 +43,33 @@ pub async fn cloud_polish(request: CloudPolishRequest) -> Result<AiResult, Strin
             format!("Unknown AI provider: {}", other),
         )),
     }
+}
+
+/// 「随便问」：回答一句口述的问题，可选联网（Tauri command）
+///
+/// 供应商清单与 cloud_polish 一致；Ollama 在 ai_ask 内部单独走 /api/generate。
+#[tauri::command]
+pub async fn ai_ask(request: ai_ask::AskRequest) -> Result<ai_ask::AskResult, String> {
+    match request.ai_config.provider.as_str() {
+        "openai_compat" | "deepseek" | "doubao" | "qwen" | "mimo" | "groq" | "zhipu"
+        | "openrouter" | "ollama" => ai_ask::ask(request).await,
+        other => Err(error_protocol::encode(
+            "connect_failed",
+            format!("Unknown AI provider: {}", other),
+        )),
+    }
+}
+
+/// 设置页：这份 AI 配置能不能用模型自带的联网搜索。返回 deepseek / qwen / zhipu / openrouter，不能则空串。
+#[tauri::command]
+pub fn ai_builtin_search_support(config: AiProviderConfig) -> String {
+    ai_ask::builtin_search_id(&config)
+}
+
+/// 设置页：测试 DeepSeek 搜索接口的密钥。成功返回结果条数。
+#[tauri::command]
+pub async fn test_ask_search(api_key: String) -> Result<usize, String> {
+    ai_ask::test_search(&api_key).await
 }
 
 /// 测试 AI 连接（Tauri command）
@@ -141,6 +169,23 @@ pub async fn cloud_transcribe(request: CloudTranscribeRequest) -> Result<AsrResu
         }
         "mimo" => {
             asr_mimo::transcribe(
+                &request.audio_b64,
+                request.sample_rate,
+                config,
+                &request.hotwords,
+            )
+            .await
+        }
+        // DeepSeek 的 /v1/tools/asr：multipart 只传 file，单次最长 120 秒，
+        // 超长录音在 asr_deepseek 里按停顿切段并发。别并进下面 asr_groq 那组 ——
+        // 路径、字段都不是 /audio/transcriptions 那一套。
+        // xAI：关掉实时字幕、以及设置页的识别测试走 REST `/v1/stt`；
+        // 实时字幕走 asr_xai 的 xai_live_*（前端 STREAM_COMMANDS）。
+        "xai_stt" => {
+            asr_xai::transcribe(&request.audio_b64, request.sample_rate, config, &request.hotwords).await
+        }
+        "deepseek_asr" => {
+            asr_deepseek::transcribe(
                 &request.audio_b64,
                 request.sample_rate,
                 config,
@@ -351,6 +396,10 @@ pub async fn test_asr_connection(config: AsrProviderConfig) -> Result<TestResult
         "qwen_audio_stream" => Ok(asr_qwen_audio_stream::test_connection(&config).await),
         "qwen_omni" => Ok(asr_qwen_omni::test_connection(&config).await),
         "mimo" => Ok(asr_mimo::test_connection(&config).await),
+        "deepseek_asr" => Ok(asr_deepseek::test_connection(&config).await),
+        // xAI 测 REST 而不是流式那条（和下面 OpenAI / Gemini 的做法相反）：同一把密钥
+        // 两条路都用，REST 发一小段静音就能顺带验证额度；设置页的识别测试也走 REST。
+        "xai_stt" => Ok(asr_xai::test_connection(&config).await),
         "groq_whisper" | "openai_transcribe" | "openai_compat_transcribe" => {
             Ok(asr_groq::test_connection(&config).await)
         }

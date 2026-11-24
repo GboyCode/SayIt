@@ -492,15 +492,17 @@ impl PttKeyConfig {
     }
 }
 
-/// 「按住说话」的默认键，同时也是配置非法时的回退。
+/// 解析器的回退键：PTT 配置非法时用它。
+///
+/// 「按住说话」2026-11 下线后，传进来的设置恒为空串（crate::defaults::SHORTCUT_PTT），
+/// 这条回退实际走不到；留着是因为 PTT 实验页和解析器的测试还用它。**别把它接回用户默认值**。
 ///
 /// **不能是 Shift**：长按右 Shift 约 8 秒会触发 Windows 筛选键，那之后我们收不到
-/// 这次「松开」，录音不会随手指抬起而结束。这里曾经是 ShiftRight，于是每台新装的
-/// 机器开箱就绑在那个键上（前端也一样，见 services/defaults.ts）。
-/// 右 Ctrl 位置相近、没有辅助功能陷阱，也不和免提的默认键（右 Alt）撞。
-///
-/// 值在 crate::defaults，那里有与前端 defaults.ts 的对账测试。
-const DEFAULT_PTT_SETTING: &str = crate::defaults::SHORTCUT_PTT;
+/// 这次「松开」，录音不会随手指抬起而结束。
+#[cfg(not(target_os = "macos"))]
+const DEFAULT_PTT_SETTING: &str = "ControlRight";
+#[cfg(target_os = "macos")]
+const DEFAULT_PTT_SETTING: &str = "AltRight";
 /// 与 DEFAULT_PTT_SETTING 对应的键：Windows 右 Ctrl，macOS 右 ⌥（MacBook 没有右 Ctrl）。
 #[cfg(not(target_os = "macos"))]
 const DEFAULT_PTT_VK: u32 = 0xA3;
@@ -713,11 +715,17 @@ struct HookSharedState {
     /// 免提键是否处于"已按下"状态。首个真实 keydown 触发 toggle，repeat down 被忽略；
     /// 配对 keyup（包括被标成 synthetic 的 up）负责清零，让下一次按下可以再次触发。
     hf_key_down: AtomicBool,
+    /// 免提键最近一次 keydown（含 repeat）的时间，用来认出「up 漏了、hf_key_down 卡在 true」。
+    /// 只有 Windows 键盘钩子用。
+    #[cfg_attr(not(windows), allow(dead_code))]
+    hf_last_down_ms: AtomicI64,
     /// VK codes for hands-free toggle key (empty = not using hook for hands-free)
     hf_vk_codes: Vec<u32>,
     hf_setting: String,
     /// AI 整理开关支持单键与鼠标按键；组合键仍由 global_shortcut 处理。
     ai_toggle_key_down: AtomicBool,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    ai_toggle_last_down_ms: AtomicI64,
     ai_toggle_vk_codes: Vec<u32>,
     ai_toggle_setting: String,
     app_handle: AppHandle,
@@ -741,6 +749,8 @@ enum HookAction {
     /// 切换润色模式。只有 mac 的 event tap 会发：系统快捷键接不住的、只带 ⌥ / ⇧ 的组合键
     /// （见 keyboard/macos.rs 的 TAP_COMBOS）。Windows 上这类组合仍由 global_shortcut 处理。
     PresetSwitch { preset_id: String },
+    /// 语音翻译 / 随便问。同 PresetSwitch，只有 mac 的 event tap 会发；event 是前端事件名。
+    VoiceAction { event: &'static str, vk: u32 },
 }
 
 const PTT_RELEASING_BIT: u64 = 1 << 63;
@@ -772,6 +782,39 @@ fn begin_ptt_press(active_generation: &AtomicU64, generation: &AtomicU64) -> Opt
 /// 免提键只在一次物理按下的首个 keydown 触发；Windows 随后的 repeat down 被忽略。
 fn begin_hf_press(key_down: &AtomicBool) -> bool {
     !key_down.swap(true, Ordering::SeqCst)
+}
+
+/// 按住一个键时，相邻两次 keydown 的最大间隔：首个 repeat 等「重复延迟」，
+/// Windows 键盘设置里最长约 1 秒；之后的 repeat 更密。超过这个值的 down 不可能是 repeat。
+const HF_REPEAT_MAX_GAP_MS: i64 = 1500;
+
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+enum HfPress {
+    /// 新的一次按下，触发。
+    Fresh,
+    /// 按下状态还是 true，但距上一次 down 太久，说明上一次的 up 没收到。当新按下触发。
+    AfterMissedUp,
+    /// 按住产生的 repeat，忽略。
+    Repeat,
+}
+
+/// 带「漏 up 自愈」的 begin_hf_press。
+///
+/// 为什么需要：hf_key_down 只靠配对的 up 清零。回调一次超过 LowLevelHooksTimeout，Windows 会
+/// 静默摘掉钩子，摘除期间的 up 我们收不到；看门狗重装钩子后 hf_key_down 仍是 true，用户下一次
+/// 按键被当成 repeat 吞掉，不触发、也不写日志（2026-11-18 用户报「按了 Alt 没反应、再按才停」，
+/// 当时 max_callback_duration_us 到了 317ms）。按住时 repeat 会一直刷新时间戳，所以按住不会误判。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn begin_hf_press_checked(key_down: &AtomicBool, last_down_ms: &AtomicI64, now: i64) -> HfPress {
+    let previous_down = last_down_ms.swap(now, Ordering::SeqCst);
+    if begin_hf_press(key_down) {
+        return HfPress::Fresh;
+    }
+    if previous_down > 0 && now - previous_down > HF_REPEAT_MAX_GAP_MS {
+        return HfPress::AfterMissedUp;
+    }
+    HfPress::Repeat
 }
 
 /// 清除免提按下状态。返回 true 表示确实存在一枚需要配对消费的 keyup。
@@ -1501,6 +1544,15 @@ fn spawn_dispatcher(
                             "presetId": preset_id,
                         }));
                     }
+                    HookAction::VoiceAction { event, vk } => {
+                        crate::commands::system::write_log_line(
+                            &format!("[RUST] [voice-action] {} vk={} (event tap)", event, vk)
+                        );
+                        // 载荷与 commands/shortcuts.rs 里系统快捷键发的一致
+                        let _ = dispatch_state.app_handle.emit(event, serde_json::json!({
+                            "source": "event_tap",
+                        }));
+                    }
                 }
             }
             log::info!("[ptt] dispatcher thread exited");
@@ -1579,9 +1631,11 @@ impl KeyboardHookManager {
             ptt_hook_alive: AtomicBool::new(true),
             hands_free_active: AtomicBool::new(false),
             hf_key_down: AtomicBool::new(false),
+            hf_last_down_ms: AtomicI64::new(0),
             hf_vk_codes,
             hf_setting: hf_setting.to_string(),
             ai_toggle_key_down: AtomicBool::new(false),
+            ai_toggle_last_down_ms: AtomicI64::new(0),
             ai_toggle_vk_codes,
             ai_toggle_setting: ai_toggle_setting.to_string(),
             app_handle: app.clone(),
@@ -2446,9 +2500,24 @@ unsafe extern "system" fn low_level_keyboard_proc(
                     // ⇒ 下面的 end_hf_press 也返回 false，配对的 keyup 同样不吞。
                     if is_down && !modifiers_block_down {
                         consumed = true; // 吞掉 keydown 防止系统处理
-                        if begin_hf_press(&state.hf_key_down) {
+                        let press = begin_hf_press_checked(
+                            &state.hf_key_down,
+                            &state.hf_last_down_ms,
+                            now_ms(),
+                        );
+                        if press != HfPress::Repeat {
                             HOOK_ACTION_TX.with(|tx| {
                                 if let Some(sender) = tx.borrow().as_ref() {
+                                    if press == HfPress::AfterMissedUp {
+                                        // 上面的 hotkey-down 诊断只记 hf_key_down=false 的首个 down，
+                                        // 这种情况它不记，必须单独留一行，否则看不出自愈发生过。
+                                        let _ = sender.send(HookAction::Diag {
+                                            vk,
+                                            msg_name: "hotkey-down-after-missed-up",
+                                            flags: kb_flags,
+                                            scan_code: kb_scan_code,
+                                        });
+                                    }
                                     if sender.send(HookAction::HfToggle { vk }).is_err() {
                                         TRY_SEND_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
                                     }
@@ -2470,9 +2539,22 @@ unsafe extern "system" fn low_level_keyboard_proc(
                     // 同免提：带修饰键就整条放行（见上面 modifiers_block_down 的注释）
                     if is_down && !modifiers_block_down {
                         consumed = true;
-                        if begin_hf_press(&state.ai_toggle_key_down) {
+                        let press = begin_hf_press_checked(
+                            &state.ai_toggle_key_down,
+                            &state.ai_toggle_last_down_ms,
+                            now_ms(),
+                        );
+                        if press != HfPress::Repeat {
                             HOOK_ACTION_TX.with(|tx| {
                                 if let Some(sender) = tx.borrow().as_ref() {
+                                    if press == HfPress::AfterMissedUp {
+                                        let _ = sender.send(HookAction::Diag {
+                                            vk,
+                                            msg_name: "ai-toggle-down-after-missed-up",
+                                            flags: kb_flags,
+                                            scan_code: kb_scan_code,
+                                        });
+                                    }
                                     if sender.send(HookAction::AiToggle { vk }).is_err() {
                                         TRY_SEND_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
                                     }
@@ -2505,7 +2587,25 @@ mod tests {
         set_escape_action_mode, should_consume_combo_main_down, single_key_requires_bare_press,
         CARD_HOTKEY_COPY, CARD_HOTKEY_DEADLINE_MS, CARD_HOTKEY_FOREGROUND, DEFAULT_PTT_SETTING,
         DEFAULT_PTT_VK, SINGLE_KEY_TABLE, needs_mouse_hook, hook_looks_removed,
+        begin_hf_press_checked, HfPress,
     };
+
+    /// 漏掉 up 之后的下一次按下必须触发；正常按住的 repeat（首个 repeat 最长约 1 秒）不能触发。
+    #[test]
+    fn hands_free_press_recovers_after_missed_keyup() {
+        use std::sync::atomic::AtomicI64;
+        let down = AtomicBool::new(false);
+        let last = AtomicI64::new(0);
+
+        assert_eq!(begin_hf_press_checked(&down, &last, 10_000), HfPress::Fresh);
+        // 按住：首个 repeat 在 1 秒（Windows 最长的重复延迟）后，之后每 33ms 一个
+        assert_eq!(begin_hf_press_checked(&down, &last, 11_000), HfPress::Repeat);
+        assert_eq!(begin_hf_press_checked(&down, &last, 11_033), HfPress::Repeat);
+        // up 被漏掉（钩子被摘），hf_key_down 仍是 true；40 秒后用户再按一次
+        assert_eq!(begin_hf_press_checked(&down, &last, 51_033), HfPress::AfterMissedUp);
+        // 这次按住产生的 repeat 照常忽略
+        assert_eq!(begin_hf_press_checked(&down, &last, 51_533), HfPress::Repeat);
+    }
     #[cfg(any(windows, target_os = "macos"))]
     use super::queue_ptt_release;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

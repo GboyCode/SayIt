@@ -60,12 +60,18 @@ fn thinking_overrides(config: &AiProviderConfig) -> Option<serde_json::Value> {
     }
 
     // DeepSeek、小米 MiMo 和智谱 GLM 使用 thinking.type=disabled。
-    // 智谱两条都认：provider == "zhipu" 是内置卡，域名判断留给「用 OpenAI 兼容自己填
-    // 智谱地址」的老配置（这种存量配置不会因为新增内置卡而自动迁移）。
+    // 智谱与 DeepSeek 两条都认：provider 是内置卡，域名判断留给「用 OpenAI 兼容自己填
+    // 官方地址」的配置（这种存量配置不会因为有了内置卡而自动迁移）。
+    //
+    // DeepSeek 的 deepseek-flash **默认开思考**（2026-11 实测：不带参数时 64 个 token
+    // 全花在思维链上，正文为空）。通吃那四个字段它今天也认，但 `reasoning_effort: "none"`
+    // 不在它文档列出的取值里，哪天收紧校验就是 400、每次会话多一趟降级往返。
+    // 它文档写明的开关只有 thinking.type 这一个。
     if config.provider == "deepseek"
         || config.provider == "mimo"
         || config.provider == "zhipu"
         || is_zhipu_api_url(&config.api_url)
+        || is_deepseek_api_url(&config.api_url)
     {
         return Some(serde_json::json!({ "thinking": { "type": "disabled" } }));
     }
@@ -77,7 +83,7 @@ fn thinking_overrides(config: &AiProviderConfig) -> Option<serde_json::Value> {
     Some(disable_thinking_overrides())
 }
 
-fn host_of(api_url: &str) -> Option<String> {
+pub(super) fn host_of(api_url: &str) -> Option<String> {
     reqwest::Url::parse(api_url.trim())
         .ok()
         .and_then(|url| url.host_str().map(|host| host.to_ascii_lowercase()))
@@ -85,6 +91,10 @@ fn host_of(api_url: &str) -> Option<String> {
 
 fn is_zhipu_api_url(api_url: &str) -> bool {
     host_of(api_url).is_some_and(|host| host == "open.bigmodel.cn")
+}
+
+fn is_deepseek_api_url(api_url: &str) -> bool {
+    host_of(api_url).is_some_and(|host| host == "api.deepseek.com")
 }
 
 /// OpenAI 官方 / Azure OpenAI —— 对未知请求字段一律 400 的那一类端点。
@@ -203,20 +213,152 @@ fn rejected_thinking_field(body: &str, overrides: &serde_json::Value) -> Option<
 
 /// 一次 chat/completions 往返的结果。响应体在这里就读完，调用方不必再和 `resp` 的
 /// 所有权打交道 —— 摘要必须在读 body 之前取（读 body 会消费掉 resp）。
-struct ChatHttpResponse {
-    status: reqwest::StatusCode,
-    summary: String,
-    body: String,
+pub(super) struct ChatHttpResponse {
+    pub(super) status: reqwest::StatusCode,
+    pub(super) summary: String,
+    pub(super) body: String,
 }
 
 /// 发送失败和读响应体失败要分开报：前者是网络/DNS/TLS，后者是连接中途断了，
 /// 归成同一条日志会让排查时分不清该查哪一边。
-enum ChatHttpError {
+pub(super) enum ChatHttpError {
     Send(reqwest::Error),
     ReadBody(reqwest::Error),
 }
 
+/// 请求体要为这个端点做的参数改写。新模型逐步收紧了老参数，改写都是「被拒绝过才做」。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ParamFixes {
+    /// `max_tokens` 改名 `max_completion_tokens`。OpenAI 新模型（GPT-5 起的推理型）只认后者：
+    /// `Unsupported parameter: 'max_tokens' is not supported with this model`（issue #96）。
+    max_completion_tokens: bool,
+    /// 不发 `temperature`。同一批模型只接受默认值 1，传别的就 400。
+    drop_temperature: bool,
+}
+
+/// 记住每个端点 + 模型需要哪些改写。与 thinking_memo 同理：只放内存，端点行为会随升级变。
+fn param_memo() -> &'static Mutex<HashMap<String, ParamFixes>> {
+    static MEMO: OnceLock<Mutex<HashMap<String, ParamFixes>>> = OnceLock::new();
+    MEMO.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 第一次请求用哪套。OpenAI 官方 / Azure 直接用 `max_completion_tokens`：它们所有对话模型
+/// 都认这个名字，先发老名字只会让新模型多吃一次 400。`temperature` 不预先去掉，
+/// 老模型（gpt-4o 一类）去掉会变成默认的 1，整理结果更飘。
+fn initial_param_fixes(config: &AiProviderConfig) -> ParamFixes {
+    if let Some(fixes) = param_memo()
+        .lock()
+        .ok()
+        .and_then(|memo| memo.get(&endpoint_key(config)).copied())
+    {
+        return fixes;
+    }
+    ParamFixes {
+        max_completion_tokens: is_strict_openai_host(&config.api_url),
+        drop_temperature: false,
+    }
+}
+
+fn apply_param_fixes(body: &serde_json::Value, fixes: ParamFixes) -> serde_json::Value {
+    let mut body = body.clone();
+    if let Some(object) = body.as_object_mut() {
+        if fixes.max_completion_tokens {
+            if let Some(value) = object.remove("max_tokens") {
+                object.entry("max_completion_tokens").or_insert(value);
+            }
+        } else if let Some(value) = object.remove("max_completion_tokens") {
+            object.entry("max_tokens").or_insert(value);
+        }
+        if fixes.drop_temperature {
+            object.remove("temperature");
+        }
+    }
+    body
+}
+
+/// 报错是不是在说我们发的某个参数不被支持；是的话返回改好的那套，否则 `None`。
+///
+/// 和 rejected_thinking_field 一样保守：报错里必须点名**这次真的发了的**参数，
+/// 还得带「不支持」这类字眼，密钥错、模型不存在这些 400 才不会被白重试。
+/// 反方向也要认：老网关（Azure 旧 api-version、一些中转）不认 `max_completion_tokens`。
+fn param_fix_for_error(error_body: &str, sent: &serde_json::Value, fixes: ParamFixes) -> Option<ParamFixes> {
+    let lower = error_body.to_ascii_lowercase();
+    let rejects = ["unsupported", "not supported", "unrecognized", "unknown parameter", "not allowed", "extra inputs"]
+        .iter()
+        .any(|word| lower.contains(word));
+    if !rejects {
+        return None;
+    }
+    let sent_has = |key: &str| sent.get(key).is_some();
+    // 先看 max_completion_tokens：它的名字里不含 "max_tokens"，两个判断不会互相串
+    if sent_has("max_completion_tokens") && lower.contains("max_completion_tokens") {
+        return Some(ParamFixes { max_completion_tokens: false, ..fixes });
+    }
+    if sent_has("max_tokens") && lower.contains("max_tokens") {
+        return Some(ParamFixes { max_completion_tokens: true, ..fixes });
+    }
+    if sent_has("temperature") && lower.contains("temperature") {
+        return Some(ParamFixes { drop_temperature: true, ..fixes });
+    }
+    None
+}
+
+/// 发一次请求，碰到「参数不支持」就按报错改写后重发，最多改两轮（token 名 + temperature）。
 async fn send_chat_once(
+    url: &str,
+    config: &AiProviderConfig,
+    body: &serde_json::Value,
+    timeout: Duration,
+) -> Result<ChatHttpResponse, ChatHttpError> {
+    let mut fixes = initial_param_fixes(config);
+    let mut adjusted = false;
+    for attempt in 0..3 {
+        let sent = apply_param_fixes(body, fixes);
+        let resp = send_chat_raw(url, config, &sent, timeout).await?;
+        if resp.status.is_success() {
+            // 只记成功过的结论，理由同 remember_thinking
+            if adjusted {
+                if let Ok(mut memo) = param_memo().lock() {
+                    memo.insert(endpoint_key(config), fixes);
+                }
+            }
+            return Ok(resp);
+        }
+        let next = match param_fix_for_error(&resp.body, &sent, fixes) {
+            Some(next) if next != fixes && attempt < 2 => next,
+            _ => return Ok(resp),
+        };
+        diag::log(
+            SCOPE,
+            "params_rejected",
+            &format!(
+                "Endpoint rejected a request parameter; retrying status={} model={} from={:?} to={:?}",
+                resp.status.as_u16(),
+                config.model,
+                fixes,
+                next
+            ),
+        );
+        fixes = next;
+        adjusted = true;
+    }
+    unreachable!("the loop returns on its last attempt")
+}
+
+/// OpenCode Go 的地址。它要求每个请求带会话 ID（`x-opencode-session`），缺了直接
+/// 400 `MissingSessionID`（issue #96）。
+fn is_opencode_host(api_url: &str) -> bool {
+    host_of(api_url).is_some_and(|host| host == "opencode.ai" || host.ends_with(".opencode.ai"))
+}
+
+/// 本次运行固定不变的会话 ID。OpenCode 用它做路由和提示词缓存，文档要求「每个会话稳定」；
+/// SayIt 每次整理都是独立请求，没有会话概念，进程内固定一个最贴近，也让同一系统提示词能命中缓存。
+fn opencode_session_id() -> &'static str {
+    static ID: OnceLock<String> = OnceLock::new();
+    ID.get_or_init(|| format!("sayit-{}", uuid::Uuid::new_v4()))
+}
+
+async fn send_chat_raw(
     url: &str,
     config: &AiProviderConfig,
     body: &serde_json::Value,
@@ -229,6 +371,9 @@ async fn send_chat_once(
     // 小米 MiMo 规范鉴权头为 api-key（同时兼容 Bearer），两个都带最稳妥
     if config.provider == "mimo" {
         req = req.header("api-key", config.api_key.clone());
+    }
+    if is_opencode_host(&config.api_url) {
+        req = req.header("x-opencode-session", opencode_session_id());
     }
 
     let resp = req
@@ -258,7 +403,7 @@ async fn send_chat_once(
 /// 校对和「测试连接」共用这一条：用户在设置页点过测试，结论就已经缓存好了，
 /// 正式校对时直接命中 —— 那次多出来的往返基本落在测试上，用户感知不到。
 /// 顺带也保证了「测试通了」和「实际请求」用的是同一组参数。
-async fn send_chat_with_thinking_fallback(
+pub(super) async fn send_chat_with_thinking_fallback(
     url: &str,
     config: &AiProviderConfig,
     base_body: &serde_json::Value,
@@ -589,7 +734,7 @@ pub async fn test_connection(config: &AiProviderConfig) -> TestResult {
 }
 
 /// Convert reqwest errors into concise diagnostic details.
-fn describe_reqwest_error(e: &reqwest::Error) -> String {
+pub(super) fn describe_reqwest_error(e: &reqwest::Error) -> String {
     let raw = format!("{}", e);
     if e.is_timeout() {
         return "Request timed out; check the network connection and API URL".to_string();
@@ -623,7 +768,7 @@ fn describe_reqwest_error(e: &reqwest::Error) -> String {
 }
 
 /// 规范化 base URL
-fn normalize_base_url(url: &str) -> String {
+pub(super) fn normalize_base_url(url: &str) -> String {
     let trimmed = url.trim().trim_end_matches('/');
     // 用户把文档里的**完整端点**整条粘进来是最常见的填法 —— 各家文档（智谱、DeepSeek、
     // 硅基流动…）示例里给的都是 `.../chat/completions`，而这一栏要的是它前面那一截。
@@ -652,7 +797,7 @@ fn normalize_base_url(url: &str) -> String {
 }
 
 /// 从 chat completion 响应中提取文本
-fn extract_chat_completion_text(data: &serde_json::Value) -> Option<String> {
+pub(super) fn extract_chat_completion_text(data: &serde_json::Value) -> Option<String> {
     let content = data
         .get("choices")?
         .get(0)?
@@ -680,7 +825,7 @@ fn extract_chat_completion_text(data: &serde_json::Value) -> Option<String> {
 }
 
 /// 去除 <think>...</think> 标签
-fn strip_thinking(text: &str) -> String {
+pub(super) fn strip_thinking(text: &str) -> String {
     let re = regex::Regex::new(r"(?is)<think>.*?</think>").unwrap_or_else(|_| {
         // fallback: 不做处理
         regex::Regex::new(r"^$").unwrap()
@@ -718,6 +863,60 @@ mod tests {
             .unwrap_or_default();
         out.sort();
         out
+    }
+
+    /// issue #96：OpenAI 新模型拒收 max_tokens 和非默认 temperature。报错原文取自 issue 和 OpenAI。
+    #[test]
+    fn rejected_params_are_rewritten_one_at_a_time() {
+        let body = serde_json::json!({ "model": "m", "temperature": 0.2, "max_tokens": 1024, "messages": [] });
+        let start = ParamFixes::default();
+
+        let max_tokens_err = r#"{"error":{"message":"Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.","type":"invalid_request_error","param":"max_tokens","code":"unsupported_parameter"}}"#;
+        let step1 = param_fix_for_error(max_tokens_err, &apply_param_fixes(&body, start), start).unwrap();
+        assert_eq!(step1, ParamFixes { max_completion_tokens: true, drop_temperature: false });
+        let sent1 = apply_param_fixes(&body, step1);
+        assert_eq!(sent1["max_completion_tokens"], 1024);
+        assert!(sent1.get("max_tokens").is_none());
+
+        let temperature_err = r#"{"error":{"message":"Unsupported value: 'temperature' does not support 0.2 with this model. Only the default (1) value is supported.","param":"temperature","code":"unsupported_value"}}"#;
+        let step2 = param_fix_for_error(temperature_err, &sent1, step1).unwrap();
+        assert_eq!(step2, ParamFixes { max_completion_tokens: true, drop_temperature: true });
+        assert!(apply_param_fixes(&body, step2).get("temperature").is_none());
+
+        // 反方向：老网关不认新名字
+        let old_gateway = r#"{"error":{"message":"Unrecognized request argument supplied: max_completion_tokens"}}"#;
+        assert_eq!(
+            param_fix_for_error(old_gateway, &sent1, step1),
+            Some(ParamFixes { max_completion_tokens: false, drop_temperature: false })
+        );
+    }
+
+    /// 与参数无关的 400 不能触发重试，否则密钥错、模型不存在都要白发几遍
+    #[test]
+    fn unrelated_errors_do_not_rewrite_params() {
+        let body = serde_json::json!({ "model": "m", "temperature": 0.2, "max_tokens": 1024 });
+        let none = ParamFixes::default();
+        for err in [
+            r#"{"error":{"message":"Incorrect API key provided","code":"invalid_api_key"}}"#,
+            r#"{"error":{"message":"The model `gpt-9` does not exist"}}"#,
+            // 下限报错（pitfalls 18）是「值太小」，不是「参数不支持」
+            r#"{"error":{"message":"integer_below_min_value: max_tokens Expected a value >= 16"}}"#,
+        ] {
+            assert_eq!(param_fix_for_error(err, &body, none), None, "{}", err);
+        }
+    }
+
+    #[test]
+    fn openai_official_starts_with_max_completion_tokens_and_opencode_gets_session_header_host() {
+        let openai = config("openai_compat", "https://api.openai.com/v1", "gpt-6.2-sol-test");
+        assert!(initial_param_fixes(&openai).max_completion_tokens);
+        let gateway = config("openai_compat", "https://my-gateway.example.com/v1", "gpt-6.2-sol-test");
+        assert!(!initial_param_fixes(&gateway).max_completion_tokens);
+
+        assert!(is_opencode_host("https://opencode.ai/inference/go/openai/v1"));
+        assert!(!is_opencode_host("https://notopencode.ai/v1"));
+        assert!(opencode_session_id().starts_with("sayit-"));
+        assert_eq!(opencode_session_id(), opencode_session_id());
     }
 
     #[test]
@@ -808,6 +1007,25 @@ mod tests {
         let relayed = thinking_overrides(&config("zhipu", "https://relay.example/v4", "glm-4.7"))
             .expect("relayed zhipu card should still disable thinking");
         assert_eq!(keys(&relayed), vec!["thinking"]);
+    }
+
+    /// 「OpenAI 兼容」卡填 DeepSeek 官方地址时，发它文档写明的那一个字段，不发通吃集合。
+    /// 中转站（域名不是 api.deepseek.com）不知道对面是谁，仍然走通吃集合。
+    #[test]
+    fn deepseek_host_on_the_compat_card_gets_its_exact_field() {
+        for url in ["https://api.deepseek.com", "https://api.deepseek.com/v1"] {
+            let overrides = thinking_overrides(&config("openai_compat", url, "deepseek-flash"))
+                .expect("deepseek host should disable thinking");
+            assert_eq!(keys(&overrides), vec!["thinking"], "{url}");
+            assert_eq!(overrides["thinking"]["type"], serde_json::json!("disabled"));
+        }
+        let relay = thinking_overrides(&config(
+            "openai_compat",
+            "https://relay.example.com/v1",
+            "deepseek-flash",
+        ))
+        .expect("relay should still get thinking params");
+        assert_eq!(keys(&relay).len(), 4);
     }
 
     /// 智谱 GLM-5.3 的真实错误体（2026-09-20 用户实测）。

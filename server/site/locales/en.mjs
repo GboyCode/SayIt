@@ -124,55 +124,12 @@ export default {
     note: 'Illustrative. Real results depend on the speech model and the AI model you choose.',
   },
   rules: {
+    // One screen (owner, 2026-11-10, after comparing with the Doubao IME page): heading, one line,
+    // three short facts, the fan-out picture. The preset editor card is gone (the clickable app below
+    // edits the same prompts), and the per-app rules became the third fact.
     title: 'Write the prompt, get the text you want.',
-    lead: 'Four built-in presets with their full prompts open to edit, or write a new one from scratch.',
-    points: ['Every built-in prompt is visible. Change any line.', 'Write your own: commit messages, translation, an email tone.', 'Give a preset a shortcut and switch any time.'],
-    // The app's "Cleanup presets" card (AI cleanup page), word for word from client/src/i18n/locales/en.json
-    // promptPreset.*. Only what the app really has (owner, 2026-10-16).
-    card: {
-      title: 'Cleanup presets',
-      desc: 'Choose or customize how AI cleans up transcripts.',
-      langLabel: 'Built-in preset language',
-      langs: [['zh-CN', 'Chinese'], ['en', 'English']],
-      lang: 'en',
-      new: 'New',
-      createTitle: 'New cleanup preset',
-      editTitle: 'Edit “{name}”',
-      name: 'Name',
-      namePlaceholder: 'For example: Meeting notes',
-      template: 'Start from an existing preset (optional)',
-      noTemplate: 'Start from scratch',
-      builtinSuffix: '{name} (built in)',
-      templateHint: 'Copies the preset below as a starting point.',
-      systemPrompt: 'System prompt',
-      // Straight apostrophes, as in the app's en.json (Microsoft YaHei sets ’ full-width).
-      systemPromptHint: "Defines the AI's role and rules. The transcript is added automatically.",
-      systemPromptPlaceholder: "Describe the AI's role, behavior, and cleanup rules…",
-      shortcut: 'Shortcut (optional)',
-      shortcutHint: 'Use a combination such as Alt+1. It must include a modifier and applies after saving.',
-      notSet: 'Not set',
-      pressKeys: 'Press a key…',
-      clear: 'Clear shortcut',
-      missingBoth: 'Enter a name and prompt',
-      missingName: 'Enter a name',
-      missingPrompt: 'Enter a prompt',
-      restoreDefault: 'Restore default',
-      cancel: 'Cancel',
-      save: 'Save',
-      builtin: 'Built in',
-      edit: 'Edit',
-      delete: 'Delete',
-      draftName: 'Commit message',
-      draftPrompt: 'Turn what I said into one Conventional Commit message.\n- Type is one of feat, fix, refactor, docs, chore\n- Put the affected module in parentheses\n- One short imperative sentence, no full stop\n- Output only the message',
-      presets: [
-        ['intent', 'Intent cleanup', 'Removes fillers and repetition, and turns speech into clear, concise writing'],
-        ['faithful', 'Faithful cleanup', 'Fixes misheard words, formatting, and terms while keeping your wording and order'],
-        ['zh2en', 'Chinese to English', 'Speak Chinese; fixes recognition errors, then translates faithfully into English'],
-        ['casual', 'Conversational cleanup', 'Keeps your spoken tone with a light touch; good for instructing AI assistants'],
-      ],
-    },
-    compareTitle: 'One sentence, four presets',
-    compareLead: 'What you said on the left, and what each preset types on the right.',
+    lead: 'Say it once, and each preset types it its own way.',
+    facts: ['Every built-in prompt is open', 'Write your own presets', 'Switches per app'],
     inputLabel: 'What you said',
     input: 'Um, so I fixed the form validation on the login page, and uh, added the unit tests too, can you tell the product team it’s ready for testing tomorrow.',
     builtin: 'Built in',
@@ -183,21 +140,17 @@ export default {
       { name: 'Commit message', kind: 'custom', desc: 'Your own prompt', output: 'fix(login): repair form validation and add unit tests', mono: true },
       { name: 'Into Chinese', kind: 'custom', desc: 'Your own prompt', output: '登录页的表单校验已修复，单元测试也补上了。请告诉产品团队明天可以提测。' },
     ],
-    // The app's per-app rules (appPrompt.*): these nine apps are built in, matched by process name.
-    appRules: {
-      title: 'Per-app rules',
-      desc: 'Switch apps and the matching preset is used automatically.',
-      add: 'Add an app',
-      apps: [['teams', 'Teams'], ['outlook', 'Outlook'], ['kiro', 'Kiro'], ['codex', 'Codex'], ['vscode', 'VS Code'], ['cursor', 'Cursor'], ['notepad', 'Notepad'], ['wechat', 'WeChat'], ['qq', 'QQ']],
-    },
   },
   selfhost: {
     title: 'Self-host it for your team or company.',
     lead: 'The server is open source and runs on your own machine. The whole team shares one, and audio and text never leave your network.',
+    // The fourth fact is what is left of the three-row speed table (2026-11-10); the full numbers
+    // are in the README and llms.txt.
     facts: [
       ['container', 'One Docker Compose command'],
       ['link', 'Teammates just enter its address'],
       ['gauge', 'Concurrency limits and quotas built in'],
+      ['zap', '5 minutes of audio in about 3 s on an A10G'],
     ],
     diagram: {
       boundary: 'Company network',
@@ -211,17 +164,10 @@ export default {
     },
     github: 'View on GitHub',
     guide: 'Server guide',
-    perfTitle: 'Recognition speed',
-    perfCaption: 'NVIDIA A10G 24 GB · Qwen3-ASR-1.7B with vLLM',
-    perfHead: ['Audio length', 'ASR latency'],
-    perfRows: [
-      ['30 seconds', '~0.8 s'],
-      ['1 minute', '~1.6 s'],
-      ['5 minutes', '~3.0 s'],
-    ],
   },
-  // Where speech is recognized, then that mode's models (owner, 2026-10-18: the old title, lead and
-  // table cards were weak). The first field of a model is a file in server/web/img/logos/;
+  // Where speech is recognized (owner, 2026-10-18: the old title, lead and table cards were weak).
+  // Since 2026-11-10 the cards carry one line of cost and setup and no model lists; the models are
+  // one strip under the cards. The first field of a strip item is a file in server/web/img/logos/;
   // 'plug' marks a protocol entry with no brand.
   modes: {
     title: 'You choose where your speech is recognized.',
@@ -235,9 +181,7 @@ export default {
         head: 'Works offline',
         dest: 'On your PC',
         privacy: 'Audio never leaves your PC',
-        facts: [['Cost', 'Free'], ['Setup', 'Download one model, from 240 MB'], ['Speed', '9 s of speech in under 1 s on a CPU']],
-        modelsLabel: 'Models',
-        models: [['qwen', 'Qwen3-ASR'], ['alibaba', 'SenseVoice'], ['alibaba', 'Fun-ASR'], ['nvidia', 'Nemotron'], ['nvidia', 'Parakeet']],
+        line: 'Free. Download one model first, from 240 MB.',
       },
       {
         id: 'cloud',
@@ -245,9 +189,7 @@ export default {
         head: 'The big providers’ models',
         dest: 'Provider',
         privacy: 'Audio goes straight to the provider, not through SayIt',
-        facts: [['Cost', 'Pay the provider for usage'], ['Setup', 'That provider’s API key']],
-        modelsLabel: 'Providers',
-        models: [['doubao', 'Doubao'], ['qwen', 'Qwen'], ['mimo', 'Xiaomi MiMo'], ['openai', 'OpenAI'], ['gemini', 'Gemini'], ['groq', 'Groq'], ['openrouter', 'OpenRouter'], ['plug', 'OpenAI-compatible']],
+        line: 'Your own API key. Pay the provider for usage.',
       },
       {
         id: 'server',
@@ -256,15 +198,16 @@ export default {
         head: 'Talk right after install',
         dest: 'Server',
         privacy: 'Audio goes to the server you connect to and is not kept',
-        facts: [['Cost', 'The trial server is free, with limits'], ['Setup', 'Nothing']],
-        modelsLabel: 'Which server',
-        servers: [['SayIt trial server', 'Qwen3-ASR 1.7B, the default after install'], ['Your company’s server', 'On your own network, see Self-hosting above', '#self-host']],
+        line: 'The trial server is free, with limits.',
       },
     ],
-    ai: {
-      title: 'AI cleanup',
-      sub: 'After recognition a language model polishes the text, in every mode. Pick any of these, including Ollama on your PC.',
-      items: [['deepseek', 'DeepSeek'], ['qwen', 'Qwen'], ['doubao', 'Doubao'], ['zhipu', 'Zhipu GLM'], ['mimo', 'Xiaomi MiMo'], ['groq', 'Groq'], ['ollama', 'Ollama'], ['plug', 'OpenAI-compatible']],
+    // Recognition and AI cleanup in one row, each brand once. Local models go under their maker:
+    // Qwen includes the local Qwen3-ASR, SenseVoice stands for Alibaba's SenseVoice / Fun-ASR,
+    // Nemotron for NVIDIA's Nemotron / Parakeet.
+    strip: {
+      title: 'Models and providers',
+      sub: 'Pick recognition and AI cleanup separately. AI cleanup works in every mode.',
+      items: [['qwen', 'Qwen'], ['alibaba', 'SenseVoice'], ['nvidia', 'Nemotron'], ['doubao', 'Doubao'], ['mimo', 'Xiaomi MiMo'], ['openai', 'OpenAI'], ['gemini', 'Gemini'], ['deepseek', 'DeepSeek'], ['zhipu', 'Zhipu GLM'], ['groq', 'Groq'], ['openrouter', 'OpenRouter'], ['ollama', 'Ollama'], ['plug', 'OpenAI-compatible']],
     },
   },
   app: {
@@ -295,9 +238,9 @@ export default {
       day: 'Today',
       rawLabel: 'Raw transcript',
       items: [
-        { time: '20:31', text: 'Three things: 1. Fix the login bug. 2. Push it to GitHub. 3. Tell me the results.', raw: 'So three things, fix the login bug first, uh, then push it to GitHub, and then tell me the results.', meta: ['Cloud API', 'ASR: Doubao-Seed-ASR-2.0', 'AI: deepseek-v4-flash', 'Audio 5.6s'] },
+        { time: '20:31', text: 'Three things: 1. Fix the login bug. 2. Push it to GitHub. 3. Tell me the results.', raw: 'So three things, fix the login bug first, uh, then push it to GitHub, and then tell me the results.', meta: ['Cloud API', 'ASR: Doubao-Seed-ASR-2.0', 'AI: deepseek-flash', 'Audio 5.6s'] },
         { time: '20:26', text: 'That’s too much detail. Summarize each of the two sections in a few bullet points.', raw: 'Um that’s too much detail, just take these two sections and summarize each one in a few bullet points.', meta: ['Local', 'ASR: Parakeet Unified EN', 'Audio 6.2s'] },
-        { time: '17:07', text: 'Pull the retry logic into a hook, set the timeout to 30 seconds, and add unit tests.', raw: 'Um, so pull the retry logic into a hook, set the timeout to twenty, no wait, thirty seconds, and add unit tests.', meta: ['Server', 'ASR: Qwen3-ASR-1.7B', 'AI: deepseek-v4-flash', 'Audio 7.1s'] },
+        { time: '17:07', text: 'Pull the retry logic into a hook, set the timeout to 30 seconds, and add unit tests.', raw: 'Um, so pull the retry logic into a hook, set the timeout to twenty, no wait, thirty seconds, and add unit tests.', meta: ['Server', 'ASR: Qwen3-ASR-1.7B', 'AI: deepseek-flash', 'Audio 7.1s'] },
         { time: '16:52', text: 'Let’s meet at 11 tomorrow and bring the new design.', raw: 'Let’s meet at ten, no, eleven tomorrow, and bring the, uh, the new design.', meta: ['Cloud API', 'ASR: whisper-large-v3', 'Audio 4.8s'] },
       ],
     },
@@ -361,7 +304,7 @@ export default {
       testAll: 'Test all',
       add: 'New',
       items: [
-        ['deepseek-v4-flash', 'DeepSeek', 385],
+        ['deepseek-flash', 'DeepSeek', 385],
         ['gpt-4.1-mini', 'OpenAI', 520],
         ['qwen3.6-flash', 'Qwen', 423],
         ['llama-3.3-70b', 'Groq', 310],
@@ -383,7 +326,8 @@ export default {
           esc: 'Press Esc while recording or processing to cancel. Nothing is inserted, and the recording isn’t kept.',
           items: [
             ['Hands-free', 'Best for talking at length: press once to start, press again to stop. Nothing to hold down.', 'Right Alt'],
-            ['Push to talk', 'Best for short bursts: recording starts once the whole combination is held down, and stops as soon as you release any key.', 'Ctrl + Win'],
+            ['Voice translate', 'Press once to start, press again to stop, and the translation is typed at your cursor.', 'Alt + Q'],
+            ['Ask anything', 'Press once to ask, press again to stop, and the answer appears in a card at the bottom of the screen.', 'Alt + A'],
           ],
         },
         mic: { title: 'Microphone', label: 'Choose a microphone', value: 'System default (Microphone Array)', options: ['System default (Microphone Array)', 'Blackwire 5220', 'Microphone Array'], test: 'Test microphone', testing: 'Testing…' },
@@ -411,7 +355,7 @@ export default {
         durationTitle: 'Show recording time',
         durationDesc: 'Off shows the waveform only',
         streamTitle: 'Live captions',
-        streamDesc: 'Show recognized words in the overlay while you talk (Doubao and Qwen realtime ASR)',
+        streamDesc: 'Show recognized words in the overlay while you talk (Doubao, Qwen, OpenAI and Gemini realtime ASR)',
         preview: 'Overlay preview',
         previewText: 'Let’s meet with the team at three and walk through the new release plan',
       },
@@ -440,14 +384,14 @@ export default {
           ['ASR', 'OpenAI (gpt-4o-transcribe)'],
           ['Local engine', 'Vulkan · Process memory 612 MB · transcribe.cpp 0.4.2'],
           ['Compute device', 'NVIDIA GeForce RTX 4060 (discrete GPU, 8 GB)'],
-          ['AI cleanup', 'DeepSeek (deepseek-v4-flash)'],
+          ['AI cleanup', 'DeepSeek (deepseek-flash)'],
         ],
         faqTitle: 'Common problems',
         faq: {
           q: 'The transcript wasn’t inserted after recognition finished',
           items: [
             ['Click the text box first ', 'so the cursor sits inside it.'],
-            ['Don’t switch windows while holding the shortcut: ', 'the cursor must still be in the text box when you release it.'],
+            ['Don’t switch windows while talking: ', 'the cursor must still be in the text box when you finish.'],
             ['Nothing works anywhere: ', 'security software is usually the cause. Add SayIt to its trusted list.'],
             ['Games and installers fail: ', 'they run as administrator, so run SayIt as administrator too.'],
             ['Only one app fails: ', 'SayIt can’t recognize its text box yet. Use the copy button on the card to grab the text.'],
@@ -462,7 +406,7 @@ export default {
           ['info', '20:31:02 [hotkey] hands-free start key=RightAlt'],
           ['info', '20:31:02 [recorder] Recording started mic="Microphone Array"'],
           ['info', '20:31:08 [asr] openai ok chars=96 asr_ms=840'],
-          ['info', '20:31:09 [llm] deepseek-v4-flash ok ms=566'],
+          ['info', '20:31:09 [llm] deepseek-flash ok ms=566'],
           ['info', '20:31:09 [inject] gate=uia sent=4 target=WindowsTerminal.exe'],
           ['warn', '20:42:15 [mic] low input level, rms=0.006'],
           ['info', '20:42:19 [asr] openai ok chars=41 asr_ms=702'],
@@ -521,7 +465,7 @@ export default {
       },
       {
         q: 'How does the shortcut work?',
-        a: 'Press Right Alt once to start and again to finish, and the cleaned-up text is typed for you. You can also set a separate hold-to-talk key, and either one can be another key or a mouse side button. On a Mac the defaults are Right ⌘ to start and finish, and Right ⌥ to hold and talk.',
+        a: 'Press Right Alt once to start and again to finish, and the cleaned-up text is typed for you. The shortcut can be another key or a mouse side button. Voice translate and Ask anything each work once you give them a key combination. On a Mac the default is Right ⌘ to start and finish.',
       },
       {
         q: 'Do I need a powerful PC?',

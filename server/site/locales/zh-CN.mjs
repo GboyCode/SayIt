@@ -122,54 +122,12 @@ export default {
     note: '以上为示意，实际效果取决于识别模型和 AI 模型。',
   },
   rules: {
+    // 一节一屏（2026-11-10，对照豆包输入法页面后用户同意）：标题、一句话、三条短事实、一张分叉图。
+    // 原来右边那张「润色模式」编辑卡去掉了：下面「界面演示」的 AI 整理页本来就能改提示词，等于讲了两遍。
+    // 九个应用图标的「应用规则」并成第三条事实。
     title: '想要什么效果，提示词自己写。',
-    lead: '内置四种润色模式，提示词全部公开、随便改，也可以从零新建一个。',
-    points: ['内置模式的提示词全部公开，想改就改。', '新建一个：写提交信息、翻译、改成邮件口吻都行。', '给模式设个组合键，随时切换。'],
-    // App 里「AI 整理 → 润色模式」那张卡，逐字照抄 client/src/i18n/locales/zh-CN.json 的 promptPreset.*。
-    // 只放 App 里真有的东西：用户指出过「用于这些应用」「试一下」是网站自己编的（2026-10-16）。
-    card: {
-      title: '润色模式',
-      desc: '选择或自定义 AI 对语音文本的处理方式。',
-      langLabel: '内置 Prompt 语言',
-      langs: [['zh-CN', '中文'], ['en', 'English']],
-      lang: 'zh-CN',
-      new: '新建',
-      createTitle: '新建润色模式',
-      editTitle: '编辑「{name}」',
-      name: '名称',
-      namePlaceholder: '例如：会议纪要整理',
-      template: '以现有模式为模板（可选）',
-      noTemplate: '不使用模板，自己写',
-      builtinSuffix: '{name}（内置）',
-      templateHint: '选中后会把该模式的提示词填入下面，改几句就能用。',
-      systemPrompt: '系统提示词（System Prompt）',
-      systemPromptHint: '定义 AI 的角色和处理规则，语音文本会自动附加为用户消息。',
-      systemPromptPlaceholder: '定义 AI 的角色、行为和处理规则...',
-      shortcut: '快捷键（可选）',
-      shortcutHint: '设置组合键随时切换到此模式，如 Alt+1、Alt+2（需含修饰键）。保存后生效',
-      notSet: '未设置',
-      pressKeys: '按下按键...',
-      clear: '清空快捷键',
-      missingBoth: '请填写名称和提示词',
-      missingName: '请填写名称',
-      missingPrompt: '请填写提示词',
-      restoreDefault: '恢复默认',
-      cancel: '取消',
-      save: '保存',
-      builtin: '内置',
-      edit: '编辑',
-      delete: '删除',
-      draftName: '写成提交信息',
-      draftPrompt: '把我说的话写成一条 Conventional Commit 提交信息。\n- 类型从 feat、fix、refactor、docs、chore 里选\n- 括号里写改动的模块\n- 描述用中文，一句话，不加句号\n- 只输出提交信息本身',
-      presets: [
-        ['intent', '意图整理', '去掉口头禅和重复，整理成逻辑清楚、简洁的书面文字'],
-        ['faithful', '忠实校对', '只改错字、格式和术语，严格保留原话和语序'],
-        ['zh2en', '中翻英忠实校对', '说中文，先修正识别错误，再忠实翻译成英文'],
-        ['casual', '口语化整理', '保留说话的口吻，只做轻度整理，适合给 AI 助手下指令'],
-      ],
-    },
-    compareTitle: '同一句话，换个润色模式',
-    compareLead: '左边是你说的原话，右边是四种模式各自打出来的结果。',
+    lead: '同一句话，换个润色模式，打出来就不一样。',
+    facts: ['内置提示词全部公开', '自己新建模式', '按应用自动切换'],
     inputLabel: '你说的',
     input: '嗯，那个登录页的表单校验我修好了，然后单元测试也补上了，帮我跟产品说一声明天可以提测。',
     builtin: '内置',
@@ -180,22 +138,17 @@ export default {
       { name: '中翻英忠实校对', kind: 'builtin', desc: '修正后翻译成英文', output: 'I’ve fixed the form validation on the login page and added the unit tests. Please let the product team know it’s ready for testing tomorrow.' },
       { name: '写成提交信息', kind: 'custom', desc: '自己写的提示词', output: 'fix(login): 修复表单校验并补充单元测试', mono: true },
     ],
-    // App 的「应用规则」（appPrompt.*）：内置这九个应用，按进程名识别。
-    appRules: {
-      title: '应用规则',
-      desc: '切到不同应用，自动换用对应的润色模式。',
-      add: '自己添加',
-      apps: [['teams', 'Teams'], ['outlook', 'Outlook'], ['kiro', 'Kiro'], ['codex', 'Codex'], ['vscode', 'VS Code'], ['cursor', 'Cursor'], ['notepad', '记事本'], ['wechat', '微信'], ['qq', 'QQ']],
-    },
   },
   selfhost: {
     title: '团队和公司，本地化部署。',
     // 用户说这一节字太多（2026-10-16）：一句引导 + 三个短事实，其余交给示意图。
     lead: '服务端开源，装在公司自己的服务器上。全团队共用一台，语音和文字不出内网。',
+    // 第四条是原来那张三行速度表（A10G 上 30 秒 / 1 分钟 / 5 分钟），2026-11-10 缩成一句；完整数字在 README 和 llms.txt。
     facts: [
       ['container', 'Docker 一条命令启动'],
       ['link', '成员填个内网地址就能用'],
       ['gauge', '自带并发限制和用量额度'],
+      ['zap', '5 分钟录音，A10G 上约 3 秒出字'],
     ],
     diagram: {
       boundary: '公司内网',
@@ -209,19 +162,12 @@ export default {
     },
     github: '在 GitHub 上查看',
     guide: '服务器部署说明',
-    perfTitle: '识别速度',
-    perfCaption: 'NVIDIA A10G 24 GB · Qwen3-ASR-1.7B + vLLM',
-    perfHead: ['音频时长', '识别耗时'],
-    perfRows: [
-      ['30 秒', '约 0.8 秒'],
-      ['1 分钟', '约 1.6 秒'],
-      ['5 分钟', '约 3.0 秒'],
-    ],
   },
   modes: {
     // 用户说「本机、云端、服务器，都能用」「在语音引擎里切换，随时能换」和三张表格卡片都不好（2026-10-18）。
-    // 访客要决定的是「录音送去哪」：每张卡先说适合谁，再用一张小图画出录音走到哪，最后是这个模式能用的模型。
-    // models 的第一项是 server/web/img/logos/ 里的文件名；'plug' 是「OpenAI 兼容」这类没有品牌的协议入口。
+    // 访客要决定的是「录音送去哪」：每张卡先说适合谁，再用一张小图画出录音走到哪，最后一行费用和准备。
+    // 2026-11-10 起卡里不再列模型（对照豆包页面，这节有四十多个图标），模型统一放到卡片下面的 strip。
+    // strip 每项的第一个值是 server/web/img/logos/ 里的文件名；'plug' 是「OpenAI 兼容」这类没有品牌的协议入口。
     title: '录音在哪识别，你来选。',
     lead: '区别只有两点：录音送到哪里，用的是谁的模型。',
     pc: '你的电脑',
@@ -233,9 +179,7 @@ export default {
         head: '不联网也能用',
         dest: '本机识别',
         privacy: '录音不出电脑',
-        facts: [['费用', '免费'], ['准备', '下载一个模型，240 MB 起'], ['速度', '9 秒的话，普通 CPU 不到 1 秒']],
-        modelsLabel: '可选模型',
-        models: [['qwen', 'Qwen3-ASR'], ['alibaba', 'SenseVoice'], ['alibaba', 'Fun-ASR'], ['nvidia', 'Nemotron'], ['nvidia', 'Parakeet']],
+        line: '免费，先下载一个模型，240 MB 起',
       },
       {
         id: 'cloud',
@@ -243,9 +187,7 @@ export default {
         head: '用大厂的识别模型',
         dest: '服务商',
         privacy: '录音直接发给服务商，不经过 SayIt',
-        facts: [['费用', '按用量付给服务商，一个月几块钱'], ['准备', '服务商的 API Key']],
-        modelsLabel: '可选服务商',
-        models: [['doubao', '豆包'], ['qwen', '千问'], ['mimo', '小米 MiMo'], ['openai', 'OpenAI'], ['gemini', 'Gemini'], ['groq', 'Groq'], ['openrouter', 'OpenRouter'], ['plug', 'OpenAI 兼容']],
+        line: '用服务商的 API Key，一个月几块钱',
       },
       {
         id: 'server',
@@ -254,15 +196,15 @@ export default {
         head: '装好就能说',
         dest: '服务器',
         privacy: '录音发到你连的服务器，识别完不保留',
-        facts: [['费用', '体验服务器免费，有用量限制'], ['准备', '什么都不用']],
-        modelsLabel: '连哪台服务器',
-        servers: [['SayIt 体验服务器', 'Qwen3-ASR 1.7B，安装后默认连它'], ['公司自己的服务器', '内网部署，见上面「私有部署」', '#self-host']],
+        line: '体验服务器免费，有用量限制',
       },
     ],
-    ai: {
-      title: 'AI 整理',
-      sub: '识别完再交给大模型润色，三种模式都能用。任选一家，也能用本机的 Ollama。',
-      items: [['deepseek', 'DeepSeek'], ['qwen', '通义千问'], ['doubao', '豆包'], ['zhipu', '智谱 GLM'], ['mimo', '小米 MiMo'], ['groq', 'Groq'], ['ollama', 'Ollama'], ['plug', 'OpenAI 兼容']],
+    // 识别和 AI 整理合成一排，每家只出现一次。本地模型按出品方留一个名字：千问含本地的 Qwen3-ASR，
+    // SenseVoice 代表阿里的 SenseVoice / Fun-ASR，Nemotron 代表 NVIDIA 的 Nemotron / Parakeet。
+    strip: {
+      title: '支持的模型和服务商',
+      sub: '识别和 AI 整理分开选，三种模式都能开 AI 整理。',
+      items: [['qwen', '千问'], ['alibaba', 'SenseVoice'], ['nvidia', 'Nemotron'], ['doubao', '豆包'], ['mimo', '小米 MiMo'], ['openai', 'OpenAI'], ['gemini', 'Gemini'], ['deepseek', 'DeepSeek'], ['zhipu', '智谱 GLM'], ['groq', 'Groq'], ['openrouter', 'OpenRouter'], ['ollama', 'Ollama'], ['plug', 'OpenAI 兼容']],
     },
   },
 
@@ -294,9 +236,9 @@ export default {
       day: '今天',
       rawLabel: 'ASR 原文',
       items: [
-        { time: '20:31', text: '1. 先修复漏洞的 bug。2. 推送到 GitHub 看看。3. 最后告诉我结果。', raw: '有三个事情，先修复漏洞的 bug 吧。呃，然后推送到 GitHub 看看，最后再告诉我结果。', meta: ['云 API', 'ASR: Doubao-Seed-ASR-2.0', 'AI: deepseek-v4-flash', '语音 5.6s'] },
+        { time: '20:31', text: '1. 先修复漏洞的 bug。2. 推送到 GitHub 看看。3. 最后告诉我结果。', raw: '有三个事情，先修复漏洞的 bug 吧。呃，然后推送到 GitHub 看看，最后再告诉我结果。', meta: ['云 API', 'ASR: Doubao-Seed-ASR-2.0', 'AI: deepseek-flash', '语音 5.6s'] },
         { time: '20:26', text: '解释的内容太多了，你直接这两段，每一段用一段话分一些要点解释一下就行了。', raw: '嗯解释的内容太多了，你直接这两段，每一段用一段话分一些要点解释一下就行了。', meta: ['本地', 'ASR: SenseVoice Small', '语音 6.2s'] },
-        { time: '17:07', text: '把 retry 逻辑抽成一个 hook，超时改成 30 秒，顺便补上单元测试。', raw: '嗯，把那个瑞翠逻辑抽成一个哈克，超时改成二十秒，不对，三十秒，然后顺便补上单元测试。', meta: ['服务器', 'ASR: Qwen3-ASR-1.7B', 'AI: deepseek-v4-flash', '语音 7.1s'] },
+        { time: '17:07', text: '把 retry 逻辑抽成一个 hook，超时改成 30 秒，顺便补上单元测试。', raw: '嗯，把那个瑞翠逻辑抽成一个哈克，超时改成二十秒，不对，三十秒，然后顺便补上单元测试。', meta: ['服务器', 'ASR: Qwen3-ASR-1.7B', 'AI: deepseek-flash', '语音 7.1s'] },
         { time: '16:52', text: '明天上午十一点开会，记得带上新版本的设计稿。', raw: '明天上午十点开会，不对，十一点，记得带上那个新版本的设计稿。', meta: ['云 API', 'ASR: qwen3-asr-flash', '语音 4.8s'] },
         { time: '16:50', text: 'Here’s the plan: 1. Fix the login bug. 2. Push it to GitHub. 3. Tell me the results.', raw: '计划是先修登录的 bug，然后推到 GitHub，最后告诉我结果。', meta: ['云 API', 'AI: 中翻英忠实校对', '语音 5.0s'] },
       ],
@@ -361,7 +303,7 @@ export default {
       testAll: '测试全部',
       add: '新建',
       items: [
-        ['deepseek-v4-flash', 'DeepSeek', 385],
+        ['deepseek-flash', 'DeepSeek', 385],
         ['qwen3.6-flash', '通义千问', 423],
         ['doubao-seed-2-0-lite', '豆包（火山方舟）', 3000],
         ['doubao-seed-2-0-mini', '豆包（火山方舟）', 1000],
@@ -383,7 +325,8 @@ export default {
           esc: '录音或识别处理期间按 Esc 可以取消本次识别，不会插入文字，录音也不会保留。',
           items: [
             ['免提模式', '适合持续说话：按一次开始录音，再按一次结束，全程无需按住快捷键', '右 Alt'],
-            ['按住说话', '适合随按随说：完整按下设定的按键或组合后开始录音，松开任意一个按键即结束', 'Ctrl + Win'],
+            ['语音翻译', '按一次开始说话，再按一次结束，说的话翻译成目标语言后写进光标处', 'Alt + Q'],
+            ['随便问', '按一次开始提问，再按一次结束，答案显示在屏幕下方的卡片里', 'Alt + A'],
           ],
         },
         mic: { title: '麦克风', label: '选择麦克风', value: '系统默认（麦克风阵列）', options: ['系统默认（麦克风阵列）', 'Blackwire 5220', '麦克风阵列'], test: '测试麦克风', testing: '测试中...' },
@@ -391,7 +334,7 @@ export default {
           title: '偏好设置',
           items: [
             ['录音就绪提示音', '按下热键后，录音准备好时播放一声短促提示音', true],
-            ['录音时静音系统声音', '按住说话期间临时静音外放，避免被麦克风录入', false],
+            ['录音时静音系统声音', '录音期间临时静音外放，避免被麦克风录入', false],
             ['插入文本后保护剪贴板', '插入完成后自动还原为插入前的剪贴板内容，避免占用剪贴板', true],
           ],
         },
@@ -408,10 +351,10 @@ export default {
         waves: [['white', '黑底白色'], ['blue', '黑底蓝色'], ['rainbow', '黑底彩色']],
         lengthLabel: '悬浮窗长度',
         lengths: [['long', '长'], ['medium', '中'], ['short', '短']],
-        durationTitle: '显示按住时长',
+        durationTitle: '显示录音时长',
         durationDesc: '关闭后仅显示波形',
         streamTitle: '流式实时字幕',
-        streamDesc: '说话时在悬浮窗上实时显示识别文字（支持豆包、千问实时 ASR）',
+        streamDesc: '说话时在悬浮窗上实时显示识别文字（支持豆包、千问、OpenAI、Gemini 实时识别）',
         preview: '悬浮窗预览',
         previewText: '今天下午三点和团队开个会，把新版本的方案先过一遍',
       },
@@ -440,14 +383,14 @@ export default {
           ['ASR', '豆包 ASR（Doubao-Seed-ASR-2.0）'],
           ['本地引擎', 'Vulkan · 进程内存 612 MB · transcribe.cpp 0.4.2'],
           ['计算设备', 'NVIDIA GeForce RTX 4060（独立显卡，8 GB）'],
-          ['AI 整理', 'DeepSeek（deepseek-v4-flash）'],
+          ['AI 整理', 'DeepSeek（deepseek-flash）'],
         ],
         faqTitle: '常见问题',
         faq: {
           q: '识别完成后，文字没有插入到输入框？',
           items: [
             ['先点一下输入框：', '光标要在里面。'],
-            ['按住快捷键时别切窗口：', '松手那一刻光标还得在输入框里。'],
+            ['说话时别切窗口：', '结束录音那一刻光标还得在输入框里。'],
             ['所有程序都插不进：', '多是安全软件拦的（如 360），把 SayIt 加进信任列表。'],
             ['游戏、安装程序插不进：', '它们以管理员运行，让 SayIt 也以管理员运行。'],
             ['只有某个程序插不进：', 'SayIt 还认不出它的输入框，先用卡片上的复制按钮拿走文字。'],
@@ -462,7 +405,7 @@ export default {
           ['info', '20:31:02 [hotkey] hands-free start key=RightAlt'],
           ['info', '20:31:02 [recorder] Recording started mic="麦克风阵列"'],
           ['info', '20:31:08 [asr] doubao ok chars=41 asr_ms=612'],
-          ['info', '20:31:09 [llm] deepseek-v4-flash ok ms=566'],
+          ['info', '20:31:09 [llm] deepseek-flash ok ms=566'],
           ['info', '20:31:09 [inject] gate=uia sent=4 target=WindowsTerminal.exe'],
           ['warn', '20:42:15 [mic] low input level, rms=0.006'],
           ['info', '20:42:19 [asr] doubao ok chars=18 asr_ms=540'],
@@ -520,7 +463,7 @@ export default {
       },
       {
         q: '快捷键怎么用？',
-        a: '默认按一下右 Alt 开始说，再按一下结束，整理好的文字直接打出来。也可以另设一个键按住说话、松开结束，快捷键能换成别的键或鼠标侧键。Mac 上默认按一下右 ⌘ 开始和结束，按住右 ⌥ 说话。',
+        a: '默认按一下右 Alt 开始说，再按一下结束，整理好的文字直接打出来。快捷键能换成别的键或鼠标侧键。语音翻译和随便问各自设一个组合键就能用。Mac 上默认按一下右 ⌘ 开始和结束。',
       },
       {
         q: '电脑配置要求高吗？',
